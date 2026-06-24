@@ -7,8 +7,12 @@ Vedit is a simple, professional desktop video editor for fast everyday editing: 
 - Native desktop builds for macOS, Windows, and Linux.
 - A redesigned editing workspace with Library, Program Monitor, Timeline, and Inspector panels.
 - Clip trimming, splitting, timeline placement, ripple-style deletion, and snapping.
+- Smoother Program Monitor scrubbing/playback sync when dragging the red playhead or clicking the timeline.
+- Cleaner video-track filmstrips that keep thumbnail previews readable on long clips.
 - Inspector controls for trim, color, transform, title overlays, playback speed, and volume.
+- Editable inspector value fields for precise transform, color, trim, speed, and audio adjustments.
 - Expanded Color controls: brightness, contrast, saturation, gamma, hue, blur, opacity, and reset.
+- More reliable media import history handling, including a fix for the "object cannot be cloned" import toast.
 - FFmpeg-powered export bundled as a sidecar binary by the release workflow.
 
 ## Download

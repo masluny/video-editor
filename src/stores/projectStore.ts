@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
-import { current } from "immer";
+import { current, isDraft } from "immer";
 import type { Project, Track, Clip, MediaAsset, Id } from "../lib/types";
 import { v4 as uuid } from "../lib/uuid";
 import {
@@ -17,6 +17,7 @@ export type PlaceMode = "overwrite" | "insert";
 interface ProjectState {
   project: Project;
   playhead: number;
+  seekGeneration: number;
   isPlaying: boolean;
   playRate: number; // signed shuttle rate for J/K/L (negative = reverse)
   selectedClipId: Id | null; // "primary" selection (drives the Inspector)
@@ -45,7 +46,7 @@ interface ProjectState {
   clearExportRange: () => void;
 
   setProject: (p: Project) => void;
-  setPlayhead: (t: number) => void;
+  setPlayhead: (t: number, source?: "user" | "playback") => void;
   togglePlay: () => void;
   setIsPlaying: (v: boolean) => void;
   setPlayRate: (r: number) => void;
@@ -104,10 +105,33 @@ const defaultProject: Project = {
   media: [],
 };
 
+function snapshot<T>(value: T): T {
+  return structuredClone(isDraft(value) ? current(value as any) : value) as T;
+}
+
+function sanitizeMediaAsset(asset: MediaAsset): MediaAsset | null {
+  const path = typeof asset?.path === "string" ? asset.path : "";
+  if (!path) return null;
+  const name = typeof asset.name === "string" && asset.name ? asset.name : path.split("/").pop() || path;
+  return {
+    id: typeof asset.id === "string" && asset.id ? asset.id : uuid(),
+    path,
+    name,
+    durationSec: Number.isFinite(Number(asset.durationSec)) ? Number(asset.durationSec) : 0,
+    width: Number.isFinite(Number(asset.width)) ? Number(asset.width) : 0,
+    height: Number.isFinite(Number(asset.height)) ? Number(asset.height) : 0,
+    fps: Number.isFinite(Number(asset.fps)) ? Number(asset.fps) : 0,
+    hasVideo: Boolean(asset.hasVideo),
+    hasAudio: Boolean(asset.hasAudio),
+    thumbnail: typeof asset.thumbnail === "string" ? asset.thumbnail : undefined,
+  };
+}
+
 export const useProjectStore = create<ProjectState>()(
   immer((set) => ({
     project: defaultProject,
     playhead: 0,
+    seekGeneration: 0,
     isPlaying: false,
     playRate: 1,
     selectedClipId: null,
@@ -126,14 +150,15 @@ export const useProjectStore = create<ProjectState>()(
       set((s) => {
         // Loading/replacing the whole project resets the undo baseline so undo
         // can't jump back to a previously-open (or empty) project.
-        s.project = p;
-        s.history = [structuredClone(p)];
+        s.project = snapshot(p);
+        s.history = [snapshot(p)];
         s.historyIndex = 0;
       }),
 
-    setPlayhead: (t) =>
+    setPlayhead: (t, source = "user") =>
       set((s) => {
         s.playhead = snapToFrame(t, s.project.fps);
+        if (source !== "playback") s.seekGeneration += 1;
       }),
 
     togglePlay: () =>
@@ -188,8 +213,11 @@ export const useProjectStore = create<ProjectState>()(
 
     addMedia: (assets, autoPlace = true) =>
       set((s) => {
+        const cleaned = assets
+          .map(sanitizeMediaAsset)
+          .filter((a): a is MediaAsset => !!a);
         const existing = new Set(s.project.media.map((m) => m.path));
-        const unique = assets.filter((a) => !existing.has(a.path));
+        const unique = cleaned.filter((a) => !existing.has(a.path));
         if (unique.length === 0) return;
 
         s.project.media = [...s.project.media, ...unique];
@@ -364,7 +392,7 @@ export const useProjectStore = create<ProjectState>()(
         const splitPoint = clip.source_in + localTime * clip.speed;
 
         const newClip: Clip = {
-          ...structuredClone(clip),
+          ...snapshot(clip),
           id: uuid(),
           source_in: splitPoint,
           timeline_start: time,
@@ -553,8 +581,8 @@ export const useProjectStore = create<ProjectState>()(
 
     pushHistory: () =>
       set((s) => {
-        const newHistory = s.history.slice(0, s.historyIndex + 1);
-        newHistory.push(structuredClone(s.project));
+        const newHistory = snapshot(s.history).slice(0, s.historyIndex + 1);
+        newHistory.push(snapshot(s.project));
         if (newHistory.length > 50) newHistory.shift();
         s.history = newHistory;
         s.historyIndex = newHistory.length - 1;
@@ -564,14 +592,14 @@ export const useProjectStore = create<ProjectState>()(
       set((s) => {
         if (s.historyIndex <= 0) return;
         s.historyIndex -= 1;
-        s.project = structuredClone(s.history[s.historyIndex]);
+        s.project = snapshot(s.history[s.historyIndex]);
       }),
 
     redo: () =>
       set((s) => {
         if (s.historyIndex >= s.history.length - 1) return;
         s.historyIndex += 1;
-        s.project = structuredClone(s.history[s.historyIndex]);
+        s.project = snapshot(s.history[s.historyIndex]);
       }),
   }))
 );

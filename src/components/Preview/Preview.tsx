@@ -7,6 +7,7 @@ import { Play, Pause, SkipBack, SkipForward, Volume2, VolumeX, MonitorPlay } fro
 export function Preview() {
   const project = useProjectStore((s) => s.project);
   const playhead = useProjectStore((s) => s.playhead);
+  const seekGeneration = useProjectStore((s) => s.seekGeneration);
   const setPlayhead = useProjectStore((s) => s.setPlayhead);
   const isPlaying = useProjectStore((s) => s.isPlaying);
   const togglePlay = useProjectStore((s) => s.togglePlay);
@@ -85,9 +86,37 @@ export function Preview() {
 
   const sameAsset = !!(activeVideo && activeAudio && activeVideo.asset.path === activeAudio.asset.path);
 
+  const seekElement = (el: HTMLMediaElement | null, target: number, threshold = 0.04) => {
+    if (!el || !Number.isFinite(target)) return;
+    try {
+      if (Math.abs(el.currentTime - target) > threshold) el.currentTime = target;
+    } catch {
+      // Some webviews reject a seek before metadata is ready. The next seek tick
+      // will land once the element has loaded enough media state.
+    }
+  };
+  const handlePlayError = (err: unknown) => {
+    if ((err as { name?: string })?.name === "AbortError") return;
+    useProjectStore.getState().setIsPlaying(false);
+  };
+
   React.useEffect(() => {
     if (!isPlaying) livePlayheadRef.current = playhead;
   }, [playhead, isPlaying]);
+
+  React.useEffect(() => {
+    if (seekGeneration === 0) return;
+    livePlayheadRef.current = playhead;
+    lastTimeRef.current = null;
+
+    if (activeVideo) {
+      seekElement(videoRef.current, mediaTimeFor(activeVideo.clip, playhead), 0.01);
+    }
+    if (activeAudio) {
+      seekElement(audioRef.current, mediaTimeFor(activeAudio.clip, playhead), 0.01);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seekGeneration, activeVideo?.clip?.id, activeAudio?.clip?.id]);
 
   // ─── Effect 1: Source assignment ────────────────────────────────────
   // Only runs when the active asset file changes — NOT every frame.
@@ -136,9 +165,7 @@ export function Preview() {
       const clipChanged = lastSyncedClipId.current !== activeVideo.clip.id;
       lastSyncedClipId.current = activeVideo.clip.id;
       const drift = Math.abs(video.currentTime - target);
-      if (clipChanged || drift > 0.08) {
-        video.currentTime = target;
-      }
+      if (clipChanged || drift > 0.08) seekElement(video, target);
     } else {
       lastSyncedClipId.current = null;
     }
@@ -148,9 +175,7 @@ export function Preview() {
       const clipChanged = lastSyncedAudioClipId.current !== activeAudio.clip.id;
       lastSyncedAudioClipId.current = activeAudio.clip.id;
       const drift = Math.abs(audio.currentTime - target);
-      if (clipChanged || drift > 0.08) {
-        audio.currentTime = target;
-      }
+      if (clipChanged || drift > 0.08) seekElement(audio, target);
     } else {
       lastSyncedAudioClipId.current = null;
     }
@@ -163,17 +188,19 @@ export function Preview() {
     const audio = audioRef.current;
     if (isPlaying) {
       if (video && activeVideo) {
+        seekElement(video, mediaTimeFor(activeVideo.clip, playhead));
         video.playbackRate = clampRate(activeVideo.clip.speed * Math.max(1, Math.abs(playRate)));
         let vol = videoVolume;
         if (sameAsset && activeAudio) vol = audioVolume;
         video.volume = isMuted ? 0 : vol;
-        video.play().catch(() => {});
+        video.play().catch(handlePlayError);
       }
       if (audio && activeAudio) {
+        seekElement(audio, mediaTimeFor(activeAudio.clip, playhead));
         if (!sameAsset) {
           audio.playbackRate = clampRate(activeAudio.clip.speed);
           audio.volume = isMuted ? 0 : audioVolume;
-          audio.play().catch(() => {});
+          audio.play().catch(handlePlayError);
         } else {
           audio.pause();
         }
@@ -227,13 +254,13 @@ export function Preview() {
       );
       if (st.playRate < 0 && next <= 0) {
         livePlayheadRef.current = 0;
-        st.setPlayhead(0);
+        st.setPlayhead(0, "playback");
         st.setIsPlaying(false);
         return;
       }
       if (st.playRate > 0 && total > 0 && next >= total) {
         livePlayheadRef.current = total;
-        st.setPlayhead(total);
+        st.setPlayhead(total, "playback");
         st.setIsPlaying(false);
         return;
       }
@@ -243,7 +270,7 @@ export function Preview() {
       // timeline/filmstrip UI from repainting 60 times per second.
       if (ts - lastPublishedRef.current > 1000 / 24) {
         lastPublishedRef.current = ts;
-        st.setPlayhead(livePlayheadRef.current);
+        st.setPlayhead(livePlayheadRef.current, "playback");
       }
 
       // Sync media elements during playback — corrects drift without
@@ -258,7 +285,7 @@ export function Preview() {
           const target = Math.max(0, vClip.source_in + (next - vClip.timeline_start) * (vClip.speed || 1));
           const drift = Math.abs(video.currentTime - target);
           if (drift > 0.5) {
-            video.currentTime = target;
+            seekElement(video, target, 0.5);
           }
         }
       }

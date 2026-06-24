@@ -116,20 +116,42 @@ export function Timeline() {
   };
 
   // ----- ruler seek -----
-  const seek = (clientX: number) => {
+  const seekFromRuler = (clientX: number) => {
     if (!rulerRef.current) return;
     const rect = rulerRef.current.getBoundingClientRect();
     setPlayhead(pxToTime(clientX - rect.left + rulerRef.current.scrollLeft));
   };
+  const seekFromLanes = (clientX: number) => {
+    if (!lanesRef.current) return;
+    const rect = lanesRef.current.getBoundingClientRect();
+    setPlayhead(pxToTime(clientX - rect.left));
+  };
   const handleRulerDown = (e: React.MouseEvent) => {
-    seek(e.clientX);
-    const move = (ev: MouseEvent) => seek(ev.clientX);
+    seekFromRuler(e.clientX);
+    const move = (ev: MouseEvent) => seekFromRuler(ev.clientX);
     const up = () => {
       window.removeEventListener("mousemove", move);
       window.removeEventListener("mouseup", up);
     };
     window.addEventListener("mousemove", move);
     window.addEventListener("mouseup", up);
+  };
+  const handlePlayheadDown = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    seekFromLanes(e.clientX);
+    const move = (ev: MouseEvent) => seekFromLanes(ev.clientX);
+    const up = () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  };
+  const handleLaneBackgroundDown = (e: React.MouseEvent) => {
+    if (e.button !== 0 || e.target !== e.currentTarget) return;
+    seekFromLanes(e.clientX);
+    selectClip(null, null);
   };
 
   // Determine which track lane a Y coordinate sits over.
@@ -506,7 +528,7 @@ export function Timeline() {
             ref={lanesRef}
             className={cn("relative", activeTool === "razor" && "cursor-crosshair")}
             style={{ width: `${timeToPx(totalDuration)}px` }}
-            onMouseDown={(e) => { if (e.target === e.currentTarget) selectClip(null, null); }}
+            onMouseDown={handleLaneBackgroundDown}
           >
             {project.tracks.map((track) => (
               <div
@@ -519,7 +541,7 @@ export function Timeline() {
                 )}
                 onDragOver={allowDrop}
                 onDrop={(e) => handleDropOnTrack(e, track.id)}
-                onMouseDown={(e) => { if (e.target === e.currentTarget) selectClip(null, null); }}
+                onMouseDown={handleLaneBackgroundDown}
                 onContextMenu={(e) => {
                   if (e.target !== e.currentTarget) return;
                   e.preventDefault();
@@ -562,8 +584,14 @@ export function Timeline() {
             )}
 
             {/* Playhead */}
-            <div className="absolute top-0 bottom-0 w-px bg-danger z-30 pointer-events-none shadow-[0_0_10px_rgba(239,68,68,0.45)]" style={{ left: `${timeToPx(playhead)}px` }}>
-              <div className="absolute -top-0 -left-[5px] w-2.5 h-2.5 rotate-45 bg-danger rounded-[2px] shadow" />
+            <div
+              className="absolute top-0 bottom-0 z-30 w-3 -translate-x-1/2 cursor-ew-resize"
+              style={{ left: `${timeToPx(playhead)}px` }}
+              onMouseDown={handlePlayheadDown}
+              title="Drag to scrub"
+            >
+              <div className="absolute top-0 bottom-0 left-1/2 w-px -translate-x-1/2 bg-danger shadow-[0_0_10px_rgba(239,68,68,0.45)] pointer-events-none" />
+              <div className="absolute -top-0 left-1/2 w-2.5 h-2.5 -translate-x-1/2 rotate-45 bg-danger rounded-[2px] shadow pointer-events-none" />
             </div>
           </div>
 
@@ -688,6 +716,15 @@ function TimelineClip({
 }) {
   const isVideo = kind === "video";
   const showFilmstrip = isVideo && frames.length > 0 && width > 40;
+  const filmstripTiles = React.useMemo(() => {
+    if (!showFilmstrip) return [];
+    const count = Math.min(180, Math.max(1, Math.ceil(width / 96)));
+    return Array.from({ length: count }, (_, i) => {
+      const idx = Math.min(frames.length - 1, Math.floor((i / count) * frames.length));
+      return frames[idx];
+    });
+  }, [frames, showFilmstrip, width]);
+
   return (
     <div
       className={cn(
@@ -707,9 +744,16 @@ function TimelineClip({
     >
       {/* Filmstrip (video) */}
       {showFilmstrip && (
-        <div className="absolute inset-0 flex pointer-events-none">
-          {frames.map((f, i) => (
-            <img key={i} src={assetUrl(f)} className="h-full flex-1 min-w-0 object-cover" draggable={false} alt="" />
+        <div className="absolute inset-0 flex pointer-events-none overflow-hidden bg-black/30">
+          {filmstripTiles.map((f, i) => (
+            <img
+              key={`${f}-${i}`}
+              src={assetUrl(f)}
+              className="h-full shrink-0 object-cover"
+              style={{ width: `${Math.max(56, width / filmstripTiles.length)}px` }}
+              draggable={false}
+              alt=""
+            />
           ))}
         </div>
       )}

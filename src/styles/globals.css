@@ -80,6 +80,16 @@ input[type="range"]:active::-webkit-slider-thumb {
   background: #77a7ff;
 }
 
+input[type="number"] {
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
 @layer components {
   .panel {
     @apply bg-panel border border-border rounded-lg shadow-inset;
