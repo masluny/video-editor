@@ -1,8 +1,9 @@
 import { chmodSync, copyFileSync, mkdirSync, realpathSync, statSync, unlinkSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
-const root = resolve(new URL("..", import.meta.url).pathname);
+const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const binDir = join(root, "src-tauri", "binaries");
 const isWindows = process.platform === "win32";
 const exe = isWindows ? ".exe" : "";
