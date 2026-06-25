@@ -1,6 +1,6 @@
 [package]
 name = "video-editor"
-version = "0.2.1"
+version = "0.2.2"
 description = "A cross-platform video editor built with Tauri"
 authors = ["you"]
 edition = "2021"

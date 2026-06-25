@@ -75,8 +75,8 @@ gh workflow run "Build Vedit"
 
 Publish a GitHub Release:
 ```bash
-git tag v0.2.1
-git push origin v0.2.1
+git tag v0.2.2
+git push origin v0.2.2
 ```
 
 Tagged releases use `RELEASE.md` as the release body and attach native installers/packages from all three platforms.
