@@ -1,10 +1,11 @@
-# Vedit Desktop Release
+# Revind Desktop Release
 
-Vedit is a simple, professional desktop video editor for fast everyday editing: import media, trim clips, arrange a timeline, adjust color, add text, and export finished MP4 videos.
+Revind is a simple, professional desktop video editor for fast everyday editing: import media, trim clips, arrange a timeline, adjust color, add text, and export finished MP4 videos.
 
 ## What's Included
 
 - Native desktop builds for macOS, Windows, and Linux.
+- Renamed the app to Revind across the desktop bundle, window title, and release artifacts.
 - A redesigned editing workspace with Library, Program Monitor, Timeline, and Inspector panels.
 - Clip trimming, splitting, timeline placement, ripple-style deletion, and snapping.
 - Smoother Program Monitor scrubbing/playback sync when dragging the red playhead or clicking the timeline.
@@ -31,4 +32,4 @@ Choose the installer for your platform from the assets attached to this GitHub R
 
 ## Project Files
 
-Vedit project files use the `.vproj` format. Import video/audio files through the Library panel; do not open media files directly through the project-open command.
+Revind project files use the `.vproj` format. Import video/audio files through the Library panel; do not open media files directly through the project-open command.

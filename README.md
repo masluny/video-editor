@@ -1,4 +1,4 @@
-# Vedit — Cross-platform Video Editor (Tauri + Rust)
+# Revind — Cross-platform Video Editor (Tauri + Rust)
 
 A simple, fast, nice-looking video editor built with Tauri 2 (Rust backend + React frontend). Designed to be easy to use while supporting all the basic and necessary professional functions.
 
@@ -66,17 +66,17 @@ The resulting app bundles ffmpeg/ffprobe and runs without asking the user to ins
 
 ## GitHub Releases
 
-This repo includes `.github/workflows/release.yml`, which builds Vedit on macOS, Windows, and Linux.
+This repo includes `.github/workflows/release.yml`, which builds Revind on macOS, Windows, and Linux.
 
 Manual build:
 ```bash
-gh workflow run "Build Vedit"
+gh workflow run "Build Revind"
 ```
 
 Publish a GitHub Release:
 ```bash
-git tag v0.2.2
-git push origin v0.2.2
+git tag v0.2.3
+git push origin v0.2.3
 ```
 
 Tagged releases use `RELEASE.md` as the release body and attach native installers/packages from all three platforms.

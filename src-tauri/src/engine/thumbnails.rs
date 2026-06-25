@@ -93,7 +93,7 @@ mod tests {
             eprintln!("ffmpeg not available; skipping thumbnail test");
             return;
         }
-        let dir = std::env::temp_dir().join(format!("vedit_thumb_{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("revind_thumb_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let input = dir.join("in.mp4");
         let gen = Command::new("ffmpeg")

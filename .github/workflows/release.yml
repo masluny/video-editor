@@ -1,4 +1,4 @@
-name: Build Vedit
+name: Build Revind
 
 on:
   workflow_dispatch:
@@ -19,13 +19,13 @@ jobs:
         include:
           - name: macOS
             os: macos-latest
-            artifact: vedit-macos
+            artifact: revind-macos
           - name: Windows
             os: windows-latest
-            artifact: vedit-windows
+            artifact: revind-windows
           - name: Linux
             os: ubuntu-22.04
-            artifact: vedit-linux
+            artifact: revind-linux
 
     steps:
       - name: Checkout
@@ -79,8 +79,8 @@ jobs:
       - name: Verify macOS ad-hoc signature
         if: runner.os == 'macOS'
         run: |
-          codesign --verify --deep --strict --verbose=2 src-tauri/target/release/bundle/macos/Vedit.app
-          codesign -dv --verbose=4 src-tauri/target/release/bundle/macos/Vedit.app 2>&1 | grep -E "Signature|Authority|TeamIdentifier|Runtime" || true
+          codesign --verify --deep --strict --verbose=2 src-tauri/target/release/bundle/macos/Revind.app
+          codesign -dv --verbose=4 src-tauri/target/release/bundle/macos/Revind.app 2>&1 | grep -E "Signature|Authority|TeamIdentifier|Runtime" || true
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4

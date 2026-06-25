@@ -335,7 +335,7 @@ export function Timeline() {
     const rect = lanesRef.current.getBoundingClientRect();
     const dropTime = snapToFrame(pxToTime(e.clientX - rect.left), fps);
 
-    const mediaId = e.dataTransfer.getData("application/x-vedit-media");
+    const mediaId = e.dataTransfer.getData("application/x-revind-media");
     if (mediaId) {
       const asset = project.media.find((m) => m.id === mediaId);
       if (asset) {

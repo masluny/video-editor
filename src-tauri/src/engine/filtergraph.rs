@@ -444,7 +444,7 @@ mod tests {
             return;
         }
 
-        let dir = std::env::temp_dir().join(format!("vedit_test_{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("revind_test_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let in_a = dir.join("a.mp4");
         let in_b = dir.join("b.mp4");
@@ -502,7 +502,7 @@ mod tests {
             return;
         }
 
-        let dir = std::env::temp_dir().join(format!("vedit_test_{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("revind_test_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let in_a = dir.join("a.mp4");
         gen_input(in_a.to_str().unwrap(), true, 3.0);

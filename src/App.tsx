@@ -38,7 +38,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 
 export default function App() {
   if (typeof window !== "undefined" && window.location.hostname === "127.0.0.1") {
-    (window as any).__veditStore = useProjectStore;
+    (window as any).__revindStore = useProjectStore;
   }
 
   const {
@@ -161,10 +161,10 @@ export default function App() {
                   useProjectStore.getState().addMedia(assets);
                   useProjectStore.getState().pushHistory();
                 } else {
-                  console.warn("[Vedit] drop import produced no assets for:", paths);
+                  console.warn("[Revind] drop import produced no assets for:", paths);
                 }
               } catch (e) {
-                console.error("[Vedit] drop import threw:", e);
+                console.error("[Revind] drop import threw:", e);
               }
             }
           }
@@ -176,7 +176,7 @@ export default function App() {
           listener();
         }
       } catch (e) {
-        console.warn("[Vedit] Tauri webview drag-drop listener unavailable:", e);
+        console.warn("[Revind] Tauri webview drag-drop listener unavailable:", e);
       }
     })();
 
@@ -376,7 +376,7 @@ export default function App() {
             <Film className="w-4 h-4" />
           </div>
           <div className="leading-tight">
-            <div className="font-semibold tracking-tight text-sm text-text">Vedit</div>
+            <div className="font-semibold tracking-tight text-sm text-text">Revind</div>
             <div className="text-[10px] text-text-dim">Professional editor</div>
           </div>
         </div>

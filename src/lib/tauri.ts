@@ -190,7 +190,7 @@ export async function openProjectFile(): Promise<string | null> {
 
 export async function saveProjectFile(): Promise<string | null> {
   const selected = await save({
-    filters: [{ name: "Vedit Project", extensions: ["vproj"] }],
+    filters: [{ name: "Revind Project", extensions: ["vproj"] }],
     defaultPath: "project.vproj",
   });
   return selected;

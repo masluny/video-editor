@@ -606,5 +606,5 @@ export const useProjectStore = create<ProjectState>()(
 
 // Dev-only: expose the store for preview-driven verification (no-op in production builds).
 if (import.meta.env.DEV && typeof window !== "undefined") {
-  (window as any).__veditStore = useProjectStore;
+  (window as any).__revindStore = useProjectStore;
 }

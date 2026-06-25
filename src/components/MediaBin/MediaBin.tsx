@@ -187,7 +187,7 @@ function MediaItem({
       className="group relative rounded-lg overflow-hidden bg-bg-secondary/80 border border-border hover:border-border-hover hover:bg-bg-tertiary transition-colors cursor-pointer shadow-inset"
       draggable
       onDragStart={(e) => {
-        e.dataTransfer.setData("application/x-vedit-media", asset.id);
+        e.dataTransfer.setData("application/x-revind-media", asset.id);
         e.dataTransfer.effectAllowed = "copy";
       }}
       onClick={onClip}
