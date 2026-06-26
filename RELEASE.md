@@ -2,9 +2,9 @@
 
 Revind is a simple, professional desktop video editor for fast everyday editing: import media, trim clips, arrange a timeline, adjust color, add text, and export finished MP4 videos.
 
-## New in v0.2.4
+## New in v0.2.5
 
-- Brand-new app icon — a glossy purple mark on a dark squircle, used across the macOS/Windows/Linux bundles, the installer, and the in-app logo.
+- Updated app icon — a glossy purple two-blob mark on a dark squircle, used across the macOS/Windows/Linux bundles, the installer, and the in-app logo.
 
 ## What's Included
 
