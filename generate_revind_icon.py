@@ -9,7 +9,7 @@ Build the Revind app icon from revindlogo.png:
 Run:  python3 generate_revind_icon.py
 """
 
-from PIL import Image
+from PIL import Image, ImageFilter
 from collections import deque
 import os, subprocess, shutil
 
@@ -17,7 +17,9 @@ SRC_DIR = os.path.dirname(os.path.abspath(__file__))
 SRC_LOGO = os.path.join(os.path.dirname(SRC_DIR), "revindlogo.png")
 DST_DIR = os.path.join(SRC_DIR, "src-tauri", "icons")
 MASTER_SIZE = 1024
-SAFE_SCALE = 0.805  # squircle body / canvas, per Apple's icon grid
+SAFE_SCALE = 0.805     # squircle body / canvas, per Apple's icon grid
+RIM_THRESHOLD = 200    # treat >this on all channels as background (eats the light rim)
+EDGE_ERODE = 2         # px to shrink the tile so its edge lands on dark pixels
 
 
 def build_master(src_path, hue_shift=0.0):
@@ -30,10 +32,13 @@ def build_master(src_path, hue_shift=0.0):
     w, h = im.size
     px = im.load()
 
-    def is_white(p):
-        return p[0] > 238 and p[1] > 238 and p[2] > 238
+    def is_bg(p):
+        return (p[0] > RIM_THRESHOLD and p[1] > RIM_THRESHOLD
+                and p[2] > RIM_THRESHOLD)
 
-    # Flood-fill the white border from the four corners -> transparent.
+    # Flood-fill the white background (incl. its light anti-aliased rim) from
+    # the four corners, build an alpha mask, then erode it a couple of pixels
+    # so the squircle edge lands on dark tile pixels -> no light halo line.
     seen = bytearray(w * h)
     dq = deque([(0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)])
     while dq:
@@ -41,22 +46,22 @@ def build_master(src_path, hue_shift=0.0):
         if x < 0 or y < 0 or x >= w or y >= h:
             continue
         i = y * w + x
-        if seen[i] or not is_white(px[x, y]):
+        if seen[i] or not is_bg(px[x, y]):
             continue
         seen[i] = 1
         dq.extend([(x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)])
 
-    # Knock out the border pixels and collect the tile bbox.
-    xs, ys = [], []
+    mask = Image.new("L", (w, h), 0)
+    mp = mask.load()
     for y in range(h):
         row = y * w
         for x in range(w):
-            if seen[row + x]:
-                px[x, y] = (0, 0, 0, 0)
-            elif px[x, y][3] > 0:
-                xs.append(x)
-                ys.append(y)
-    tile = im.crop((min(xs), min(ys), max(xs) + 1, max(ys) + 1))
+            if not seen[row + x]:
+                mp[x, y] = 255
+    if EDGE_ERODE:
+        mask = mask.filter(ImageFilter.MinFilter(EDGE_ERODE * 2 + 1))
+    im.putalpha(mask)
+    tile = im.crop(im.getbbox())
 
     if hue_shift:
         tile = recolor(tile, hue_shift)
