@@ -1,5 +1,7 @@
 # Revind — Cross-platform Video Editor (Tauri + Rust)
 
+<img src="logo.png" width="128" height="128" alt="Revind logo" align="right">
+
 A simple, fast, nice-looking video editor built with Tauri 2 (Rust backend + React frontend). Designed to be easy to use while supporting all the basic and necessary professional functions.
 
 ## Features (MVP + Phase 2 scope)
