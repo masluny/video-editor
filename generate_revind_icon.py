@@ -60,8 +60,14 @@ def build_master(src_path, hue_shift=0.0):
                 mp[x, y] = 255
     if EDGE_ERODE:
         mask = mask.filter(ImageFilter.MinFilter(EDGE_ERODE * 2 + 1))
-    im.putalpha(mask)
-    tile = im.crop(im.getbbox())
+    # Black-out the RGB outside the mask so the white background can't bleed
+    # into the anti-aliased edge when the icon is downscaled (no bright halo /
+    # white spots); then take alpha from the mask.
+    rgb = Image.composite(im.convert("RGB"),
+                          Image.new("RGB", im.size, (0, 0, 0)), mask)
+    rgb.putalpha(mask)
+    im = rgb
+    tile = im.crop(mask.getbbox())
 
     if hue_shift:
         tile = recolor(tile, hue_shift)
