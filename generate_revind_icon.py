@@ -19,7 +19,9 @@ DST_DIR = os.path.join(SRC_DIR, "src-tauri", "icons")
 MASTER_SIZE = 1024
 SAFE_SCALE = 0.805     # squircle body / canvas, per Apple's icon grid
 RIM_THRESHOLD = 200    # treat >this on all channels as background (eats the light rim)
-EDGE_ERODE = 2         # px to shrink the tile so its edge lands on dark pixels
+EDGE_ERODE = 3         # px to shrink the tile so its edge lands on dark pixels
+SPOT_WHITE = 195       # min(r,g,b) above this = candidate white speck
+SPOT_DARK_CTX = 135    # ...replaced only if the local (blurred) area is darker than this
 
 
 def build_master(src_path, hue_shift=0.0):
@@ -68,6 +70,7 @@ def build_master(src_path, hue_shift=0.0):
     rgb.putalpha(mask)
     im = rgb
     tile = im.crop(mask.getbbox())
+    tile = despeckle(tile)
 
     if hue_shift:
         tile = recolor(tile, hue_shift)
@@ -82,6 +85,27 @@ def build_master(src_path, hue_shift=0.0):
     canvas.paste(tile, ((MASTER_SIZE - tile.width) // 2,
                         (MASTER_SIZE - tile.height) // 2), tile)
     return canvas
+
+
+def despeckle(img):
+    """Replace near-white specks that sit on the dark tile (e.g. stray bright
+    pixels along the squircle's bottom rim) with the local tile colour. A
+    pixel is only touched when its blurred neighbourhood is dark, so genuine
+    bright highlights on the blobs are left untouched."""
+    img = img.convert("RGBA")
+    ctx = img.convert("RGB").filter(ImageFilter.GaussianBlur(10))
+    px = img.load()
+    cp = ctx.load()
+    w, h = img.size
+    for y in range(h):
+        for x in range(w):
+            r, g, b, a = px[x, y]
+            if a < 10 or min(r, g, b) <= SPOT_WHITE:
+                continue
+            cr, cg, cb = cp[x, y]
+            if max(cr, cg, cb) < SPOT_DARK_CTX:   # surroundings are dark -> a speck
+                px[x, y] = (cr, cg, cb, a)
+    return img
 
 
 def recolor(img, hue_shift):
