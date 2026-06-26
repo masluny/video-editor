@@ -2887,7 +2887,7 @@ dependencies = [
 
 [[package]]
 name = "revind"
-version = "0.2.5"
+version = "0.2.8"
 dependencies = [
  "anyhow",
  "once_cell",
