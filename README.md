@@ -79,8 +79,8 @@ gh workflow run "Build Revind"
 
 Publish a GitHub Release:
 ```bash
-git tag v0.2.3
-git push origin v0.2.3
+git tag v0.2.4
+git push origin v0.2.4
 ```
 
 Tagged releases use `RELEASE.md` as the release body and attach native installers/packages from all three platforms.
