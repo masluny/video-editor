@@ -4,6 +4,8 @@
 
 A simple, fast, nice-looking video editor built with Tauri 2 (Rust backend + React frontend). Designed to be easy to use while supporting all the basic and necessary professional functions.
 
+<br clear="all">
+
 ## Features (MVP + Phase 2 scope)
 
 - Import video/audio via drag-drop or file picker
