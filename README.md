@@ -6,28 +6,24 @@ A simple, fast, nice-looking video editor built with Tauri 2 (Rust backend + Rea
 
 <br clear="all">
 
-## Features (MVP + Phase 2 scope)
+## Features (v2)
 
-- Import video/audio via drag-drop or file picker
-- Multi-track timeline (unlimited video + audio tracks)
-- Trim, split, ripple-delete, move clips with snapping
-- Playhead scrubbing + smooth playback preview (native `<video>`)
-- Per-clip transforms (position, scale, rotation)
-- Color correction (brightness, contrast, saturation, gamma, hue, blur, opacity)
-- Opacity, speed (0.25x–4x), volume, mute, fades
-- Text/title overlays (position, size, color, font style)
-- Keyframe-ready data model (UI for basic keyframes coming next)
-- Full multi-track export to MP4 (H.264 + AAC) via bundled ffmpeg
-- Project save/load (.vproj JSON)
-- Undo/redo + autosync with backend
-- Keyboard-first: Space (play/pause), S (split), Del/Backspace (delete), Ctrl/Cmd+Z/Y (undo/redo)
+- **Import** video, audio and images by drag-and-drop (files or whole folders) or the file picker. Formats the webview can't play (MKV, AVI, MPEG-2, …) get a preview proxy automatically.
+- **Multi-track timeline**: any number of video and audio tracks; move, trim, split, ripple-delete, blade tool, marquee selection, Alt-drag to duplicate, copy/paste, snapping to clips, playhead, markers and range.
+- **Preview == export**: the real-time compositor and the ffmpeg export share the same geometry, colour and fade maths, and titles are rasterised once and overlaid identically in both.
+- **Per-clip controls**: position, scale, rotation, flip, fit/fill/stretch, crop, opacity, fades, colour (with one-click looks), volume, speed (0.1×–16×, pitch kept), detach audio.
+- **Titles** with presets (headline, lower third, subtitle, …), fonts, outline, shadow and background box; drag them straight on the canvas.
+- **Remove silences** (new): finds pauses in a clip's audio and cuts them out in one step — instant jump cuts for talking-head videos and voice-overs.
+- **Source viewer**: preview any library item and mark in/out before adding it.
+- **Export** to MP4/MOV (H.264, HEVC, ProRes), WebM, GIF, MP3/M4A/WAV, or a single PNG frame; any resolution/frame rate, loudness normalisation, export just the in/out range, live progress with cancel.
+- **Projects**: `.vproj` JSON (v1 projects open and migrate automatically), autosave with crash recovery, missing-media detection and relinking, unlimited undo/redo.
 
 ## Tech
 
-- **Frontend**: React 19 + TypeScript + Vite + Tailwind + Zustand + @dnd-kit
-- **Backend**: Rust + Tauri 2
-- **Video engine**: ffmpeg + ffprobe (sidecar binaries)
-- **Export**: Single-pass filter_complex pipeline (trim, speed, eq, scale, crop, fade, overlay text, concat, amix)
+- **Frontend**: React 19 + TypeScript + Vite + Tailwind + Zustand (Immer-based document store with undo history)
+- **Backend**: Rust + Tauri 2 (stateless: the frontend owns the document and sends it with each job)
+- **Media engine**: ffmpeg + ffprobe sidecars (probe, thumbnails, waveforms, proxies, silence detection, export)
+- **Tests**: `npm test` (timeline model & store) and `cargo test` in `src-tauri` (export graphs rendered with real ffmpeg)
 
 ## Run (Development)
 
@@ -54,9 +50,9 @@ A simple, fast, nice-looking video editor built with Tauri 2 (Rust backend + Rea
 
 ## Exporting
 
-- Click **Export Movie** (top right)
-- Choose output `.mp4`
-- Watch live progress (powered by Rust sidecar + event stream)
+- Click **Export** (top right) or press ⌘/Ctrl+E
+- Pick a format and quality, then choose where to save
+- Watch live progress; the file is written next to the destination and only moved into place when complete
 
 ## Building for Release Locally
 
@@ -87,28 +83,31 @@ Tagged releases use `RELEASE.md` as the release body and attach native installer
 
 ## Keyboard Shortcuts
 
-| Key              | Action                  |
-|------------------|-------------------------|
-| Space            | Play / Pause            |
-| S                | Split clip at playhead  |
-| Delete / ⌫       | Delete selected clip    |
-| Ctrl/Cmd + Z     | Undo                    |
-| Ctrl/Cmd + Shift+Z / Y | Redo             |
-| Drag from bin    | Add clip to track       |
+Press **?** in the app for the full list. The essentials:
+
+| Key | Action |
+|---|---|
+| Space · J / K / L | Play/pause · shuttle reverse / stop / forward |
+| ← / → · ↑ / ↓ | Step a frame · jump between edit points |
+| S (or ⌘B) | Split at playhead |
+| ⌫ · ⇧⌫ | Delete · ripple delete |
+| V / B | Select / blade tool |
+| M · I / O | Add marker · set range in / out |
+| ⌘C / ⌘X / ⌘V / ⌘D | Copy / cut / paste / duplicate |
+| ⌘Z / ⇧⌘Z | Undo / redo |
+| ⌘S · ⌘E · ⌘I | Save · export · import |
 
 ## Project File
 
-Saved as `.vproj` (JSON). Contains full timeline, clips, transforms, color grades, text overlays, and references to media paths (absolute for now).
+Saved as `.vproj` (JSON). Contains full timeline, clips, transforms, color grades, text overlays, and references to media paths (absolute paths; missing files can be relinked from the library).
 
-## Roadmap (after this milestone)
+## Roadmap
 
-- Real keyframe editor UI
-- Transitions (xfade, fade to black)
-- Better multi-track audio mixing preview
-- Proxy generation for 4K/8K performance
-- LUTs, blur, vignette effects
+- Keyframe editor
+- Transitions (cross-dissolve, dip to black)
+- Hardware encoders beyond VideoToolbox (NVENC / QSV / AMF)
+- LUTs and more effects
 - SRT subtitles
-- Hardware-accelerated encode flags (NVENC / VideoToolbox)
 
 ## License
 

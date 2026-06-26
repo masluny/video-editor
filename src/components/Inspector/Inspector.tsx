@@ -1,411 +1,586 @@
 import * as React from "react";
-import { useProjectStore } from "../../stores/projectStore";
-import { Button } from "../ui/Button";
-import { Input } from "../ui/Input";
-import { Slider } from "../ui/Slider";
-import { Checkbox } from "../ui/Checkbox";
-import { Clock3, Info, Move, Music, PanelRight, SlidersHorizontal, Trash2, Type } from "lucide-react";
-import { getClipDuration } from "../../lib/utils";
+import {
+  AlignCenter,
+  AlignLeft,
+  AlignRight,
+  ChevronDown,
+  Film,
+  FlipHorizontal2,
+  FlipVertical2,
+  Image as ImageIcon,
+  Italic,
+  Music,
+  RotateCcw,
+  SlidersHorizontal,
+  Type,
+  Unlink,
+  Wand2,
+} from "lucide-react";
+import type { Clip, ColorAdjust, MediaAsset, TitleStyle, Track } from "../../lib/types";
+import type { Draft } from "immer";
+import { commitSoon, findClip, store, useStore } from "../../store/store";
+import { clipDuration, clipEnd, EPS, isUnbounded, MIN_CLIP, speedOf } from "../../lib/timeline";
+import { defaultColor, defaultCrop, defaultTransform, TITLE_FONTS } from "../../lib/defaults";
+import { NumberField, SliderField } from "../ui/NumberField";
+import { Button, ColorInput, FieldRow, IconButton, Segmented, Select, Switch } from "../ui/controls";
+import { ProjectSettingsForm } from "./ProjectSettingsForm";
+import { bytes, duration as fmtDuration, fpsLabel, seconds, timecode } from "../../lib/format";
+import { projectDuration } from "../../lib/timeline";
+import { cn } from "../../lib/cn";
+import { useLocal } from "../../lib/useLocal";
 
 export function Inspector() {
-  const { project, selectedClipId, selectedTrackId, selectedClipIds, updateClip, removeClipAndCleanupMedia, setTrackVolume, pushHistory } = useProjectStore();
-  const multiCount = selectedClipIds.length;
-
-  // Property edits (sliders, text, color) are continuous; we record a single undo
-  // snapshot when the interaction ends (pointer up / focus leaves a field).
-  const dirty = React.useRef(false);
-  const commitIfDirty = React.useCallback(() => {
-    if (dirty.current) {
-      dirty.current = false;
-      pushHistory();
-    }
-  }, [pushHistory]);
-
-  const active = React.useMemo(() => {
-    if (!selectedClipId || !selectedTrackId) return null;
-    const track = project.tracks.find((t) => t.id === selectedTrackId);
-    const clip = track?.clips.find((c) => c.id === selectedClipId);
-    const asset = project.media.find((m) => m.id === clip?.media_id);
-    return track && clip && asset ? { track, clip, asset } : null;
-  }, [selectedClipId, selectedTrackId, project.tracks, project.media]);
-
-  if (!active) {
-    return (
-      <div className="workspace-panel flex flex-col h-full select-none">
-        <div className="panel-header">
-          <div className="flex items-center gap-2 min-w-0">
-            <PanelRight className="w-3.5 h-3.5 text-accent" />
-            <span>Inspector</span>
-          </div>
-        </div>
-        <div className="flex-1 flex flex-col justify-center items-center text-text-dim text-center p-6">
-          <div className="w-14 h-14 rounded-xl bg-bg-secondary border border-border flex items-center justify-center mb-4">
-            <Info className="w-5 h-5 opacity-60" />
-          </div>
-          <p className="text-sm font-semibold text-text-muted">No selection</p>
-          <p className="text-xs mt-1.5 max-w-[220px] leading-relaxed">Select a clip to adjust trim, transform, color, audio, and titles.</p>
-        </div>
-      </div>
-    );
-  }
-
-  const { track, clip, asset } = active;
-
-  const handleUpdate = (patch: any) => {
-    dirty.current = true;
-    updateClip(track.id, clip.id, patch);
-  };
-
-  const handleTextUpdate = (textPatch: any) => {
-    const currentText = clip.text || {
-      text: "New Text Overlay",
-      x: 35,
-      y: 40,
-      font_size: 48,
-      color: "#ffffff",
-      font_family: "sans-serif",
-      bold: false,
-      italic: false,
-    };
-    handleUpdate({ text: { ...currentText, ...textPatch } });
-  };
-  const color = normalizeColor(clip.color);
-  const updateColor = (patch: Partial<typeof color>) => {
-    handleUpdate({ color: { ...color, ...patch } });
-  };
+  const selection = useStore((s) => s.selection);
+  const project = useStore((s) => s.project);
+  const hit = selection.length === 1 ? findClip(project, selection[0]) : null;
+  const media = hit?.clip.mediaId ? project.media.find((m) => m.id === hit.clip.mediaId) : undefined;
 
   return (
-    <div
-      className="workspace-panel flex flex-col h-full overflow-y-auto select-none"
-      onPointerUp={commitIfDirty}
-      onBlur={commitIfDirty}
-    >
-      <div className="panel-header">
-        <div className="flex items-center gap-2 min-w-0">
-          <PanelRight className="w-3.5 h-3.5 text-accent shrink-0" />
-          <span className="truncate">
-            Inspector
-            {multiCount > 1 && <span className="ml-2 text-accent normal-case tracking-normal">· {multiCount} selected</span>}
-          </span>
-        </div>
+    <div className="panel flex h-full min-w-0 flex-col">
+      <div className="flex h-10 shrink-0 items-center gap-2 border-b border-line px-3">
+        <SlidersHorizontal className="h-3.5 w-3.5 text-ink-dim" />
+        <span className="panel-title">Inspector</span>
       </div>
-
-      <div className="p-3 space-y-3">
-        <div className="soft-card p-3.5">
-          <div className="flex items-start gap-3">
-            <div className={`w-9 h-9 rounded-lg border flex items-center justify-center text-xs font-bold shrink-0 ${track.kind === "video" ? "bg-accent/15 border-accent/25 text-accent" : "bg-emerald-500/15 border-emerald-400/25 text-emerald-300"}`}>
-              {track.kind === "video" ? "V" : "A"}
-            </div>
-            <div className="min-w-0 flex-1">
-              <p className="text-sm font-semibold text-text truncate leading-5" title={asset.name}>
-                {asset.name}
-              </p>
-              <p className="text-[11px] text-text-dim truncate mt-0.5" title={asset.path}>
-                {track.name} · {asset.path.split("/").pop()}
-              </p>
-            </div>
-          </div>
-          <div className="grid grid-cols-3 gap-3 mt-4 pt-3 border-t border-border/70">
-            <InspectorMetric label="Length" value={`${getClipDuration(clip).toFixed(2)}s`} />
-            <InspectorMetric label="Start" value={`${clip.timeline_start.toFixed(2)}s`} />
-            <InspectorMetric label="Speed" value={`${clip.speed.toFixed(2)}x`} />
-          </div>
-          <Button
-            variant="danger"
-            size="md"
-            className="w-full h-9 mt-4"
-            onClick={() => {
-              removeClipAndCleanupMedia(track.id, clip.id);
-              pushHistory();
-            }}
-            title="Remove selected clip"
-          >
-            <Trash2 className="w-3.5 h-3.5 shrink-0" />
-            <span>Remove selected clip</span>
-          </Button>
-        </div>
-
-        <InspectorSection title="Trim" icon={<Clock3 className="w-3.5 h-3.5" />}>
-          <Slider
-            label="In"
-            min={0}
-            max={Math.max((asset.durationSec || 0) || 10000, clip.source_out - 0.01)}
-            step={0.01}
-            value={clip.source_in}
-            onChange={(v) => {
-              const maxIn = clip.source_out - 0.02;
-              handleUpdate({ source_in: Math.max(0, Math.min(v, maxIn)) });
-            }}
-          />
-          <Slider
-            label="Out"
-            min={Math.min(clip.source_in + 0.02, asset.durationSec || 10000)}
-            max={(asset.durationSec || 0) || 10000}
-            step={0.01}
-            value={clip.source_out}
-            onChange={(v) => {
-              const minOut = clip.source_in + 0.02;
-              const maxOut = asset.durationSec && asset.durationSec > 0 ? asset.durationSec : 10000;
-              handleUpdate({ source_out: Math.max(minOut, Math.min(v, maxOut)) });
-            }}
-          />
-          <div className="flex items-center justify-between text-[11px] text-text-dim pt-1">
-            <span>Source range</span>
-            <span className="font-mono text-text-muted">{clip.source_in.toFixed(2)}s - {clip.source_out.toFixed(2)}s</span>
-          </div>
-        </InspectorSection>
-
-        {track.kind === "video" && (
-          <InspectorSection title="Color" icon={<SlidersHorizontal className="w-3.5 h-3.5" />}>
-            <Slider
-              label="Bright"
-              min={-1}
-              max={1}
-              step={0.05}
-              value={color.brightness}
-              onChange={(v) => updateColor({ brightness: v })}
-            />
-            <Slider
-              label="Contrast"
-              min={0}
-              max={2}
-              step={0.05}
-              value={color.contrast}
-              onChange={(v) => updateColor({ contrast: v })}
-            />
-            <Slider
-              label="Saturate"
-              min={0}
-              max={2}
-              step={0.05}
-              value={color.saturation}
-              onChange={(v) => updateColor({ saturation: v })}
-            />
-            <Slider
-              label="Gamma"
-              min={0.25}
-              max={3}
-              step={0.05}
-              value={color.gamma}
-              onChange={(v) => updateColor({ gamma: v })}
-            />
-            <Slider
-              label="Hue"
-              min={-180}
-              max={180}
-              step={1}
-              value={color.hue}
-              onChange={(v) => updateColor({ hue: v })}
-            />
-            <Slider
-              label="Blur"
-              min={0}
-              max={12}
-              step={0.25}
-              value={color.blur}
-              onChange={(v) => updateColor({ blur: v })}
-            />
-            <Slider
-              label="Opacity"
-              min={0}
-              max={1}
-              step={0.05}
-              value={clip.opacity}
-              onChange={(v) => handleUpdate({ opacity: v })}
-            />
-            <Button
-              variant="ghost"
-              size="sm"
-              className="w-full h-8 mt-1"
-              onClick={() => {
-                handleUpdate({
-                  opacity: 1,
-                  color: { brightness: 0, contrast: 1, saturation: 1, gamma: 1, hue: 0, blur: 0 },
-                });
-              }}
-            >
-              Reset color
-            </Button>
-          </InspectorSection>
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {hit ? (
+          <ClipInspector key={hit.clip.id} clip={hit.clip} track={hit.track} media={media} />
+        ) : selection.length > 1 ? (
+          <MultiInspector ids={selection} />
+        ) : (
+          <ProjectInspector />
         )}
-
-        {track.kind === "video" && (
-          <InspectorSection title="Transform" icon={<Move className="w-3.5 h-3.5" />}>
-            <Slider
-              label="X"
-              min={-1000}
-              max={1000}
-              step={5}
-              value={clip.transform.x}
-              onChange={(v) => handleUpdate({ transform: { ...clip.transform, x: v } })}
-            />
-            <Slider
-              label="Y"
-              min={-1000}
-              max={1000}
-              step={5}
-              value={clip.transform.y}
-              onChange={(v) => handleUpdate({ transform: { ...clip.transform, y: v } })}
-            />
-            <Slider
-              label="Scale"
-              min={0.1}
-              max={4}
-              step={0.05}
-              value={clip.transform.scale}
-              onChange={(v) => handleUpdate({ transform: { ...clip.transform, scale: v } })}
-            />
-            <Slider
-              label="Rotate"
-              min={-180}
-              max={180}
-              step={1}
-              value={clip.transform.rotation}
-              onChange={(v) => handleUpdate({ transform: { ...clip.transform, rotation: v } })}
-            />
-          </InspectorSection>
-        )}
-
-        {track.kind === "video" && (
-          <InspectorSection title="Title" icon={<Type className="w-3.5 h-3.5" />}>
-            <div className="space-y-3">
-              <Checkbox
-                label="Text overlay"
-                checked={!!clip.text}
-                onChange={(e) => {
-                  if (e.target.checked) {
-                    handleUpdate({
-                      text: {
-                        text: "Title Text Overlay",
-                        x: 35,
-                        y: 40,
-                        font_size: 48,
-                        color: "#ffffff",
-                        font_family: "sans-serif",
-                        bold: false,
-                        italic: false,
-                      },
-                    });
-                  } else {
-                    handleUpdate({ text: undefined });
-                  }
-                }}
-              />
-              {clip.text && (
-                <div className="space-y-3 pt-1">
-                  <div className="flex flex-col gap-1">
-                    <span className="text-[11px] text-text-muted">Content</span>
-                    <Input
-                      value={clip.text.text}
-                      onChange={(e) => handleTextUpdate({ text: e.target.value })}
-                      placeholder="Title content"
-                    />
-                  </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div className="flex flex-col gap-1">
-                      <span className="text-[11px] text-text-muted">Size</span>
-                      <Input
-                        type="number"
-                        min="8"
-                        max="200"
-                        value={clip.text.font_size}
-                        onChange={(e) => handleTextUpdate({ font_size: parseInt(e.target.value) || 24 })}
-                      />
-                    </div>
-                    <div className="flex flex-col gap-1">
-                      <span className="text-[11px] text-text-muted">Color</span>
-                      <div className="flex gap-2 items-center min-w-0">
-                        <input
-                          type="color"
-                          value={clip.text.color}
-                          onChange={(e) => handleTextUpdate({ color: e.target.value })}
-                          className="w-8 h-8 bg-bg-secondary border border-border p-0 cursor-pointer rounded-md shrink-0"
-                        />
-                        <span className="text-[11px] text-text font-mono uppercase truncate">{clip.text.color}</span>
-                      </div>
-                    </div>
-                  </div>
-                  <Slider
-                    label="Text X"
-                    min={0}
-                    max={100}
-                    step={1}
-                    value={clip.text.x}
-                    onChange={(v) => handleTextUpdate({ x: v })}
-                  />
-                  <Slider
-                    label="Text Y"
-                    min={0}
-                    max={100}
-                    step={1}
-                    value={clip.text.y}
-                    onChange={(v) => handleTextUpdate({ y: v })}
-                  />
-                </div>
-              )}
-            </div>
-          </InspectorSection>
-        )}
-
-        <InspectorSection title="Playback" icon={<Music className="w-3.5 h-3.5" />}>
-          <Slider
-            label="Track"
-            min={0}
-            max={2}
-            step={0.05}
-            value={track.volume ?? 1}
-            onChange={(v) => { dirty.current = true; setTrackVolume(track.id, v); }}
-          />
-          <Slider
-            label="Clip"
-            min={0}
-            max={2}
-            step={0.05}
-            value={clip.volume}
-            onChange={(v) => handleUpdate({ volume: v })}
-          />
-          <Slider
-            label="Speed"
-            min={0.25}
-            max={4}
-            step={0.05}
-            value={clip.speed}
-            onChange={(v) => handleUpdate({ speed: v })}
-          />
-        </InspectorSection>
       </div>
     </div>
   );
 }
 
-function InspectorSection({ title, icon, children }: { title: string; icon: React.ReactNode; children: React.ReactNode }) {
+// ------------------------------------------------------------------ sections
+
+function Section({ id, title, children, actions }: { id: string; title: string; children: React.ReactNode; actions?: React.ReactNode }) {
+  const [open, setOpen] = useLocal(`revind.section.${id}`, true);
   return (
-    <section className="soft-card overflow-hidden">
-      <div className="h-10 px-3.5 flex items-center gap-2 border-b border-border/70">
-        <span className="text-accent shrink-0">{icon}</span>
-        <h3 className="text-xs font-semibold text-text">{title}</h3>
+    <section className="border-b border-line-soft">
+      <div className="flex h-8 items-center gap-1 px-3">
+        <button className="flex flex-1 items-center gap-1.5 text-left" onClick={() => setOpen(!open)}>
+          <ChevronDown className={cn("h-3 w-3 text-ink-dim transition-transform", !open && "-rotate-90")} />
+          <span className="panel-title">{title}</span>
+        </button>
+        {actions}
       </div>
-      <div className="p-3.5 space-y-2.5">{children}</div>
+      {open && <div className="space-y-1.5 px-3 pb-3">{children}</div>}
     </section>
   );
 }
 
-function InspectorMetric({ label, value }: { label: string; value: string }) {
+function ResetButton({ onClick, title = "Reset" }: { onClick: () => void; title?: string }) {
   return (
-    <div className="min-w-0">
-      <p className="text-[10px] uppercase tracking-[0.08em] text-text-dim truncate">{label}</p>
-      <p className="text-[12px] font-mono text-text-muted truncate mt-0.5" title={value}>{value}</p>
+    <IconButton size="xs" title={title} onClick={onClick}>
+      <RotateCcw className="h-3 w-3" />
+    </IconButton>
+  );
+}
+
+// ------------------------------------------------------------------- project
+
+function ProjectInspector() {
+  const project = useStore((s) => s.project);
+  const selectedMedia = useStore((s) => (s.selectedMedia ? s.project.media.find((m) => m.id === s.selectedMedia) : undefined));
+  const clips = project.tracks.reduce((n, t) => n + t.clips.length, 0);
+  return (
+    <>
+      <Section id="project" title="Project">
+        <FieldRow label="Name">
+          <input
+            key={project.name}
+            defaultValue={project.name}
+            className="field"
+            onBlur={(e) => e.target.value.trim() !== project.name && store().renameProject(e.target.value)}
+            onKeyDown={(e) => {
+              e.stopPropagation();
+              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+            }}
+          />
+        </FieldRow>
+        <ProjectSettingsForm />
+        <div className="grid grid-cols-3 gap-2 pt-2">
+          <Stat label="Length" value={fmtDuration(projectDuration(project))} />
+          <Stat label="Clips" value={String(clips)} />
+          <Stat label="Media" value={String(project.media.length)} />
+        </div>
+      </Section>
+      {selectedMedia && <MediaInfo media={selectedMedia} />}
+      <p className="px-4 py-4 text-xs leading-relaxed text-ink-dim">Select a clip in the timeline to edit its position, colour, audio, speed and more.</p>
+    </>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md border border-line bg-bg px-2 py-1.5">
+      <div className="text-2xs text-ink-dim">{label}</div>
+      <div className="font-mono text-sm text-ink tabular">{value}</div>
     </div>
   );
 }
 
-function normalizeColor(color?: Partial<{ brightness: number; contrast: number; saturation: number; gamma: number; hue: number; blur: number }>) {
-  return {
-    brightness: color?.brightness ?? 0,
-    contrast: color?.contrast ?? 1,
-    saturation: color?.saturation ?? 1,
-    gamma: color?.gamma ?? 1,
-    hue: color?.hue ?? 0,
-    blur: color?.blur ?? 0,
+function MediaInfo({ media }: { media: MediaAsset }) {
+  const rows: [string, string][] = [
+    ["File", media.name],
+    ["Type", media.kind],
+    ...(media.kind !== "image" ? ([["Duration", seconds(media.duration)]] as [string, string][]) : []),
+    ...(media.width ? ([["Size", `${media.width}×${media.height}`]] as [string, string][]) : []),
+    ...(media.fps ? ([["Frame rate", `${fpsLabel(+media.fps.toFixed(3))} fps`]] as [string, string][]) : []),
+    ...(media.videoCodec ? ([["Video", media.videoCodec]] as [string, string][]) : []),
+    ...(media.audioCodec ? ([["Audio", media.audioCodec]] as [string, string][]) : []),
+    ...(media.size ? ([["File size", bytes(media.size)]] as [string, string][]) : []),
+  ];
+  return (
+    <Section id="media" title="Media">
+      {rows.map(([k, v]) => (
+        <div key={k} className="flex gap-3 text-xs">
+          <span className="w-[76px] shrink-0 text-ink-dim">{k}</span>
+          <span className="min-w-0 flex-1 truncate text-ink-muted" title={v}>
+            {v}
+          </span>
+        </div>
+      ))}
+      <div className="flex gap-2 pt-1">
+        <Button size="sm" onClick={() => store().placeMedia(media.id)}>
+          Add at playhead
+        </Button>
+        <Button size="sm" variant="ghost" onClick={() => store().openDialog({ kind: "source", mediaId: media.id })}>
+          Preview…
+        </Button>
+      </div>
+    </Section>
+  );
+}
+
+// --------------------------------------------------------------- multi-clip
+
+function MultiInspector({ ids }: { ids: string[] }) {
+  const project = useStore((s) => s.project);
+  const clips = ids.map((id) => findClip(project, id)?.clip).filter((c): c is Clip => !!c);
+  if (!clips.length) return null;
+  const first = clips[0];
+  const upd = (fn: (c: Draft<Clip>) => void, live: boolean) => store().updateClips(ids, fn, { live });
+  const commit = () => store().commit();
+  return (
+    <>
+      <div className="px-3 py-3 text-sm text-ink">{clips.length} clips selected</div>
+      <Section id="multi" title="Shared">
+        <SliderField label="Opacity" value={first.opacity} min={0} max={1} step={0.01} displayScale={100} suffix="%" defaultValue={1} onChange={(v, o) => upd((c) => void (c.opacity = v), o.live)} onCommit={commit} />
+        <SliderField label="Volume" value={first.volume} min={0} max={2} step={0.01} displayScale={100} suffix="%" defaultValue={1} onChange={(v, o) => upd((c) => void (c.volume = v), o.live)} onCommit={commit} />
+        <SliderField label="Fade in" value={first.fadeIn} min={0} max={10} sliderMax={3} step={0.05} suffix="s" defaultValue={0} onChange={(v, o) => upd((c) => void (c.fadeIn = Math.min(v, clipDuration(c as Clip) - c.fadeOut)), o.live)} onCommit={commit} />
+        <SliderField label="Fade out" value={first.fadeOut} min={0} max={10} sliderMax={3} step={0.05} suffix="s" defaultValue={0} onChange={(v, o) => upd((c) => void (c.fadeOut = Math.min(v, clipDuration(c as Clip) - c.fadeIn)), o.live)} onCommit={commit} />
+        <div className="flex gap-2 pt-1">
+          <Button size="sm" onClick={() => upd((c) => void (c.muted = !first.muted), false)}>
+            {first.muted ? "Unmute all" : "Mute all"}
+          </Button>
+          <Button size="sm" variant="danger" onClick={() => store().deleteClips(ids, false)}>
+            Delete
+          </Button>
+        </div>
+      </Section>
+    </>
+  );
+}
+
+// --------------------------------------------------------------- single clip
+
+function ClipInspector({ clip, track, media }: { clip: Clip; track: Track; media?: MediaAsset }) {
+  const id = clip.id;
+  const fps = useStore((s) => s.project.settings.fps);
+  const locked = track.locked;
+  const isTitle = clip.type === "title";
+  const visual = track.kind === "video" && (isTitle || (!!media && media.hasVideo));
+  const hasAudio = !isTitle && !!media?.hasAudio && media.kind !== "image";
+  const upd = (fn: (c: Draft<Clip>) => void, live = false) => store().updateClip(id, fn, { live });
+  const num = (get: (c: Clip) => number, set: (c: Draft<Clip>, v: number) => void) => ({
+    value: get(clip),
+    onChange: (v: number, o: { live: boolean }) => upd((c) => set(c, v), o.live),
+    onCommit: () => store().commit(),
+  });
+  const Icon = isTitle ? Type : track.kind === "audio" ? Music : media?.kind === "image" ? ImageIcon : Film;
+  const dur = clipDuration(clip);
+
+  return (
+    <div className={cn(locked && "pointer-events-none opacity-60")}>
+      <div className="flex items-center gap-2.5 border-b border-line-soft px-3 py-2.5">
+        <div className={cn("flex h-8 w-8 shrink-0 items-center justify-center rounded-lg", isTitle ? "bg-title/15 text-title" : track.kind === "audio" ? "bg-audio/15 text-audio" : "bg-video/15 text-video")}>
+          <Icon className="h-4 w-4" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <input
+            key={clip.label ?? ""}
+            defaultValue={clip.label ?? ""}
+            placeholder={isTitle ? clip.title?.text.split("\n")[0] || "Title" : media?.name ?? "Clip"}
+            className="w-full truncate bg-transparent text-sm font-medium text-ink outline-none placeholder:text-ink focus:placeholder:text-ink-faint"
+            title="Rename clip"
+            onBlur={(e) => {
+              const v = e.target.value.trim() || undefined;
+              if (v !== clip.label) upd((c) => void (c.label = v));
+            }}
+            onKeyDown={(e) => {
+              e.stopPropagation();
+              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+            }}
+          />
+          <div className="font-mono text-2xs text-ink-dim tabular">
+            {timecode(clip.start, fps)} → {timecode(clipEnd(clip), fps)} · {seconds(dur)}
+          </div>
+        </div>
+      </div>
+      {locked && <div className="bg-danger/10 px-3 py-1.5 text-xs text-danger">Track {track.name} is locked.</div>}
+
+      {isTitle && clip.title && <TitleSection clip={clip} />}
+
+      {isUnbounded(clip, media) && (
+        <Section id="timing" title="Timing">
+          <FieldRow label="Duration">
+            <NumberField
+              value={dur}
+              min={MIN_CLIP}
+              max={3600}
+              step={0.1}
+              suffix="s"
+              className="flex-1"
+              // Always live: the commit settles overlaps with neighbours in one undo step.
+              onChange={(v) => upd((c) => void (c.out = c.in + Math.max(MIN_CLIP, v) * speedOf(c as Clip)), true)}
+              onCommit={() => store().settleClips([id])}
+            />
+          </FieldRow>
+        </Section>
+      )}
+
+      {visual && (
+        <Section
+          id="transform"
+          title="Transform"
+          actions={<ResetButton title="Reset transform" onClick={() => upd((c) => void (c.transform = defaultTransform()))} />}
+        >
+          {!isTitle && (
+            <FieldRow label="Fit">
+              <Segmented
+                className="flex-1"
+                value={clip.transform.fit}
+                onChange={(fit) => upd((c) => void (c.transform.fit = fit))}
+                options={[
+                  { value: "contain", label: "Fit", title: "Show the whole picture (letterbox)" },
+                  { value: "cover", label: "Fill", title: "Fill the frame (crop overflow)" },
+                  { value: "stretch", label: "Stretch", title: "Stretch to the frame" },
+                ]}
+              />
+            </FieldRow>
+          )}
+          <FieldRow label="Position">
+            <NumberField label="X" {...num((c) => c.transform.x, (c, v) => void (c.transform.x = v))} suffix="px" className="flex-1" />
+            <NumberField label="Y" {...num((c) => c.transform.y, (c, v) => void (c.transform.y = v))} suffix="px" className="flex-1" />
+          </FieldRow>
+          <SliderField label="Scale" {...num((c) => c.transform.scale, (c, v) => void (c.transform.scale = v))} min={0.05} max={10} sliderMin={0.1} sliderMax={3} step={0.01} displayScale={100} suffix="%" defaultValue={1} />
+          <SliderField label="Rotation" {...num((c) => c.transform.rotation, (c, v) => void (c.transform.rotation = v))} min={-3600} max={3600} sliderMin={-180} sliderMax={180} step={1} suffix="°" defaultValue={0} />
+          <FieldRow label="Flip">
+            <IconButton title="Flip horizontally" active={clip.transform.flipH} onClick={() => upd((c) => void (c.transform.flipH = !c.transform.flipH))}>
+              <FlipHorizontal2 className="h-4 w-4" />
+            </IconButton>
+            <IconButton title="Flip vertically" active={clip.transform.flipV} onClick={() => upd((c) => void (c.transform.flipV = !c.transform.flipV))}>
+              <FlipVertical2 className="h-4 w-4" />
+            </IconButton>
+          </FieldRow>
+        </Section>
+      )}
+
+      {visual && !isTitle && (
+        <Section id="crop" title="Crop" actions={<ResetButton title="Reset crop" onClick={() => upd((c) => void (c.crop = defaultCrop()))} />}>
+          <div className="grid grid-cols-2 gap-1.5">
+            {(["top", "bottom", "left", "right"] as const).map((side) => (
+              <NumberField
+                key={side}
+                label={side[0].toUpperCase() + side.slice(1)}
+                {...num((c) => c.crop[side], (c, v) => void (c.crop[side] = v))}
+                min={0}
+                max={0.95}
+                step={0.005}
+                displayScale={100}
+                precision={1}
+                suffix="%"
+              />
+            ))}
+          </div>
+        </Section>
+      )}
+
+      {visual && (
+        <Section id="compositing" title="Opacity & fades">
+          <SliderField label="Opacity" {...num((c) => c.opacity, (c, v) => void (c.opacity = v))} min={0} max={1} step={0.01} displayScale={100} suffix="%" defaultValue={1} />
+          <FadeFields clip={clip} upd={upd} />
+        </Section>
+      )}
+
+      {visual && !isTitle && <ColorSection clip={clip} upd={upd} />}
+
+      {hasAudio && (
+        <Section id="audio" title="Audio">
+          <SliderField label="Volume" {...num((c) => c.volume, (c, v) => void (c.volume = v))} min={0} max={2} step={0.01} displayScale={100} suffix="%" defaultValue={1} />
+          {!visual && <FadeFields clip={clip} upd={upd} />}
+          <FieldRow label="Mute">
+            <Switch checked={clip.muted} onChange={(m) => upd((c) => void (c.muted = m))} />
+          </FieldRow>
+          <div className="flex flex-wrap gap-2 pt-1">
+            <Button size="sm" onClick={() => store().openDialog({ kind: "silence", clipId: id })} title="Find pauses in the audio and cut them out">
+              <Wand2 className="h-3.5 w-3.5 text-accent-ink" /> Remove silences…
+            </Button>
+            {track.kind === "video" && (
+              <Button size="sm" variant="ghost" disabled={clip.muted} onClick={() => store().detachAudio(id)} title="Move this clip's sound to its own audio track">
+                <Unlink className="h-3.5 w-3.5" /> Detach
+              </Button>
+            )}
+          </div>
+        </Section>
+      )}
+
+      {!isTitle && media && media.kind !== "image" && <SpeedSection clip={clip} />}
+
+      {media && <MediaInfo media={media} />}
+    </div>
+  );
+}
+
+function FadeFields({ clip, upd }: { clip: Clip; upd: (fn: (c: Draft<Clip>) => void, live?: boolean) => void }) {
+  const d = clipDuration(clip);
+  return (
+    <>
+      <SliderField
+        label="Fade in"
+        value={clip.fadeIn}
+        min={0}
+        max={Math.max(0, d - clip.fadeOut)}
+        sliderMax={Math.min(3, Math.max(0.1, d - clip.fadeOut))}
+        step={0.05}
+        suffix="s"
+        defaultValue={0}
+        onChange={(v, o) => upd((c) => void (c.fadeIn = v), o.live)}
+        onCommit={() => store().commit()}
+      />
+      <SliderField
+        label="Fade out"
+        value={clip.fadeOut}
+        min={0}
+        max={Math.max(0, d - clip.fadeIn)}
+        sliderMax={Math.min(3, Math.max(0.1, d - clip.fadeIn))}
+        step={0.05}
+        suffix="s"
+        defaultValue={0}
+        onChange={(v, o) => upd((c) => void (c.fadeOut = v), o.live)}
+        onCommit={() => store().commit()}
+      />
+    </>
+  );
+}
+
+const LOOKS: { name: string; color: Partial<ColorAdjust> }[] = [
+  { name: "None", color: {} },
+  { name: "Vivid", color: { contrast: 1.12, saturation: 1.35 } },
+  { name: "Warm", color: { sepia: 0.22, saturation: 1.15, hue: -6 } },
+  { name: "Cool", color: { hue: 12, saturation: 0.9, brightness: 1.03 } },
+  { name: "Mono", color: { saturation: 0, contrast: 1.15 } },
+  { name: "Faded", color: { contrast: 0.82, saturation: 0.75, brightness: 1.08 } },
+  { name: "Vintage", color: { sepia: 0.45, contrast: 0.92, saturation: 0.85 } },
+  { name: "Punch", color: { contrast: 1.3, brightness: 0.96, saturation: 1.1 } },
+];
+
+function ColorSection({ clip, upd }: { clip: Clip; upd: (fn: (c: Draft<Clip>) => void, live?: boolean) => void }) {
+  const c = clip.color;
+  const field = (key: keyof ColorAdjust, label: string, min: number, max: number, step: number, def: number, scale = 1, suffix = "") => (
+    <SliderField
+      label={label}
+      value={c[key]}
+      min={min}
+      max={max}
+      step={step}
+      displayScale={scale}
+      suffix={suffix}
+      defaultValue={def}
+      onChange={(v, o) => upd((x) => void (x.color[key] = v), o.live)}
+      onCommit={() => store().commit()}
+    />
+  );
+  return (
+    <Section id="color" title="Colour" actions={<ResetButton title="Reset colour" onClick={() => upd((x) => void (x.color = defaultColor()))} />}>
+      <div className="mb-1 flex flex-wrap gap-1">
+        {LOOKS.map((l) => {
+          const target = { ...defaultColor(), ...l.color };
+          const active = (Object.keys(target) as (keyof ColorAdjust)[]).every((k) => Math.abs(target[k] - c[k]) < 1e-3);
+          return (
+            <button
+              key={l.name}
+              onClick={() => upd((x) => void (x.color = { ...target }))}
+              className={cn(
+                "h-6 rounded-md border px-2 text-2xs font-medium transition-colors",
+                active ? "border-accent bg-accent/15 text-accent-ink" : "border-line text-ink-muted hover:border-line-strong hover:text-ink",
+              )}
+            >
+              {l.name}
+            </button>
+          );
+        })}
+      </div>
+      {field("brightness", "Brightness", 0, 3, 0.01, 1, 100, "%")}
+      {field("contrast", "Contrast", 0, 3, 0.01, 1, 100, "%")}
+      {field("saturation", "Saturation", 0, 3, 0.01, 1, 100, "%")}
+      {field("hue", "Hue", -180, 180, 1, 0, 1, "°")}
+      {field("sepia", "Warmth", 0, 1, 0.01, 0, 100, "%")}
+      {field("blur", "Blur", 0, 50, 0.5, 0, 1, "px")}
+    </Section>
+  );
+}
+
+const SPEEDS = [0.25, 0.5, 0.75, 1, 1.5, 2, 4];
+
+function SpeedSection({ clip }: { clip: Clip }) {
+  const sp = speedOf(clip);
+  const setSpeed = (v: number, commit: boolean) => {
+    const next = Math.max(0.1, Math.min(16, v));
+    store().updateClip(clip.id, (c) => {
+      c.speed = next;
+      const d = clipDuration(c as Clip);
+      c.fadeIn = Math.min(c.fadeIn, d);
+      c.fadeOut = Math.min(c.fadeOut, d - c.fadeIn);
+    }, { live: true });
+    // Faster/slower clips change length; settle overlaps with neighbours on commit.
+    if (commit) store().settleClips([clip.id]);
   };
+  return (
+    <Section id="speed" title="Speed">
+      <div className="flex flex-wrap gap-1">
+        {SPEEDS.map((s) => (
+          <button
+            key={s}
+            onClick={() => setSpeed(s, true)}
+            className={cn(
+              "h-6 min-w-[38px] rounded-md border px-1.5 font-mono text-2xs transition-colors",
+              Math.abs(sp - s) < EPS ? "border-accent bg-accent/15 text-accent-ink" : "border-line text-ink-muted hover:border-line-strong hover:text-ink",
+            )}
+          >
+            {s}×
+          </button>
+        ))}
+      </div>
+      <SliderField label="Custom" value={sp} min={0.1} max={16} sliderMin={0.1} sliderMax={4} step={0.05} suffix="×" defaultValue={1} onChange={(v) => setSpeed(v, false)} onCommit={() => store().settleClips([clip.id])} />
+      <p className="text-2xs text-ink-dim">Audio keeps its pitch. Speeding up shortens the clip; slowing down may cover the next clip.</p>
+    </Section>
+  );
+}
+
+// -------------------------------------------------------------------- titles
+
+const WEIGHTS = [300, 400, 500, 600, 700, 800, 900];
+
+function TitleSection({ clip }: { clip: Clip }) {
+  const t = clip.title!;
+  const id = clip.id;
+  const set = (patch: Partial<TitleStyle>, live = false) => store().updateClip(id, (c) => void Object.assign(c.title!, patch), { live });
+  const n = (key: keyof TitleStyle) => ({
+    value: t[key] as number,
+    onChange: (v: number, o: { live: boolean }) => set({ [key]: v } as Partial<TitleStyle>, o.live),
+    onCommit: () => store().commit(),
+  });
+  const color = (key: keyof TitleStyle) => (v: string) => {
+    set({ [key]: v } as Partial<TitleStyle>, true);
+    commitSoon();
+  };
+  const textRef = React.useRef<HTMLTextAreaElement>(null);
+  const fonts = TITLE_FONTS.includes(t.fontFamily) ? TITLE_FONTS : [t.fontFamily, ...TITLE_FONTS];
+
+  return (
+    <>
+      <Section id="title-text" title="Text">
+        <textarea
+          ref={textRef}
+          defaultValue={t.text}
+          key={id}
+          rows={3}
+          className="field h-auto resize-y py-1.5 leading-snug"
+          placeholder="Type your title"
+          onChange={(e) => {
+            set({ text: e.target.value }, true);
+            commitSoon(800);
+          }}
+          onBlur={() => store().commit()}
+          onKeyDown={(e) => e.stopPropagation()}
+        />
+        <FieldRow label="Font">
+          <Select className="flex-1" value={t.fontFamily} options={fonts.map((f) => ({ value: f, label: f.replace(" Variable", "") }))} onChange={(fontFamily) => set({ fontFamily })} />
+        </FieldRow>
+        <FieldRow label="Style">
+          <Select className="w-[88px]" value={t.fontWeight} options={WEIGHTS.map((w) => ({ value: w, label: String(w) }))} onChange={(fontWeight) => set({ fontWeight })} />
+          <IconButton title="Italic" active={t.italic} onClick={() => set({ italic: !t.italic })}>
+            <Italic className="h-4 w-4" />
+          </IconButton>
+          <Segmented
+            value={t.align}
+            onChange={(align) => set({ align })}
+            options={[
+              { value: "left", label: <AlignLeft className="h-3.5 w-3.5" />, title: "Align left" },
+              { value: "center", label: <AlignCenter className="h-3.5 w-3.5" />, title: "Centre" },
+              { value: "right", label: <AlignRight className="h-3.5 w-3.5" />, title: "Align right" },
+            ]}
+          />
+        </FieldRow>
+        <SliderField label="Size" {...n("fontSize")} min={6} max={1000} sliderMin={12} sliderMax={300} step={1} suffix="px" />
+        <FieldRow label="Colour">
+          <ColorInput value={t.color} onChange={color("color")} />
+        </FieldRow>
+        <SliderField label="Line height" {...n("lineHeight")} min={0.6} max={3} step={0.05} defaultValue={1.15} />
+        <SliderField label="Spacing" {...n("letterSpacing")} min={-20} max={100} sliderMin={-10} sliderMax={40} step={0.5} suffix="px" defaultValue={0} />
+      </Section>
+
+      <Section id="title-layout" title="Layout">
+        <FieldRow label="Position">
+          <NumberField label="X" {...n("x")} min={-50} max={150} step={0.5} suffix="%" className="flex-1" />
+          <NumberField label="Y" {...n("y")} min={-50} max={150} step={0.5} suffix="%" className="flex-1" />
+        </FieldRow>
+        <FieldRow label="Snap">
+          <div className="grid flex-1 grid-cols-3 gap-1">
+            {[
+              ["Top", 50, 12],
+              ["Centre", 50, 50],
+              ["Bottom", 50, 86],
+            ].map(([label, x, y]) => (
+              <button
+                key={label as string}
+                className="h-6 rounded-md border border-line text-2xs text-ink-muted hover:border-line-strong hover:text-ink"
+                onClick={() => set({ x: x as number, y: y as number })}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </FieldRow>
+        <SliderField label="Wrap width" {...n("maxWidth")} min={10} max={100} step={1} suffix="%" defaultValue={80} />
+      </Section>
+
+      <Section id="title-effects" title="Outline, shadow & box">
+        <FieldRow label="Outline">
+          <NumberField {...n("strokeWidth")} min={0} max={60} step={0.5} suffix="px" className="w-[80px]" />
+          <ColorInput value={t.strokeColor} onChange={color("strokeColor")} />
+        </FieldRow>
+        <FieldRow label="Shadow">
+          <NumberField {...n("shadow")} min={0} max={100} step={1} suffix="px" className="w-[80px]" />
+          <ColorInput value={t.shadowColor} onChange={color("shadowColor")} />
+        </FieldRow>
+        <FieldRow label="Background">
+          <Switch checked={t.box} onChange={(box) => set({ box })} />
+          {t.box && <ColorInput value={t.boxColor} onChange={color("boxColor")} />}
+        </FieldRow>
+        {t.box && (
+          <>
+            <SliderField label="Box opacity" {...n("boxOpacity")} min={0} max={1} step={0.01} displayScale={100} suffix="%" />
+            <SliderField label="Padding" {...n("boxPadding")} min={0} max={200} sliderMax={80} step={1} suffix="px" />
+            <SliderField label="Radius" {...n("boxRadius")} min={0} max={200} sliderMax={60} step={1} suffix="px" />
+          </>
+        )}
+      </Section>
+    </>
+  );
 }

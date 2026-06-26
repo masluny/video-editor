@@ -1,0 +1,897 @@
+//! Builds the ffmpeg command line for an export.
+//!
+//! Composition model (identical to the preview):
+//! * a background colour canvas at the output size;
+//! * every visible clip of every video track becomes a *layer*, stacked V1 (bottom)
+//!   to Vn (top): fit into the frame (contain / cover / stretch), cropped, colour
+//!   adjusted, scaled, rotated, faded (alpha) and offset to its timeline position,
+//!   then `overlay`ed onto the canvas;
+//! * every audible clip contributes an audio stream that is time-stretched,
+//!   gain-adjusted, faded and delayed to its timeline position, then mixed.
+//!
+//! No user-provided strings ever end up inside the filtergraph: media is passed
+//! with `-i`, titles arrive as pre-rendered PNGs, and numbers are formatted here.
+
+use crate::model::{Clip, ClipKind, Fit, MediaKind, Project, TrackKind};
+use crate::util::f;
+use anyhow::{anyhow, Result};
+use serde::Deserialize;
+use std::collections::HashMap;
+use std::path::PathBuf;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Format {
+    #[default]
+    Mp4,
+    Mov,
+    Webm,
+    Gif,
+    Png,
+    Mp3,
+    Wav,
+    M4a,
+}
+
+impl Format {
+    pub fn is_audio_only(self) -> bool {
+        matches!(self, Format::Mp3 | Format::Wav | Format::M4a)
+    }
+    fn has_audio(self) -> bool {
+        !matches!(self, Format::Gif | Format::Png)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Codec {
+    #[default]
+    H264,
+    Hevc,
+    Prores,
+    Vp9,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Quality {
+    High,
+    #[default]
+    Medium,
+    Low,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ExportSettings {
+    pub format: Format,
+    pub codec: Codec,
+    /// Output size; 0 = project size. Height 0 keeps the project aspect ratio.
+    pub width: u32,
+    pub height: u32,
+    /// 0 = project frame rate.
+    pub fps: f64,
+    pub quality: Quality,
+    pub hardware: bool,
+    pub audio_bitrate: u32,
+    pub normalize_audio: bool,
+}
+
+impl Default for ExportSettings {
+    fn default() -> Self {
+        Self {
+            format: Format::Mp4,
+            codec: Codec::H264,
+            width: 0,
+            height: 0,
+            fps: 0.0,
+            quality: Quality::Medium,
+            hardware: false,
+            audio_bitrate: 192,
+            normalize_audio: false,
+        }
+    }
+}
+
+pub struct Plan {
+    pub args: Vec<String>,
+    pub duration: f64,
+}
+
+const EPS: f64 = 1e-6;
+
+/// The part of a clip that falls inside the export range.
+struct Span {
+    /// Start relative to the export range (seconds).
+    at: f64,
+    /// Length on the timeline (seconds).
+    dur: f64,
+    src_in: f64,
+    src_len: f64,
+    /// Seconds cut from the clip's head / tail by the range.
+    head: f64,
+    tail: f64,
+}
+
+fn span(clip: &Clip, r0: f64, r1: f64) -> Option<Span> {
+    let (cs, ce) = (clip.start, clip.end());
+    if ce <= r0 + EPS || cs >= r1 - EPS || clip.duration() <= EPS {
+        return None;
+    }
+    let head = (r0 - cs).max(0.0);
+    let tail = (ce - r1).max(0.0);
+    let dur = clip.duration() - head - tail;
+    if dur <= EPS {
+        return None;
+    }
+    let speed = clip.speed();
+    Some(Span { at: cs + head - r0, dur, src_in: clip.source_in + head * speed, src_len: dur * speed, head, tail })
+}
+
+fn even(v: f64) -> u32 {
+    (((v / 2.0).round() * 2.0) as i64).max(2) as u32
+}
+
+fn fps_str(fps: f64) -> String {
+    for (n, d) in [(24000.0, 1001.0), (30000.0, 1001.0), (60000.0, 1001.0)] {
+        if (fps - n / d).abs() < 0.01 {
+            return format!("{}/{}", n as u32, d as u32);
+        }
+    }
+    f(fps)
+}
+
+fn signed(v: f64) -> String {
+    if v < 0.0 { format!("-{}", f(-v)) } else { format!("+{}", f(v)) }
+}
+
+fn safe_color(c: &str) -> String {
+    let ok = c.len() == 7 && c.starts_with('#') && c[1..].chars().all(|ch| ch.is_ascii_hexdigit());
+    if ok { format!("0x{}", &c[1..]) } else { "black".into() }
+}
+
+/// Fit media of size (mw, mh) into a (w, h) frame.
+pub fn fit_box(mw: f64, mh: f64, w: f64, h: f64, fit: Fit) -> (f64, f64) {
+    if mw <= 0.0 || mh <= 0.0 {
+        return (w, h);
+    }
+    match fit {
+        Fit::Stretch => (w, h),
+        Fit::Contain => {
+            let s = (w / mw).min(h / mh);
+            (mw * s, mh * s)
+        }
+        Fit::Cover => {
+            let s = (w / mw).max(h / mh);
+            (mw * s, mh * s)
+        }
+    }
+}
+
+type M3 = [[f64; 3]; 3];
+
+fn mul(a: M3, b: M3) -> M3 {
+    let mut r = [[0.0; 3]; 3];
+    for i in 0..3 {
+        for j in 0..3 {
+            r[i][j] = (0..3).map(|k| a[i][k] * b[k][j]).sum();
+        }
+    }
+    r
+}
+
+// Matrices from the CSS Filter Effects spec so export matches the preview.
+fn saturate_m(s: f64) -> M3 {
+    [
+        [0.213 + 0.787 * s, 0.715 - 0.715 * s, 0.072 - 0.072 * s],
+        [0.213 - 0.213 * s, 0.715 + 0.285 * s, 0.072 - 0.072 * s],
+        [0.213 - 0.213 * s, 0.715 - 0.715 * s, 0.072 + 0.928 * s],
+    ]
+}
+
+fn sepia_m(p: f64) -> M3 {
+    let q = 1.0 - p.clamp(0.0, 1.0);
+    [
+        [0.393 + 0.607 * q, 0.769 - 0.769 * q, 0.189 - 0.189 * q],
+        [0.349 - 0.349 * q, 0.686 + 0.314 * q, 0.168 - 0.168 * q],
+        [0.272 - 0.272 * q, 0.534 - 0.534 * q, 0.131 + 0.869 * q],
+    ]
+}
+
+fn hue_m(deg: f64) -> M3 {
+    let (s, c) = deg.to_radians().sin_cos();
+    [
+        [0.213 + c * 0.787 - s * 0.213, 0.715 - c * 0.715 - s * 0.715, 0.072 - c * 0.072 + s * 0.928],
+        [0.213 - c * 0.213 + s * 0.143, 0.715 + c * 0.285 + s * 0.140, 0.072 - c * 0.072 - s * 0.283],
+        [0.213 - c * 0.213 - s * 0.787, 0.715 - c * 0.715 + s * 0.715, 0.072 + c * 0.928 + s * 0.072],
+    ]
+}
+
+fn color_filters(c: &crate::model::ColorAdjust) -> Vec<String> {
+    let mut out = vec![];
+    let b = c.brightness.clamp(0.0, 2.0);
+    if (b - 1.0).abs() > 1e-4 {
+        out.push(format!("colorchannelmixer=rr={0}:gg={0}:bb={0}", f(b)));
+    }
+    let k = c.contrast.clamp(0.0, 3.0);
+    if (k - 1.0).abs() > 1e-4 {
+        // CSS contrast(): out = (in - 0.5) * k + 0.5, expressed as a levels mapping.
+        if k > 1.0 {
+            let (lo, hi) = (0.5 - 0.5 / k, 0.5 + 0.5 / k);
+            out.push(format!("colorlevels=rimin={0}:gimin={0}:bimin={0}:rimax={1}:gimax={1}:bimax={1}", f(lo), f(hi)));
+        } else {
+            let (lo, hi) = (0.5 - 0.5 * k, 0.5 + 0.5 * k);
+            out.push(format!("colorlevels=romin={0}:gomin={0}:bomin={0}:romax={1}:gomax={1}:bomax={1}", f(lo), f(hi)));
+        }
+    }
+    let m = mul(hue_m(c.hue), mul(sepia_m(c.sepia), saturate_m(c.saturation.clamp(0.0, 3.0))));
+    let identity = (0..3).all(|i| (0..3).all(|j| (m[i][j] - if i == j { 1.0 } else { 0.0 }).abs() < 1e-4));
+    if !identity {
+        let v = |x: f64| f(x.clamp(-2.0, 2.0));
+        out.push(format!(
+            "colorchannelmixer=rr={}:rg={}:rb={}:gr={}:gg={}:gb={}:br={}:bg={}:bb={}",
+            v(m[0][0]), v(m[0][1]), v(m[0][2]), v(m[1][0]), v(m[1][1]), v(m[1][2]), v(m[2][0]), v(m[2][1]), v(m[2][2])
+        ));
+    }
+    out
+}
+
+fn atempo(speed: f64) -> Vec<String> {
+    let mut s = speed;
+    let mut out = vec![];
+    while s < 0.5 {
+        out.push("atempo=0.5".to_string());
+        s /= 0.5;
+    }
+    while s > 100.0 {
+        out.push("atempo=100".to_string());
+        s /= 100.0;
+    }
+    if (s - 1.0).abs() > 1e-6 {
+        out.push(format!("atempo={}", f(s)));
+    }
+    out
+}
+
+pub fn build(
+    project: &Project,
+    settings: &ExportSettings,
+    range: Option<(f64, f64)>,
+    titles: &HashMap<String, PathBuf>,
+    output: &str,
+) -> Result<Plan> {
+    let ps = &project.settings;
+    let (pw, ph) = (ps.width.max(2) as f64, ps.height.max(2) as f64);
+    let total = project.duration();
+    let (r0, r1) = match range {
+        Some((a, b)) => (a.max(0.0), b.max(0.0)),
+        None => (0.0, total),
+    };
+    let dur = r1 - r0;
+    if dur <= 1e-3 {
+        return Err(anyhow!("The timeline is empty — add some clips first."));
+    }
+
+    let fmt = settings.format;
+    let fps = if settings.fps > 0.0 { settings.fps } else if ps.fps > 0.0 { ps.fps } else { 30.0 };
+    let ow = if settings.width > 0 { even(settings.width as f64) } else { even(pw) };
+    let oh = if settings.height > 0 { even(settings.height as f64) } else { even(ow as f64 * ph / pw) };
+    let (kx, ky) = (ow as f64 / pw, oh as f64 / ph);
+    let sr = if ps.sample_rate >= 8000 { ps.sample_rate } else { 48000 };
+
+    let mut inputs: Vec<Vec<String>> = vec![];
+    let mut graph: Vec<String> = vec![];
+    let mut clip_input: HashMap<&str, usize> = HashMap::new();
+
+    // ---------------------------------------------------------------- video
+    if !fmt.is_audio_only() {
+        graph.push(format!(
+            "color=c={}:s={ow}x{oh}:r={}:d={},format=yuv420p[base]",
+            safe_color(&ps.background),
+            fps_str(fps),
+            f(dur)
+        ));
+        let mut prev = "base".to_string();
+        let mut n = 0usize;
+
+        for track in project.tracks.iter().filter(|t| t.kind == TrackKind::Video && !t.hidden) {
+            let mut clips: Vec<&Clip> = track.clips.iter().collect();
+            clips.sort_by(|a, b| a.start.total_cmp(&b.start));
+            for clip in clips {
+                let Some(sp) = span(clip, r0, r1) else { continue };
+                let (input, mw, mh, is_video, has_alpha) = match clip.kind {
+                    ClipKind::Title => {
+                        let Some(png) = titles.get(&clip.id) else { continue };
+                        (still_input(png.to_string_lossy().as_ref(), fps, sp.dur), pw, ph, false, true)
+                    }
+                    ClipKind::Media => {
+                        let Some(m) = clip.media_id.as_deref().and_then(|id| project.media(id)) else { continue };
+                        if !m.has_video {
+                            continue;
+                        }
+                        let (mw, mh) = if m.width > 0 && m.height > 0 { (m.width as f64, m.height as f64) } else { (pw, ph) };
+                        if m.kind == MediaKind::Image {
+                            (still_input(&m.path, fps, sp.dur), mw, mh, false, true)
+                        } else {
+                            (seek_input(&m.path, sp.src_in, sp.src_len), mw, mh, true, false)
+                        }
+                    }
+                };
+                let idx = inputs.len();
+                inputs.push(input);
+                clip_input.insert(clip.id.as_str(), idx);
+
+                let t = &clip.transform;
+                let scale = if t.scale.is_finite() && t.scale > 0.0 { t.scale } else { 1.0 };
+                let (fw, fh) = fit_box(mw, mh, pw, ph, t.fit);
+                let (lw, lh) = (even(fw * scale * kx), even(fh * scale * ky));
+                if lw > 16384 || lh > 16384 {
+                    continue; // absurdly zoomed layer; ffmpeg would refuse it
+                }
+
+                let opacity = clip.opacity.clamp(0.0, 1.0);
+                if opacity <= 1e-3 {
+                    continue;
+                }
+                let fade_in = (clip.fade_in - sp.head).max(0.0).min(sp.dur);
+                let fade_out = (clip.fade_out - sp.tail).max(0.0).min(sp.dur);
+                let rotation = t.rotation % 360.0;
+                let colors = color_filters(&clip.color);
+                let rgb = !colors.is_empty() || opacity < 0.999;
+                let alpha = has_alpha || opacity < 0.999 || fade_in > 0.0 || fade_out > 0.0 || rotation.abs() > 1e-3 || clip.crop.is_active();
+
+                let mut chain: Vec<String> = vec![];
+                chain.push(if is_video {
+                    format!("setpts=(PTS-STARTPTS)/{}", f(clip.speed()))
+                } else {
+                    "setpts=PTS-STARTPTS".into()
+                });
+                chain.push(format!("trim=duration={}", f(sp.dur)));
+                chain.push(format!("scale={lw}:{lh}:flags=bicubic"));
+                if t.flip_h {
+                    chain.push("hflip".into());
+                }
+                if t.flip_v {
+                    chain.push("vflip".into());
+                }
+                chain.push(format!(
+                    "format={}",
+                    match (rgb, alpha) {
+                        (true, true) => "gbrap",
+                        (true, false) => "gbrp",
+                        (false, true) => "yuva420p",
+                        (false, false) => "yuv420p",
+                    }
+                ));
+                chain.extend(colors);
+                if clip.crop.is_active() {
+                    let c = &clip.crop;
+                    let (l, r, tp, b) = (c.left.clamp(0.0, 1.0), c.right.clamp(0.0, 1.0), c.top.clamp(0.0, 1.0), c.bottom.clamp(0.0, 1.0));
+                    let cw = ((lw as f64) * (1.0 - l - r)).round().max(1.0) as u32;
+                    let ch = ((lh as f64) * (1.0 - tp - b)).round().max(1.0) as u32;
+                    let cx = ((lw as f64) * l).round() as u32;
+                    let cy = ((lh as f64) * tp).round() as u32;
+                    chain.push(format!("crop={cw}:{ch}:{cx}:{cy}:exact=1"));
+                    chain.push(format!("pad={lw}:{lh}:{cx}:{cy}:color=black@0"));
+                }
+                if clip.color.blur > 0.01 {
+                    chain.push(format!("gblur=sigma={}", f(clip.color.blur * scale * kx)));
+                }
+                if opacity < 0.999 {
+                    chain.push(format!("colorchannelmixer=aa={}", f(opacity)));
+                }
+                if fade_in > 0.0 {
+                    chain.push(format!("fade=t=in:st=0:d={}:alpha=1", f(fade_in)));
+                }
+                if fade_out > 0.0 {
+                    chain.push(format!("fade=t=out:st={}:d={}:alpha=1", f(sp.dur - fade_out), f(fade_out)));
+                }
+                if rotation.abs() > 1e-3 {
+                    let a = f(rotation.to_radians());
+                    chain.push(format!("rotate=a={a}:ow=rotw({a}):oh=roth({a}):c=black@0"));
+                }
+                if sp.at > 0.0 {
+                    chain.push(format!("setpts=PTS+{}/TB", f(sp.at)));
+                }
+                graph.push(format!("[{idx}:v]{}[l{n}]", chain.join(",")));
+                graph.push(format!(
+                    "[{prev}][l{n}]overlay=x=(W-w)/2{}:y=(H-h)/2{}:eof_action=pass:format=auto[v{n}]",
+                    signed(t.x * kx),
+                    signed(t.y * ky)
+                ));
+                prev = format!("v{n}");
+                n += 1;
+            }
+        }
+
+        match fmt {
+            Format::Gif => graph.push(format!(
+                "[{prev}]split[g0][g1];[g0]palettegen=max_colors=256:stats_mode=diff[pal];[g1][pal]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle[vout]"
+            )),
+            Format::Mov if settings.codec == Codec::Prores => graph.push(format!("[{prev}]format=yuv422p10le[vout]")),
+            Format::Png => graph.push(format!("[{prev}]format=rgb24[vout]")),
+            _ => graph.push(format!("[{prev}]format=yuv420p[vout]")),
+        }
+    }
+
+    // ---------------------------------------------------------------- audio
+    if fmt.has_audio() {
+        let any_solo = project.tracks.iter().any(|t| t.solo);
+        let mut labels: Vec<String> = vec![];
+        for track in &project.tracks {
+            if track.muted || (any_solo && !track.solo) {
+                continue;
+            }
+            let track_gain = if track.volume.is_finite() { track.volume.max(0.0) } else { 1.0 };
+            for clip in &track.clips {
+                if clip.kind != ClipKind::Media || clip.muted {
+                    continue;
+                }
+                let Some(m) = clip.media_id.as_deref().and_then(|id| project.media(id)) else { continue };
+                if !m.has_audio || m.kind == MediaKind::Image {
+                    continue;
+                }
+                let gain = clip.volume.max(0.0) * track_gain;
+                if gain <= 1e-4 {
+                    continue;
+                }
+                let Some(sp) = span(clip, r0, r1) else { continue };
+                let idx = match clip_input.get(clip.id.as_str()) {
+                    Some(&i) if track.kind == TrackKind::Video => i,
+                    _ => {
+                        inputs.push(seek_input(&m.path, sp.src_in, sp.src_len));
+                        inputs.len() - 1
+                    }
+                };
+
+                let mut chain = vec![
+                    "asetpts=PTS-STARTPTS".to_string(),
+                    format!("aformat=sample_fmts=fltp:sample_rates={sr}:channel_layouts=stereo"),
+                ];
+                chain.extend(atempo(clip.speed()));
+                chain.push(format!("atrim=duration={}", f(sp.dur)));
+                if (gain - 1.0).abs() > 1e-4 {
+                    chain.push(format!("volume={}", f(gain)));
+                }
+                let fade_in = (clip.fade_in - sp.head).max(0.0).min(sp.dur);
+                let fade_out = (clip.fade_out - sp.tail).max(0.0).min(sp.dur);
+                if fade_in > 0.0 {
+                    chain.push(format!("afade=t=in:st=0:d={}", f(fade_in)));
+                }
+                if fade_out > 0.0 {
+                    chain.push(format!("afade=t=out:st={}:d={}", f(sp.dur - fade_out), f(fade_out)));
+                }
+                let delay = (sp.at * sr as f64).round() as u64;
+                if delay > 0 {
+                    chain.push(format!("adelay={delay}S:all=1"));
+                }
+                // Re-stamp from the sample count: delayed inputs reach amix without
+                // timestamps (ffmpeg 6.x), which yields a silent, broken audio stream.
+                chain.push("asetpts=N/SR/TB".to_string());
+                let label = format!("a{}", labels.len());
+                graph.push(format!("[{idx}:a]{}[{label}]", chain.join(",")));
+                labels.push(label);
+            }
+        }
+
+        let mut tail = vec![];
+        if settings.normalize_audio && !labels.is_empty() {
+            tail.push("loudnorm=I=-14:TP=-1:LRA=11".to_string());
+            tail.push(format!("aresample={sr}"));
+        }
+        tail.push(format!("aformat=sample_rates={sr}:channel_layouts=stereo"));
+        if labels.is_empty() {
+            graph.push(format!("anullsrc=r={sr}:cl=stereo,atrim=duration={},{}[aout]", f(dur), tail.join(",")));
+        } else {
+            let ins: String = labels.iter().map(|l| format!("[{l}]")).collect();
+            graph.push(format!(
+                // Bounded padding: a bare (infinite) `apad` can starve the video branch
+                // in ffmpeg's scheduler and hang the export near the end.
+                "{ins}amix=inputs={}:duration=longest:dropout_transition=0:normalize=0,apad=whole_dur={d},atrim=duration={d},{}[aout]",
+                labels.len(),
+                tail.join(","),
+                d = f(dur)
+            ));
+        }
+    }
+
+    // ---------------------------------------------------------------- command
+    let mut args: Vec<String> = inputs.into_iter().flatten().collect();
+    args.push("-filter_complex".into());
+    args.push(graph.join(";"));
+    if !fmt.is_audio_only() {
+        args.extend(["-map".into(), "[vout]".into()]);
+    }
+    if fmt.has_audio() {
+        args.extend(["-map".into(), "[aout]".into()]);
+    }
+    args.extend(encoder_args(settings, ow, oh, fps));
+    args.extend(["-max_muxing_queue_size".into(), "4096".into()]);
+    if fmt != Format::Png {
+        args.extend(["-t".into(), f(dur)]);
+    }
+    args.push(output.into());
+    Ok(Plan { args, duration: dur })
+}
+
+fn seek_input(path: &str, src_in: f64, src_len: f64) -> Vec<String> {
+    let mut v = vec![];
+    if src_in > 0.0 {
+        v.extend(["-ss".into(), f(src_in)]);
+    }
+    v.extend(["-t".into(), f(src_len.max(0.001)), "-i".into(), path.into()]);
+    v
+}
+
+fn still_input(path: &str, fps: f64, dur: f64) -> Vec<String> {
+    vec![
+        "-loop".into(),
+        "1".into(),
+        "-framerate".into(),
+        fps_str(fps),
+        "-t".into(),
+        f(dur.max(0.001)),
+        "-i".into(),
+        path.into(),
+    ]
+}
+
+fn encoder_args(s: &ExportSettings, w: u32, h: u32, fps: f64) -> Vec<String> {
+    let q = s.quality;
+    let abr = format!("{}k", s.audio_bitrate.clamp(64, 512));
+    // Bitrate for hardware encoders (they have no CRF): bits per pixel per frame.
+    let bpp = match q {
+        Quality::High => 0.12,
+        Quality::Medium => 0.075,
+        Quality::Low => 0.045,
+    };
+    let kbps = ((w as f64 * h as f64 * fps * bpp) / 1000.0).round().max(500.0) as u64;
+    let sv = |a: &[&str]| a.iter().map(|x| x.to_string()).collect::<Vec<String>>();
+
+    match s.format {
+        Format::Mp3 => sv(&["-c:a", "libmp3lame", "-b:a", &abr]),
+        Format::Wav => sv(&["-c:a", "pcm_s16le"]),
+        Format::M4a => sv(&["-c:a", "aac", "-b:a", &abr, "-movflags", "+faststart"]),
+        Format::Gif => sv(&["-loop", "0"]),
+        Format::Png => sv(&["-frames:v", "1", "-update", "1"]),
+        Format::Webm => {
+            let crf = match q { Quality::High => "28", Quality::Medium => "33", Quality::Low => "38" };
+            sv(&["-c:v", "libvpx-vp9", "-crf", crf, "-b:v", "0", "-row-mt", "1", "-deadline", "good", "-cpu-used", "4",
+                 "-c:a", "libopus", "-b:a", &abr])
+        }
+        Format::Mp4 | Format::Mov => {
+            let mut v = match (s.codec, s.hardware) {
+                (Codec::Prores, _) => {
+                    let profile = match q { Quality::High => "3", Quality::Medium => "2", Quality::Low => "1" };
+                    return sv(&["-c:v", "prores_ks", "-profile:v", profile, "-vendor", "apl0", "-c:a", "pcm_s16le"]);
+                }
+                (Codec::Hevc, true) => sv(&["-c:v", "hevc_videotoolbox", "-b:v", &format!("{}k", kbps * 7 / 10), "-tag:v", "hvc1"]),
+                (Codec::Hevc, false) => {
+                    let crf = match q { Quality::High => "20", Quality::Medium => "24", Quality::Low => "29" };
+                    sv(&["-c:v", "libx265", "-preset", "medium", "-crf", crf, "-tag:v", "hvc1", "-x265-params", "log-level=error"])
+                }
+                (_, true) => sv(&["-c:v", "h264_videotoolbox", "-b:v", &format!("{kbps}k"), "-profile:v", "high"]),
+                (_, false) => {
+                    let crf = match q { Quality::High => "18", Quality::Medium => "22", Quality::Low => "27" };
+                    sv(&["-c:v", "libx264", "-preset", "medium", "-crf", crf, "-profile:v", "high"])
+                }
+            };
+            v.extend(sv(&["-c:a", "aac", "-b:a", &abr, "-movflags", "+faststart"]));
+            v
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::*;
+    use std::process::Command;
+
+    fn ffmpeg_ok() -> bool {
+        Command::new("ffmpeg").arg("-version").output().map(|o| o.status.success()).unwrap_or(false)
+    }
+
+    fn tmpdir() -> PathBuf {
+        let d = std::env::temp_dir().join(format!("revind_graph_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn ff(args: &[&str]) {
+        let out = Command::new("ffmpeg").args(["-hide_banner", "-v", "error", "-y"]).args(args).output().unwrap();
+        assert!(out.status.success(), "ffmpeg {:?} failed: {}", args, String::from_utf8_lossy(&out.stderr));
+    }
+
+    /// Solid-colour test clip, optionally with a sine tone.
+    fn solid(path: &PathBuf, color: &str, w: u32, h: u32, dur: f64, tone: Option<u32>) {
+        let src = format!("color=c={color}:s={w}x{h}:r=30:d={dur}");
+        let p = path.to_str().unwrap();
+        match tone {
+            Some(hz) => ff(&["-f", "lavfi", "-i", &src, "-f", "lavfi", "-i", &format!("sine=frequency={hz}:duration={dur}"),
+                             "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", p]),
+            None => ff(&["-f", "lavfi", "-i", &src, "-c:v", "libx264", "-pix_fmt", "yuv420p", p]),
+        }
+    }
+
+    fn media(id: &str, path: &PathBuf, w: u32, h: u32, dur: f64, audio: bool) -> MediaAsset {
+        MediaAsset {
+            id: id.into(), path: path.to_string_lossy().into(), name: id.into(), kind: MediaKind::Video,
+            duration: dur, width: w, height: h, fps: 30.0, has_video: true, has_audio: audio,
+        }
+    }
+
+    fn clip(id: &str, media: &str, start: f64, src_in: f64, len: f64) -> Clip {
+        Clip { id: id.into(), media_id: Some(media.into()), start, source_in: src_in, source_out: src_in + len, ..Default::default() }
+    }
+
+    fn project(w: u32, h: u32) -> Project {
+        Project {
+            settings: ProjectSettings { width: w, height: h, fps: 30.0, ..Default::default() },
+            tracks: vec![
+                Track { id: "v1".into(), kind: TrackKind::Video, name: "V1".into(), ..Default::default() },
+                Track { id: "v2".into(), kind: TrackKind::Video, name: "V2".into(), ..Default::default() },
+                Track { id: "a1".into(), kind: TrackKind::Audio, name: "A1".into(), ..Default::default() },
+            ],
+            ..Default::default()
+        }
+    }
+
+    fn run(p: &Project, s: &ExportSettings, range: Option<(f64, f64)>, out: &PathBuf) -> Plan {
+        run_titles(p, s, range, &HashMap::new(), out)
+    }
+
+    fn run_titles(p: &Project, s: &ExportSettings, range: Option<(f64, f64)>, titles: &HashMap<String, PathBuf>, out: &PathBuf) -> Plan {
+        let plan = build(p, s, range, titles, out.to_str().unwrap()).unwrap();
+        let res = Command::new("ffmpeg").args(["-hide_banner", "-v", "error", "-y"]).args(&plan.args).output().unwrap();
+        assert!(res.status.success(), "export failed\nARGS: {:?}\n{}", plan.args, String::from_utf8_lossy(&res.stderr));
+        plan
+    }
+
+    /// RGB of the pixel at (x, y) of the frame at time t.
+    fn pixel(file: &PathBuf, t: f64, x: u32, y: u32) -> [u8; 3] {
+        let out = Command::new("ffmpeg")
+            .args(["-v", "error", "-ss", &f(t), "-i", file.to_str().unwrap(), "-frames:v", "1",
+                   "-vf", &format!("format=rgb24,crop=1:1:{x}:{y}"), "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
+            .output()
+            .unwrap();
+        assert!(out.stdout.len() >= 3, "no pixel: {}", String::from_utf8_lossy(&out.stderr));
+        [out.stdout[0], out.stdout[1], out.stdout[2]]
+    }
+
+    fn mean_volume(file: &PathBuf, t: f64, len: f64) -> f64 {
+        let out = Command::new("ffmpeg")
+            .args(["-hide_banner", "-ss", &f(t), "-t", &f(len), "-i", file.to_str().unwrap(), "-vn", "-af", "volumedetect", "-f", "null", "-"])
+            .output()
+            .unwrap();
+        let log = String::from_utf8_lossy(&out.stderr);
+        log.lines()
+            .find_map(|l| l.split("mean_volume:").nth(1))
+            .and_then(|v| v.trim().trim_end_matches("dB").trim().parse().ok())
+            .unwrap_or(-200.0)
+    }
+
+    fn duration(file: &PathBuf) -> f64 {
+        let out = Command::new("ffprobe")
+            .args(["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", file.to_str().unwrap()])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().parse().unwrap_or(0.0)
+    }
+
+    fn near(a: [u8; 3], b: [u8; 3], tol: i32) -> bool {
+        (0..3).all(|i| (a[i] as i32 - b[i] as i32).abs() <= tol)
+    }
+
+    #[test]
+    fn layers_stack_with_timing_transform_and_audio() {
+        if !ffmpeg_ok() { return; }
+        let d = tmpdir();
+        let (red, blue) = (d.join("red.mp4"), d.join("blue.mp4"));
+        solid(&red, "red", 320, 180, 4.0, Some(440));
+        solid(&blue, "blue", 320, 180, 3.0, None);
+
+        let mut p = project(640, 360);
+        p.media = vec![media("r", &red, 320, 180, 4.0, true), media("b", &blue, 320, 180, 3.0, false)];
+        // V1: red from 1s for 3s. V2: half-size blue from 2s to 3s, moved right by 100px.
+        p.tracks[0].clips.push(clip("c1", "r", 1.0, 0.5, 3.0));
+        let mut top = clip("c2", "b", 2.0, 0.0, 1.0);
+        top.transform.scale = 0.5;
+        top.transform.x = 100.0;
+        p.tracks[1].clips.push(top);
+
+        let out = d.join("out.mp4");
+        let plan = run(&p, &ExportSettings::default(), None, &out);
+        assert!((plan.duration - 4.0).abs() < 1e-6);
+        assert!((duration(&out) - 4.0).abs() < 0.1, "duration {}", duration(&out));
+
+        assert!(near(pixel(&out, 0.5, 320, 180), [0, 0, 0], 20), "black before first clip");
+        assert!(near(pixel(&out, 1.5, 320, 180), [254, 0, 0], 40), "red layer");
+        // Blue layer: 320x180 centred at (420, 180) -> covers x 260..580.
+        assert!(near(pixel(&out, 2.5, 420, 180), [0, 0, 254], 40), "blue layer offset");
+        assert!(near(pixel(&out, 2.5, 100, 180), [254, 0, 0], 40), "red outside blue layer");
+        assert!(near(pixel(&out, 3.5, 320, 180), [254, 0, 0], 40), "blue ended");
+
+        // Audio only where the red clip (which has a tone) sits.
+        assert!(mean_volume(&out, 0.2, 0.6) < -80.0, "silence before clip");
+        assert!(mean_volume(&out, 1.5, 0.5) > -40.0, "tone during clip");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn jump_cut_pieces_and_delayed_music_stay_audible() {
+        if !ffmpeg_ok() { return; }
+        let d = tmpdir();
+        // Opus-in-WebM sources, as recorded by browsers and screen recorders.
+        let (talk, music) = (d.join("talk.webm"), d.join("music.webm"));
+        for (path, hz, dur) in [(&talk, 440, 8), (&music, 330, 12)] {
+            ff(&["-f", "lavfi", "-i", &format!("color=c=red:s=160x90:r=30:d={dur}"), "-f", "lavfi", "-i", &format!("sine=frequency={hz}:duration={dur}"),
+                 "-c:v", "libvpx-vp9", "-deadline", "realtime", "-cpu-used", "8", "-c:a", "libopus", "-shortest", path.to_str().unwrap()]);
+        }
+        let mut p = project(160, 90);
+        p.media = vec![media("t", &talk, 160, 90, 8.0, true), media("m", &music, 160, 90, 12.0, true)];
+        // The layout "Remove silences" produced in the UI: seeked pieces butted together
+        // (the first at 2x), plus music on an audio track from 3s.
+        let mut first = clip("p0", "t", 1.0 / 3.0, 0.0, 1.12);
+        first.speed = 2.0;
+        p.tracks[0].clips.push(first);
+        for (i, (start, src_in)) in [(1.4533, 1.88), (2.6933, 3.88), (3.9333, 5.88)].into_iter().enumerate() {
+            p.tracks[0].clips.push(clip(&format!("p{}", i + 1), "t", start, src_in, 1.24));
+        }
+        p.tracks[2].clips.push(clip("m", "m", 3.0, 0.0, 12.0));
+        let out = d.join("mix.mp4");
+        run(&p, &ExportSettings::default(), None, &out);
+        assert!(mean_volume(&out, 0.1, 0.15) < -80.0, "silence before the first piece");
+        assert!(mean_volume(&out, 2.0, 0.5) > -40.0, "talk pieces audible");
+        assert!(mean_volume(&out, 10.0, 0.5) > -40.0, "music audible");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn fades_opacity_color_rotation_crop_and_range() {
+        if !ffmpeg_ok() { return; }
+        let d = tmpdir();
+        let white = d.join("white.mp4");
+        solid(&white, "white", 320, 180, 6.0, Some(300));
+        let mut p = project(320, 180);
+        p.media = vec![media("w", &white, 320, 180, 6.0, true)];
+
+        let mut c = clip("c", "w", 0.0, 0.0, 6.0);
+        c.fade_in = 2.0;
+        c.opacity = 0.5;
+        c.color.brightness = 0.5;
+        c.transform.rotation = 90.0;
+        c.crop.left = 0.25;
+        p.tracks[0].clips.push(c);
+
+        // Export 3s..5s: fade already finished, half opacity, half brightness.
+        let out = d.join("range.mp4");
+        let plan = run(&p, &ExportSettings::default(), Some((3.0, 5.0)), &out);
+        assert!((plan.duration - 2.0).abs() < 1e-6);
+        assert!((duration(&out) - 2.0).abs() < 0.1);
+        let px = pixel(&out, 1.0, 160, 90);
+        // white * 0.5 brightness * 0.5 opacity over black ≈ 64
+        assert!(near(px, [64, 64, 64], 16), "got {:?}", px);
+        // Rotated 90° (contain-fit 320x180 -> 180 tall layer stands up): corners stay black.
+        assert!(near(pixel(&out, 1.0, 10, 90), [0, 0, 0], 16));
+
+        // Whole clip: half way through the fade-in the layer is ~half as bright again.
+        let full = d.join("full.mp4");
+        run(&p, &ExportSettings::default(), None, &full);
+        let early = pixel(&full, 1.0, 160, 90);
+        assert!(early[0] > 15 && early[0] < 50, "fade-in mid value {:?}", early);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn hidden_muted_and_solo_tracks_are_respected() {
+        if !ffmpeg_ok() { return; }
+        let d = tmpdir();
+        let red = d.join("red.mp4");
+        solid(&red, "red", 160, 90, 2.0, Some(440));
+        let mut p = project(160, 90);
+        p.media = vec![media("r", &red, 160, 90, 2.0, true)];
+        p.tracks[0].clips.push(clip("c1", "r", 0.0, 0.0, 2.0));
+        p.tracks[0].hidden = true;
+        p.tracks[2].clips.push(clip("c2", "r", 0.0, 0.0, 2.0));
+        p.tracks[2].muted = true;
+        p.tracks[0].solo = false;
+
+        let out = d.join("out.mp4");
+        run(&p, &ExportSettings::default(), None, &out);
+        assert!(near(pixel(&out, 1.0, 80, 45), [0, 0, 0], 20), "hidden track not drawn");
+        // V1 audio still plays (hidden ≠ muted); muted A1 does not add to it.
+        let with_v1 = mean_volume(&out, 0.5, 1.0);
+        assert!(with_v1 > -40.0);
+
+        p.tracks[0].muted = true;
+        p.tracks[2].muted = false;
+        p.tracks[2].solo = true;
+        let out2 = d.join("out2.mp4");
+        run(&p, &ExportSettings::default(), None, &out2);
+        assert!(mean_volume(&out2, 0.5, 1.0) > -40.0, "soloed audio track plays");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn titles_images_and_speed() {
+        if !ffmpeg_ok() { return; }
+        let d = tmpdir();
+        let green = d.join("green.mp4");
+        solid(&green, "green", 160, 90, 4.0, Some(500));
+        // A "title": transparent 160x90 PNG with a white box in the top-left quarter.
+        let title = d.join("title.png");
+        ff(&["-f", "lavfi", "-i", "color=c=black@0:s=160x90,format=rgba,drawbox=x=0:y=0:w=80:h=45:color=white@1:t=fill:replace=1",
+             "-frames:v", "1", title.to_str().unwrap()]);
+        let still = d.join("still.png");
+        ff(&["-f", "lavfi", "-i", "color=c=yellow:s=90x90", "-frames:v", "1", still.to_str().unwrap()]);
+
+        let mut p = project(160, 90);
+        p.media = vec![
+            media("g", &green, 160, 90, 4.0, true),
+            MediaAsset { id: "s".into(), path: still.to_string_lossy().into(), kind: MediaKind::Image, width: 90, height: 90,
+                         has_video: true, ..Default::default() },
+        ];
+        let mut fast = clip("g1", "g", 0.0, 0.0, 4.0);
+        fast.speed = 2.0; // 4s of source in 2s
+        p.tracks[0].clips.push(fast);
+        p.tracks[0].clips.push(Clip { id: "img".into(), media_id: Some("s".into()), start: 2.0, source_in: 0.0, source_out: 1.0, ..Default::default() });
+        p.tracks[1].clips.push(Clip { id: "t1".into(), kind: ClipKind::Title, start: 0.0, source_in: 0.0, source_out: 3.0, ..Default::default() });
+        let titles: HashMap<String, PathBuf> = [("t1".to_string(), title.clone())].into_iter().collect();
+
+        let out = d.join("out.mp4");
+        let plan = run_titles(&p, &ExportSettings::default(), None, &titles, &out);
+        assert!((plan.duration - 3.0).abs() < 1e-6, "2s fast clip + 1s still");
+        assert!(near(pixel(&out, 1.0, 20, 20), [255, 255, 255], 30), "title box");
+        assert!(near(pixel(&out, 1.0, 120, 70), [0, 128, 0], 40), "green under title");
+        assert!(near(pixel(&out, 2.5, 80, 45), [255, 255, 0], 40), "still image (contain fit)");
+        assert!(near(pixel(&out, 2.5, 10, 45), [0, 0, 0], 20), "pillarbox around square still");
+        assert!(mean_volume(&out, 0.5, 1.0) > -40.0, "sped-up audio present");
+        assert!(mean_volume(&out, 2.2, 0.6) < -80.0, "still image is silent");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn every_output_format_encodes() {
+        if !ffmpeg_ok() { return; }
+        let d = tmpdir();
+        let src = d.join("src.mp4");
+        solid(&src, "orange", 160, 90, 1.0, Some(440));
+        let mut p = project(160, 90);
+        p.media = vec![media("m", &src, 160, 90, 1.0, true)];
+        p.tracks[0].clips.push(clip("c", "m", 0.0, 0.0, 1.0));
+
+        let cases: Vec<(&str, ExportSettings)> = vec![
+            ("h264.mp4", ExportSettings::default()),
+            ("hevc.mp4", ExportSettings { codec: Codec::Hevc, ..Default::default() }),
+            ("prores.mov", ExportSettings { format: Format::Mov, codec: Codec::Prores, ..Default::default() }),
+            ("vp9.webm", ExportSettings { format: Format::Webm, codec: Codec::Vp9, ..Default::default() }),
+            ("anim.gif", ExportSettings { format: Format::Gif, fps: 10.0, width: 80, ..Default::default() }),
+            ("frame.png", ExportSettings { format: Format::Png, ..Default::default() }),
+            ("audio.mp3", ExportSettings { format: Format::Mp3, ..Default::default() }),
+            ("audio.wav", ExportSettings { format: Format::Wav, normalize_audio: true, ..Default::default() }),
+            ("audio.m4a", ExportSettings { format: Format::M4a, ..Default::default() }),
+            ("half.mp4", ExportSettings { width: 80, quality: Quality::Low, ..Default::default() }),
+        ];
+        for (name, s) in cases {
+            let out = d.join(name);
+            run(&p, &s, None, &out);
+            assert!(std::fs::metadata(&out).map(|m| m.len() > 0).unwrap_or(false), "{name} not written");
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn empty_timeline_is_an_error() {
+        let p = project(640, 360);
+        assert!(build(&p, &ExportSettings::default(), None, &HashMap::new(), "/tmp/x.mp4").is_err());
+    }
+
+    #[test]
+    fn color_matrices_are_identity_at_defaults() {
+        assert!(color_filters(&ColorAdjust::default()).is_empty());
+        let gray = color_filters(&ColorAdjust { saturation: 0.0, ..Default::default() });
+        assert_eq!(gray.len(), 1);
+        assert!(gray[0].starts_with("colorchannelmixer=rr=0.213:rg=0.715:rb=0.072"));
+    }
+}

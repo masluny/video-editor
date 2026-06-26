@@ -2,9 +2,16 @@
 
 Revind is a simple, professional desktop video editor for fast everyday editing: import media, trim clips, arrange a timeline, adjust color, add text, and export finished MP4 videos.
 
-## New in v0.2.8 — sharper Windows icon
+## New in v2.0 — rebuilt from the ground up
 
-- Updated app icon — a glossy purple two-blob mark on a dark squircle, used across the macOS/Windows/Linux bundles, the installer, and the in-app logo.
+- **Everything rewritten**: a new project model, timeline engine, preview compositor and export engine. What you see in the viewer is what you export.
+- **Remove silences**: right-click a clip with sound → *Remove silences…* to cut out pauses automatically.
+- **Real multi-track editing**: any number of video/audio tracks, blade tool, marquee select, Alt-drag duplicate, copy/paste, markers, in/out range, J/K/L shuttle.
+- **Titles** with presets you can drag onto the canvas; **colour looks**; **speed** with pitch-preserved audio; **detach audio**.
+- **More export formats**: MP4/MOV (H.264, HEVC, ProRes), WebM, GIF, MP3/M4A/WAV and PNG frames, with loudness normalisation and range export.
+- **Safer projects**: autosave with crash recovery, missing-media relinking, v1 projects open automatically.
+- Automatic preview proxies for formats the system player can't decode (MKV, AVI, MPEG-2…).
+- Cleaner top bar — the logo and app name were removed from the top-left corner.
 
 ## What's Included
 

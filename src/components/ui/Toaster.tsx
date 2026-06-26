@@ -1,42 +1,54 @@
 import * as React from "react";
-import { useProjectStore } from "../../stores/projectStore";
+import { AlertTriangle, CheckCircle2, Info, X } from "lucide-react";
+import { useStore, type Toast } from "../../store/store";
 import { cn } from "../../lib/cn";
-import { X, AlertTriangle, Info } from "lucide-react";
 
-/** Non-blocking toast notifications, bottom-right, auto-dismissing. */
 export function Toaster() {
-  const toasts = useProjectStore((s) => s.toasts);
-  const dismiss = useProjectStore((s) => s.dismissToast);
-
+  const toasts = useStore((s) => s.toasts);
   return (
-    <div className="fixed bottom-4 right-4 z-[60] flex flex-col gap-2 w-80 max-w-[90vw] pointer-events-none">
+    <div className="pointer-events-none fixed bottom-4 left-1/2 z-[95] flex w-[420px] max-w-[90vw] -translate-x-1/2 flex-col items-center gap-2">
       {toasts.map((t) => (
-        <Toast key={t.id} id={t.id} msg={t.msg} kind={t.kind} onDismiss={() => dismiss(t.id)} />
+        <ToastView key={t.id} toast={t} />
       ))}
     </div>
   );
 }
 
-function Toast({ id, msg, kind, onDismiss }: { id: string; msg: string; kind: "error" | "info"; onDismiss: () => void }) {
+function ToastView({ toast }: { toast: Toast }) {
+  const dismiss = useStore((s) => s.dismissToast);
+  const [hover, setHover] = React.useState(false);
   React.useEffect(() => {
-    const t = setTimeout(onDismiss, kind === "error" ? 6000 : 4000);
+    if (hover) return;
+    const t = setTimeout(() => dismiss(toast.id), toast.kind === "error" ? 9000 : toast.action ? 7000 : 4000);
     return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
+  }, [toast, dismiss, hover]);
 
+  const Icon = toast.kind === "error" ? AlertTriangle : toast.kind === "success" ? CheckCircle2 : Info;
   return (
     <div
+      role={toast.kind === "error" ? "alert" : "status"}
+      onPointerEnter={() => setHover(true)}
+      onPointerLeave={() => setHover(false)}
       className={cn(
-        "pointer-events-auto flex items-start gap-2.5 rounded-lg border px-3 py-2.5 shadow-panel animate-scaleIn bg-surface",
-        kind === "error" ? "border-danger/50" : "border-border"
+        "pointer-events-auto flex w-full animate-slideUp items-start gap-2.5 rounded-lg border bg-panel-2/95 px-3 py-2.5 shadow-pop backdrop-blur-xl",
+        toast.kind === "error" ? "border-danger/40" : "border-line-strong",
       )}
     >
-      <div className={cn("mt-0.5 shrink-0", kind === "error" ? "text-danger" : "text-accent")}>
-        {kind === "error" ? <AlertTriangle className="w-4 h-4" /> : <Info className="w-4 h-4" />}
-      </div>
-      <p className="flex-1 text-xs text-text leading-snug whitespace-pre-wrap break-words">{msg}</p>
-      <button className="btn-icon w-6 h-6 shrink-0 -mr-1 -mt-0.5" onClick={onDismiss} title="Dismiss">
-        <X className="w-3.5 h-3.5" />
+      <Icon className={cn("mt-px h-4 w-4 shrink-0", toast.kind === "error" ? "text-danger" : toast.kind === "success" ? "text-success" : "text-accent-ink")} />
+      <p className="min-w-0 flex-1 whitespace-pre-wrap break-words text-sm leading-[18px] text-ink">{toast.message}</p>
+      {toast.action && (
+        <button
+          className="shrink-0 rounded px-1.5 text-sm font-semibold text-accent-ink hover:text-white"
+          onClick={() => {
+            toast.action!.run();
+            dismiss(toast.id);
+          }}
+        >
+          {toast.action.label}
+        </button>
+      )}
+      <button className="-mr-1 shrink-0 rounded p-0.5 text-ink-dim hover:text-ink" onClick={() => dismiss(toast.id)} aria-label="Dismiss">
+        <X className="h-3.5 w-3.5" />
       </button>
     </div>
   );
