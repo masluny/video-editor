@@ -5,14 +5,16 @@
 // next clip, for gapless cuts) and one <img> (stills & titles). Audio tracks own two
 // <audio> elements. Geometry and colour mirror the export engine (graph.rs).
 //
-// A single wall clock drives playback; media elements are slaved to it. When an
-// element that should be playing isn't ready yet (seeking/buffering) the clock holds
-// ("pre-roll") so tracks never drift apart.
+// Timing lives in playback.ts: while playing, the topmost video (else audible audio) is
+// the master clock and the other elements follow it; the wall clock only covers gaps,
+// titles and stills. A clip that becomes active without being ready (start, seek, cut)
+// still pre-rolls: the clock holds until it can play.
 
 import type { Clip, Id, MediaAsset, Project, Track } from "../../lib/types";
 import { clipAt, clipEnd, EPS, projectDuration, speedOf } from "../../lib/timeline";
 import { cssClipPath, cssFilter, fadeFactor, fitBox } from "../../lib/visual";
 import { titleImageUrl } from "../../lib/title";
+import { Slot, Transport, type Voice } from "./playback";
 
 export interface EngineHost {
   project(): Project;
@@ -21,62 +23,6 @@ export interface EngineHost {
   /** Called ~30×/s during playback. */
   onTime(t: number): void;
   onEnded(t: number): void;
-}
-
-class Slot {
-  url = "";
-  clipId: Id | null = null;
-  private pending: number | null = null;
-
-  constructor(public el: HTMLVideoElement | HTMLAudioElement) {
-    el.preload = "auto";
-    el.addEventListener("seeked", () => this.flush());
-    el.addEventListener("loadedmetadata", () => this.flush());
-    el.addEventListener("error", () => {
-      this.pending = null;
-    });
-  }
-
-  load(url: string) {
-    if (this.url === url) return;
-    this.url = url;
-    this.pending = null;
-    this.el.src = url;
-  }
-
-  seek(t: number, tolerance: number) {
-    if (!Number.isFinite(t)) return;
-    const el = this.el;
-    if (el.readyState < 1 || el.seeking) {
-      this.pending = t;
-      return;
-    }
-    if (Math.abs(el.currentTime - t) > tolerance) {
-      try {
-        el.currentTime = t;
-      } catch {
-        this.pending = t;
-      }
-    }
-  }
-
-  private flush() {
-    if (this.pending == null || this.el.seeking || this.el.readyState < 1) return;
-    const t = this.pending;
-    this.pending = null;
-    if (Math.abs(this.el.currentTime - t) > 0.002) this.el.currentTime = t;
-  }
-
-  get ready(): boolean {
-    return !this.el.seeking && this.pending == null && this.el.readyState >= 3;
-  }
-
-  hide() {
-    const el = this.el;
-    if (!el.paused) el.pause();
-    el.muted = true;
-    if (el instanceof HTMLVideoElement && el.style.visibility !== "hidden") el.style.visibility = "hidden";
-  }
 }
 
 interface Layer {
@@ -102,17 +48,12 @@ function newVideo(): HTMLVideoElement {
 export class Engine {
   private layers = new Map<Id, Layer>();
   private raf = 0;
-  private playing = false;
-  private rate = 1;
-  private time = 0;
-  private origin = { perf: 0, time: 0 };
-  private prerolling = false;
-  private prerollSince = 0;
+  private tp = new Transport();
   private lastPublish = 0;
   private master = { volume: 1, muted: false };
   private titles = new Map<Id, { key: string; url: string | null }>();
   private renderQueued = false;
-  private active: Slot[] = [];
+  private voices: Voice[] = [];
   private geometry = new WeakMap<HTMLElement, string>();
 
   constructor(private stage: HTMLDivElement, private host: EngineHost) {}
@@ -129,87 +70,61 @@ export class Engine {
   }
 
   setRate(rate: number) {
-    if (this.playing) this.origin = { perf: performance.now(), time: this.time };
-    this.rate = rate || 1;
+    this.tp.setRate(rate);
     this.invalidate();
   }
 
   play(from: number) {
     const end = projectDuration(this.host.project());
-    this.time = from >= end - 1e-3 && this.rate > 0 ? 0 : from;
-    if (this.time !== from) this.host.onTime(this.time);
-    this.playing = true;
-    this.prerolling = true;
-    this.prerollSince = performance.now();
-    this.origin = { perf: performance.now(), time: this.time };
+    const t = from >= end - 1e-3 && this.tp.rate > 0 ? 0 : from;
+    if (t !== from) this.host.onTime(t);
+    this.tp.play(performance.now(), t);
     cancelAnimationFrame(this.raf);
     this.raf = requestAnimationFrame(this.tick);
   }
 
   pause() {
-    this.playing = false;
+    this.tp.pause();
     cancelAnimationFrame(this.raf);
-    this.render(this.time);
+    this.render(this.tp.time);
   }
 
   seek(t: number) {
-    this.time = Math.max(0, t);
-    if (this.playing) {
-      this.prerolling = true;
-      this.prerollSince = performance.now();
-      this.origin = { perf: performance.now(), time: this.time };
-    }
-    this.render(this.time);
+    this.tp.seek(performance.now(), Math.max(0, t));
+    this.render(this.tp.time);
   }
 
   /** Something changed (project, media sources): redraw the current frame. */
   invalidate() {
-    if (this.playing || this.renderQueued) return;
+    if (this.tp.playing || this.renderQueued) return;
     this.renderQueued = true;
     requestAnimationFrame(() => {
       this.renderQueued = false;
-      if (!this.playing) this.render(this.time);
+      if (!this.tp.playing) this.render(this.tp.time);
     });
   }
 
   get currentTime() {
-    return this.time;
+    return this.tp.time;
   }
 
   private tick = (now: number) => {
-    if (!this.playing) return;
-    const p = this.host.project();
-    const end = projectDuration(p);
-    let t = this.prerolling ? this.origin.time : this.origin.time + ((now - this.origin.perf) / 1000) * this.rate;
+    const tp = this.tp;
+    if (!tp.playing) return;
+    const end = projectDuration(this.host.project());
+    let t = tp.advance(now);
 
-    if ((this.rate > 0 && t >= end) || (this.rate < 0 && t <= 0)) {
+    if ((tp.rate > 0 && t >= end) || (tp.rate < 0 && t <= 0)) {
       t = Math.max(0, Math.min(end, t));
-      this.time = t;
-      this.playing = false;
+      tp.pause();
+      tp.seek(now, t);
       this.render(t);
       this.host.onTime(t);
       this.host.onEnded(t);
       return;
     }
 
-    this.time = t;
-    this.render(t);
-    const ready = this.active.every((s) => s.ready);
-
-    if (this.prerolling) {
-      if (ready || now - this.prerollSince > 2500) {
-        this.prerolling = false;
-        this.origin = { perf: now, time: t };
-        this.render(t); // starts playback of the (now ready) elements
-      }
-    } else if (!ready && this.rate > 0) {
-      // A newly active clip is still seeking/buffering: hold the clock.
-      this.prerolling = true;
-      this.prerollSince = now;
-      this.origin = { perf: now, time: t };
-      for (const s of this.active) if (!s.el.paused) s.el.pause();
-    }
-
+    this.render(t, now);
     if (now - this.lastPublish > 33) {
       this.lastPublish = now;
       this.host.onTime(t);
@@ -219,12 +134,15 @@ export class Engine {
 
   // ------------------------------------------------------------------ render
 
-  private render(t: number) {
+  private render(t: number, now = performance.now()) {
     const p = this.host.project();
     this.syncLayers(p);
     this.stage.style.background = p.settings.background || "#000";
+    // Paused right at the end: show the last frame, not the black just past it.
+    const end = projectDuration(p);
+    if (!this.tp.playing && end > 0 && t >= end - EPS) t = Math.max(0, end - 0.5 / (p.settings.fps || 30));
     const anySolo = p.tracks.some((tr) => tr.solo);
-    this.active = [];
+    this.voices = [];
     let z = 0;
     for (const track of p.tracks) {
       const layer = this.layers.get(track.id)!;
@@ -232,6 +150,7 @@ export class Engine {
       if (track.kind === "video") this.renderVideoTrack(p, layer, track, t, audible, z++);
       else this.renderAudioTrack(p, layer, track, t, audible);
     }
+    this.tp.sync(now, t, this.voices, p.settings.fps);
   }
 
   private syncLayers(p: Project) {
@@ -327,26 +246,6 @@ export class Engine {
     return best;
   }
 
-  private drivePlayback(slot: Slot, clip: Clip, t: number, fps: number) {
-    const el = slot.el;
-    const sp = speedOf(clip);
-    const mediaTime = clip.in + (t - clip.start) * sp;
-    this.active.push(slot);
-    if (this.playing && this.rate > 0 && !this.prerolling) {
-      const rate = Math.min(16, Math.max(0.0625, sp * this.rate));
-      if (Math.abs(el.playbackRate - rate) > 1e-3) el.playbackRate = rate;
-      if (el.paused) {
-        slot.seek(mediaTime, 0.03);
-        el.play().catch(() => {});
-      } else if (Math.abs(el.currentTime - mediaTime) > 0.25 * Math.max(1, rate)) {
-        slot.seek(mediaTime, 0);
-      }
-    } else {
-      if (!el.paused) el.pause();
-      slot.seek(mediaTime, this.playing ? 0.02 : 0.5 / (fps || 30));
-    }
-  }
-
   private gain(track: Track, clip: Clip, t: number, audible: boolean): number {
     if (!audible || clip.muted || this.master.muted) return 0;
     const g = this.master.volume * track.volume * clip.volume * fadeFactor(clip, t - clip.start);
@@ -395,7 +294,7 @@ export class Engine {
         videoSlot = this.acquire(layer, clip.id, url);
         const el = videoSlot.el as HTMLVideoElement;
         this.place(el, clip, media.width, media.height, W, H, t);
-        this.drivePlayback(videoSlot, clip, t, fps);
+        this.voices.push({ slot: videoSlot, clip, video: true, lead: !track.hidden });
         const g = this.gain(track, clip, t, audible && media.hasAudio);
         el.muted = g <= 0;
         if (g > 0 && Math.abs(el.volume - g) > 0.005) el.volume = g;
@@ -471,7 +370,7 @@ export class Engine {
       const url = this.host.source(media);
       if (url) {
         slot = this.acquire(layer, clip.id, url);
-        this.drivePlayback(slot, clip, t, p.settings.fps);
+        this.voices.push({ slot, clip, video: false, lead: audible && !clip.muted });
         const g = this.gain(track, clip, t, audible);
         slot.el.muted = g <= 0;
         if (g > 0 && Math.abs(slot.el.volume - g) > 0.005) slot.el.volume = g;

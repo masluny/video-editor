@@ -32,6 +32,16 @@ export function snapToFrame(t: number, fps: number): number {
   return Math.max(0, Math.round(t * fps) / fps);
 }
 
+/**
+ * Where to place a clip at `t`: exactly on an edit point less than a frame away (clip
+ * edges needn't sit on the frame grid, and rounding past one leaves a black sliver),
+ * else on the nearest frame.
+ */
+export function snapToEdit(t: number, tracks: Track[], fps: number): number {
+  const edit = fps > 0 ? snapTime(t, snapTargets(tracks, new Set()), 1 / fps - EPS) : null;
+  return edit ?? snapToFrame(t, fps);
+}
+
 /** Titles and stills have no source bounds; they can be stretched freely. */
 export function isUnbounded(c: Clip, media?: MediaAsset): boolean {
   return c.type === "title" || media?.kind === "image" || !media || !(media.duration > 0);
