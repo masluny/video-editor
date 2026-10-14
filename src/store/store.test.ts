@@ -1,11 +1,15 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { useStore, findClip } from "./store";
 import type { MediaAsset } from "../lib/types";
-import { clipEnd } from "../lib/timeline";
+import { clipEnd, snapToFrame } from "../lib/timeline";
 import { migrateProject } from "../lib/migrate";
 
 const video: MediaAsset = {
   id: "v", path: "/clip.mov", name: "clip.mov", kind: "video", duration: 10, width: 1080, height: 1920, fps: 30, hasVideo: true, hasAudio: true,
+};
+// The clip from the stutter report: its end isn't on the 23.759 fps frame grid.
+const shot: MediaAsset = {
+  id: "o", path: "/shot.mp4", name: "shot.mp4", kind: "video", duration: 8.195729, width: 1280, height: 720, fps: 23.759, hasVideo: true, hasAudio: true,
 };
 const song: MediaAsset = {
   id: "s", path: "/song.mp3", name: "song.mp3", kind: "audio", duration: 30, width: 0, height: 0, fps: 0, hasVideo: false, hasAudio: true,
@@ -36,6 +40,25 @@ describe("placing media", () => {
     const titleTrack = videos.findIndex((t) => t.clips.some((c) => c.type === "title"));
     const footageTrack = videos.findIndex((t) => t.clips.some((c) => c.type === "media"));
     expect(titleTrack).toBeGreaterThan(footageTrack);
+  });
+
+  it("butts a clip against the edit at the playhead instead of rounding past it", () => {
+    st().addMedia([shot]);
+    const first = st().placeMedia("o", { at: 0 })!;
+    const end = clipEnd(findClip(st().project, first)!.clip);
+    const fps = st().project.settings.fps;
+    expect(fps).toBe(23.759);
+    // Exactly at the edit (End key, playback ended) and a sub-frame past it (frame stepping).
+    for (const playhead of [end, snapToFrame(end, fps)]) {
+      st().seek(playhead);
+      const id = st().placeMedia("o")!;
+      expect(findClip(st().project, id)!.clip.start).toBe(end);
+      st().undo();
+    }
+    // Away from edits it still lands on a frame.
+    st().seek(3.01);
+    const mid = st().placeMedia("o", { mode: "insert" })!;
+    expect(findClip(st().project, mid)!.clip.start).toBe(snapToFrame(3.01, fps));
   });
 });
 

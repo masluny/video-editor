@@ -12,6 +12,7 @@ import {
   prevEditPoint,
   rippleDelete,
   snapTime,
+  snapToEdit,
   speechRanges,
   split,
 } from "./timeline";
@@ -114,5 +115,20 @@ describe("navigation", () => {
   it("snaps within tolerance only", () => {
     expect(snapTime(4.9, [0, 5, 8], 0.2)).toBe(5);
     expect(snapTime(4.5, [0, 5, 8], 0.2)).toBeNull();
+  });
+});
+
+describe("snapToEdit", () => {
+  const track = { id: "t", kind: "video" as const, name: "V1", hidden: false, locked: false, muted: false, solo: false, volume: 1, clips: [c("a", 0, 8.195729)] };
+
+  it("lands exactly on an edit point less than a frame away", () => {
+    expect(snapToEdit(8.195729, [track], 23.759)).toBe(8.195729);
+    expect(snapToEdit(8.207416, [track], 23.759)).toBe(8.195729);
+    expect(snapToEdit(8.17, [track], 23.759)).toBe(8.195729);
+  });
+
+  it("rounds to the frame grid elsewhere", () => {
+    expect(snapToEdit(4.01, [track], 25)).toBe(4);
+    expect(snapToEdit(8.195729 + 2 / 23.759, [track], 23.759)).toBeCloseTo(197 / 23.759, 9);
   });
 });

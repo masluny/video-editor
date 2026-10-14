@@ -13,6 +13,7 @@ import {
   overwrite,
   projectDuration,
   rippleDelete,
+  snapToEdit,
   snapToFrame,
   sortClips,
   split,
@@ -336,7 +337,7 @@ export const useStore = create<State>()((set, get) => ({
     const media = st.project.media.find((m) => m.id === mediaId);
     if (!media) return null;
     const fps = st.project.settings.fps;
-    const at = snapToFrame(opts.at ?? st.playhead, fps);
+    const at = snapToEdit(opts.at ?? st.playhead, st.project.tracks, fps);
     const clip = mediaClip(media, at, opts.range);
     const len = clipDuration(clip);
     const kind: TrackKind = media.kind === "audio" ? "audio" : "video";
@@ -385,7 +386,7 @@ export const useStore = create<State>()((set, get) => ({
     if (s.boxPadding) s.boxPadding = Math.round(s.boxPadding * k);
     if (s.boxRadius) s.boxRadius = Math.round(s.boxRadius * k);
     if (s.strokeWidth) s.strokeWidth = Math.max(1, Math.round(s.strokeWidth * k));
-    const at = snapToFrame(opts.at ?? st.playhead, st.project.settings.fps);
+    const at = snapToEdit(opts.at ?? st.playhead, st.project.tracks, st.project.settings.fps);
     const clip = titleClip(at, s);
     const len = clipDuration(clip);
     let placed = false;
@@ -579,7 +580,7 @@ export const useStore = create<State>()((set, get) => ({
     const { clipboard, playhead, project } = get();
     if (!clipboard.length) return;
     const lo = Math.min(...clipboard.map((e) => e.clip.start));
-    const at = snapToFrame(playhead, project.settings.fps);
+    const at = snapToEdit(playhead, project.tracks, project.settings.fps);
     const created: Id[] = [];
     get().apply((p) => {
       for (const e of clipboard) {
