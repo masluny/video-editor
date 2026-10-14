@@ -5,22 +5,28 @@ import { mediaClip, newProject, newTrack, titleClip, MARKER_COLORS } from "../li
 import {
   clipDuration,
   clipEnd,
+  closeAllGaps,
   EPS,
   gapAt,
   closeGap,
   insert,
   keepSourceRanges,
+  MIN_CLIP,
   overwrite,
   projectDuration,
+  removeRange,
   rippleDelete,
+  rippleTrim,
   snapToEdit,
   snapToFrame,
   sortClips,
+  speedOf,
   split,
+  videoEnd,
 } from "../lib/timeline";
 import { uid } from "../lib/uid";
 import type { Waveform } from "../lib/backend";
-import { stripExtension } from "../lib/format";
+import { seconds, stripExtension } from "../lib/format";
 
 export type Tool = "select" | "blade";
 export type PlaceMode = "overwrite" | "insert";
@@ -119,6 +125,14 @@ interface State {
   deleteClips: (ids: Id[], ripple: boolean) => void;
   splitAtPlayhead: () => void;
   splitClipAt: (id: Id, time: number) => void;
+  /** Q / W: ripple-trim the clips under the playhead so they start / end there. */
+  rippleTrimToPlayhead: (side: "head" | "tail") => void;
+  /** Move clips by whole frames, overwriting whatever they land on. */
+  nudgeClips: (ids: Id[], frames: number) => void;
+  /** Trim audio clips that run past the picture so they end with it. Returns how many changed. */
+  matchVideoLength: (ids: Id[], fadeOut?: number) => number;
+  /** Repeat an audio clip until it reaches the end of the picture. Returns the copies added. */
+  loopToVideoLength: (id: Id) => number;
   duplicateClips: (ids: Id[]) => void;
   copy: () => void;
   cut: () => void;
@@ -126,6 +140,7 @@ interface State {
   detachAudio: (id: Id) => void;
   replaceWithRanges: (id: Id, ranges: [number, number][]) => number;
   closeGapAt: (trackId: Id, time: number) => void;
+  closeTrackGaps: (trackId: Id) => void;
 
   // --- tracks ----------------------------------------------------------------
   addTrack: (kind: TrackKind) => void;
@@ -139,6 +154,10 @@ interface State {
   setRange: (range: { in: number; out: number } | null) => void;
   setRangeIn: (t: number) => void;
   setRangeOut: (t: number) => void;
+  /** Remove the In–Out range from every unlocked track, leaving a gap. */
+  liftRange: () => void;
+  /** Remove the In–Out range from every unlocked track and close it up. */
+  extractRange: () => void;
   updateSettings: (patch: Partial<ProjectSettings>) => void;
   renameProject: (name: string) => void;
 
@@ -179,6 +198,13 @@ export function findClip(p: Project, id: Id): { track: Track; clip: Clip; index:
     if (index >= 0) return { track, clip: track.clips[index], index };
   }
   return null;
+}
+
+/** Clips strictly under the playhead: the selected ones if any are, else every unlocked one. */
+function clipsUnder(p: Project, t: number, selection: Id[]): Clip[] {
+  const sel = new Set(selection);
+  const targets = p.tracks.flatMap((tr) => (tr.locked ? [] : tr.clips.filter((c) => t > c.start + EPS && t < clipEnd(c) - EPS)));
+  return sel.size && targets.some((c) => sel.has(c.id)) ? targets.filter((c) => sel.has(c.id)) : targets;
 }
 
 /** First track of `kind` that is unlocked and has room for [start, start+len). */
@@ -373,6 +399,16 @@ export const useStore = create<State>()((set, get) => ({
       adopted = null;
     }
     if (placedOn) set({ selection: [clip.id] });
+    if (placedOn && kind === "audio") {
+      const end = videoEnd(get().project.tracks);
+      const over = at + len - end;
+      if (end > 0 && at < end - MIN_CLIP && over > 0.5) {
+        get().toast(`“${stripExtension(media.name)}” runs ${seconds(over)} past the end of the video.`, "info", {
+          label: "Trim to video",
+          run: () => get().matchVideoLength([clip.id]),
+        });
+      }
+    }
     return placedOn ? clip.id : null;
   },
 
@@ -498,11 +534,7 @@ export const useStore = create<State>()((set, get) => ({
   splitAtPlayhead: () => {
     const { playhead, selection, project } = get();
     const sel = new Set(selection);
-    // Selected clips under the playhead, or every unlocked clip under it.
-    const targets = project.tracks.flatMap((t) =>
-      t.locked ? [] : t.clips.filter((c) => playhead > c.start + EPS && playhead < clipEnd(c) - EPS),
-    );
-    const chosen = sel.size && targets.some((c) => sel.has(c.id)) ? targets.filter((c) => sel.has(c.id)) : targets;
+    const chosen = clipsUnder(project, playhead, selection);
     if (!chosen.length) return;
     const ids = new Set(chosen.map((c) => c.id));
     const newSel: Id[] = [];
@@ -533,6 +565,84 @@ export const useStore = create<State>()((set, get) => ({
         if (parts) t.clips.splice(i, 1, ...(parts as Draft<Clip>[]));
       }
     });
+  },
+
+  rippleTrimToPlayhead: (side) => {
+    const { playhead, selection, project } = get();
+    const chosen = clipsUnder(project, playhead, selection);
+    if (!chosen.length) return;
+    const ids = new Set(chosen.map((c) => c.id));
+    get().apply((p) => {
+      for (const t of p.tracks) {
+        if (t.locked || !t.clips.some((c) => ids.has(c.id))) continue;
+        let clips = plain(t.clips) as Clip[];
+        for (const c of clips.filter((x) => ids.has(x.id))) clips = rippleTrim(clips, c.id, playhead, side);
+        t.clips = clips as Draft<Clip>[];
+      }
+    });
+    // Trimming a head pulls the frame under the playhead back to where the clip starts.
+    if (side === "head") get().seek(Math.min(...chosen.map((c) => c.start)));
+  },
+
+  nudgeClips: (ids, frames) => {
+    const { project } = get();
+    const hits = ids.map((id) => findClip(project, id)).filter((h): h is NonNullable<typeof h> => !!h && !h.track.locked);
+    if (!hits.length || !frames) return;
+    const delta = Math.max(frames / (project.settings.fps || 30), -Math.min(...hits.map((h) => h.clip.start)));
+    if (Math.abs(delta) < EPS) return;
+    get().moveClipsLive(hits.map((h) => ({ id: h.clip.id, trackId: h.track.id, start: h.clip.start + delta })));
+    get().settleClips(hits.map((h) => h.clip.id));
+  },
+
+  matchVideoLength: (ids, fadeOut = 0) => {
+    const end = videoEnd(get().project.tracks);
+    if (end <= 0) return 0;
+    const want = new Set(ids);
+    let changed = 0;
+    get().apply((p) => {
+      for (const t of p.tracks) {
+        if (t.kind !== "audio" || t.locked) continue;
+        for (const c of t.clips) {
+          // Only clips that reach the end of the picture; ones ending earlier are left alone.
+          if (!want.has(c.id) || c.start >= end - MIN_CLIP || clipEnd(c as Clip) < end - EPS) continue;
+          const before = { out: c.out, fadeOut: c.fadeOut };
+          c.out = c.in + (end - c.start) * speedOf(c as Clip);
+          const d = clipDuration(c as Clip);
+          c.fadeOut = Math.min(fadeOut || c.fadeOut, d);
+          c.fadeIn = Math.min(c.fadeIn, d - c.fadeOut);
+          if (Math.abs(before.out - c.out) > EPS || Math.abs(before.fadeOut - c.fadeOut) > EPS) changed++;
+        }
+      }
+    });
+    return changed;
+  },
+
+  loopToVideoLength: (id) => {
+    const { project } = get();
+    const hit = findClip(project, id);
+    const end = videoEnd(project.tracks);
+    if (!hit || hit.track.kind !== "audio" || hit.track.locked) return 0;
+    const c = hit.clip;
+    const len = clipDuration(c);
+    // Nothing to fill, or so short a loop it would litter the track.
+    if (len < MIN_CLIP || clipEnd(c) >= end - MIN_CLIP || (end - clipEnd(c)) / len > 200) return 0;
+    const copies: Clip[] = [];
+    for (let at = clipEnd(c); at < end - MIN_CLIP; at += len) {
+      const piece: Clip = { ...structuredClone(c), id: uid(), start: at, fadeIn: 0, fadeOut: 0 };
+      if (at + len > end) piece.out = piece.in + (end - at) * speedOf(c);
+      copies.push(piece);
+    }
+    // A fade-out belongs at the very end, not at every loop seam.
+    const last = copies[copies.length - 1];
+    last.fadeOut = Math.min(c.fadeOut, clipDuration(last));
+    get().apply((p) => {
+      const t = p.tracks.find((x) => x.id === hit.track.id)!;
+      let clips = (plain(t.clips) as Clip[]).map((x) => (x.id === id ? { ...x, fadeOut: 0 } : x));
+      for (const piece of copies) clips = overwrite(clips, piece);
+      t.clips = clips as Draft<Clip>[];
+    });
+    set({ selection: [id, ...copies.map((x) => x.id)] });
+    return copies.length;
   },
 
   duplicateClips: (ids) => {
@@ -666,6 +776,15 @@ export const useStore = create<State>()((set, get) => ({
     });
   },
 
+  closeTrackGaps: (trackId) => {
+    const t = get().project.tracks.find((x) => x.id === trackId);
+    if (!t || t.locked) return;
+    const sorted = sortClips(t.clips);
+    const packed = closeAllGaps(sorted);
+    if (packed.every((c, i) => c === sorted[i])) return;
+    get().apply((p) => void (p.tracks.find((x) => x.id === trackId)!.clips = packed as Draft<Clip>[]));
+  },
+
   // ------------------------------------------------------------------ tracks
   addTrack: (kind) => get().apply((p) => insertTrack(p, newTrack(kind, nextTrackName(p as Project, kind)))),
 
@@ -721,6 +840,9 @@ export const useStore = create<State>()((set, get) => ({
     set({ range: { in: inP, out: t } });
   },
 
+  liftRange: () => cutRange(false),
+  extractRange: () => cutRange(true),
+
   updateSettings: (patch) => get().apply((p) => void Object.assign(p.settings, patch)),
 
   renameProject: (name) => get().apply((p) => void (p.name = name.trim() || "Untitled")),
@@ -751,6 +873,27 @@ export const useStore = create<State>()((set, get) => ({
 
 // Set inside placeMedia's recipe, read right after it (immer recipes can't return extra data).
 let adopted: { w: number; h: number; fps: number } | null = null;
+
+/** Lift / extract the In–Out range across every unlocked track (markers follow an extract). */
+function cutRange(ripple: boolean) {
+  const { range, project, apply } = useStore.getState();
+  if (!range) return;
+  const { in: a, out: b } = range;
+  const touched = (c: Clip) => clipEnd(c) > a + EPS && (ripple || c.start < b - EPS);
+  if (!project.tracks.some((t) => !t.locked && t.clips.some(touched))) return;
+  apply((p) => {
+    for (const t of p.tracks) {
+      if (!t.locked && t.clips.some((c) => touched(c as Clip))) t.clips = removeRange(plain(t.clips) as Clip[], a, b, ripple) as Draft<Clip>[];
+    }
+    if (ripple) {
+      p.markers = p.markers.filter((m) => m.time < a - EPS || m.time >= b - EPS);
+      for (const m of p.markers) if (m.time >= b - EPS) m.time -= b - a;
+    }
+  });
+  useStore.setState({ range: null });
+  useStore.getState().seek(a);
+  pruneSelection();
+}
 
 function pruneSelection() {
   const { project, selection } = useStore.getState();

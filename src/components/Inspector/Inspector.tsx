@@ -8,8 +8,10 @@ import {
   FlipHorizontal2,
   FlipVertical2,
   Image as ImageIcon,
+  ArrowRightToLine,
   Italic,
   Music,
+  Repeat,
   RotateCcw,
   SlidersHorizontal,
   Type,
@@ -19,7 +21,7 @@ import {
 import type { Clip, ColorAdjust, MediaAsset, TitleStyle, Track } from "../../lib/types";
 import type { Draft } from "immer";
 import { commitSoon, findClip, store, useStore } from "../../store/store";
-import { clipDuration, clipEnd, EPS, isUnbounded, MIN_CLIP, speedOf } from "../../lib/timeline";
+import { clipDuration, clipEnd, EPS, isUnbounded, MIN_CLIP, speedOf, videoEnd } from "../../lib/timeline";
 import { defaultColor, defaultCrop, defaultTransform, TITLE_FONTS } from "../../lib/defaults";
 import { NumberField, SliderField } from "../ui/NumberField";
 import { Button, ColorInput, FieldRow, IconButton, Segmented, Select, Switch } from "../ui/controls";
@@ -326,6 +328,7 @@ function ClipInspector({ clip, track, media }: { clip: Clip; track: Track; media
           <FieldRow label="Mute">
             <Switch checked={clip.muted} onChange={(m) => upd((c) => void (c.muted = m))} />
           </FieldRow>
+          {track.kind === "audio" && <VideoLength clip={clip} />}
           <div className="flex flex-wrap gap-2 pt-1">
             <Button size="sm" onClick={() => store().openDialog({ kind: "silence", clipId: id })} title="Find pauses in the audio and cut them out">
               <Wand2 className="h-3.5 w-3.5 text-accent-ink" /> Remove silences…
@@ -343,6 +346,30 @@ function ClipInspector({ clip, track, media }: { clip: Clip; track: Track; media
 
       {media && <MediaInfo media={media} />}
     </div>
+  );
+}
+
+/** Fit a music clip to the picture: trim it to end with the video, or loop it until it does. */
+function VideoLength({ clip }: { clip: Clip }) {
+  const end = useStore((s) => videoEnd(s.project.tracks));
+  if (end <= 0 || clip.start >= end - MIN_CLIP) return null;
+  const over = clipEnd(clip) - end;
+  return (
+    <FieldRow label="Video">
+      <div className="flex flex-1 flex-wrap items-center gap-1.5">
+        {over > EPS ? (
+          <Button size="sm" onClick={() => store().matchVideoLength([clip.id])} title={`Trim to end with the video (${seconds(over)} shorter)`}>
+            <ArrowRightToLine className="h-3.5 w-3.5" /> Match length
+          </Button>
+        ) : over < -MIN_CLIP ? (
+          <Button size="sm" onClick={() => store().loopToVideoLength(clip.id)} title={`Repeat until the video ends (${seconds(-over)} to fill)`}>
+            <Repeat className="h-3.5 w-3.5" /> Loop to fill
+          </Button>
+        ) : (
+          <span className="text-xs text-success">Ends with the video</span>
+        )}
+      </div>
+    </FieldRow>
   );
 }
 

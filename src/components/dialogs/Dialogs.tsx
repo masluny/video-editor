@@ -56,6 +56,8 @@ const SHORTCUTS: [string, [string, string][]][] = [
     "Editing",
     [
       ["S  or  ⌘B", "Split at playhead"],
+      ["Q / W", "Trim clip start / end to playhead (ripple)"],
+      ["⌥← / ⌥→", "Nudge selection one frame (Shift: ten)"],
       ["⌫ / Del", "Delete selection"],
       ["⇧⌫", "Ripple delete (close the gap)"],
       ["⌘C / ⌘X / ⌘V", "Copy / cut / paste at playhead"],
@@ -74,6 +76,7 @@ const SHORTCUTS: [string, [string, string][]][] = [
       ["M", "Add marker"],
       ["I / O", "Set range in / out"],
       ["⌥X", "Clear range"],
+      ["; / '", "Lift / extract the range"],
       ["+ / −", "Zoom timeline"],
       ["⇧Z", "Zoom to fit"],
       ["⌘ + scroll", "Zoom around the pointer"],

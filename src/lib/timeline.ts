@@ -144,6 +144,70 @@ export function split(c: Clip, t: number): [Clip, Clip] | null {
   return [left, right];
 }
 
+/**
+ * Cut the span [a, b) out of a track. Clips straddling an edge are split (as by `split`);
+ * with `ripple` everything after the span moves left to close it (extract), otherwise
+ * a gap is left (lift).
+ */
+export function removeRange(clips: Clip[], a: number, b: number, ripple: boolean): Clip[] {
+  if (b - a <= EPS) return clips;
+  const shift = ripple ? b - a : 0;
+  const out: Clip[] = [];
+  for (const x of clips) {
+    const xs = x.start;
+    const xe = clipEnd(x);
+    if (xe <= a + EPS) out.push(x);
+    else if (xs >= b - EPS) out.push(shift ? { ...x, start: xs - shift } : x);
+    else {
+      if (xs < a - EPS) {
+        const head = { ...cutTail(x, a), fadeOut: 0 };
+        out.push({ ...head, fadeIn: Math.min(head.fadeIn, clipDuration(head)) });
+      }
+      if (xe > b + EPS) {
+        const tail = { ...cutHead(x, b), id: xs < a - EPS ? uid() : x.id, start: b - shift, fadeIn: 0 };
+        out.push({ ...tail, fadeOut: Math.min(tail.fadeOut, clipDuration(tail)) });
+      }
+    }
+  }
+  return sortClips(out);
+}
+
+/**
+ * Ripple-trim one clip to time `t`: drop its head (start stays put) or its tail, and pull
+ * the rest of the track left by the removed length. No-op unless `t` is inside the clip.
+ */
+export function rippleTrim(clips: Clip[], id: string, t: number, side: "head" | "tail"): Clip[] {
+  const c = clips.find((x) => x.id === id);
+  if (!c || t <= c.start + EPS || t >= clipEnd(c) - EPS) return clips;
+  const end = clipEnd(c);
+  const removed = side === "head" ? t - c.start : end - t;
+  const trimmed = side === "head" ? { ...cutHead(c, t), start: c.start } : cutTail(c, t);
+  const d = clipDuration(trimmed);
+  trimmed.fadeIn = Math.min(trimmed.fadeIn, d);
+  trimmed.fadeOut = Math.min(trimmed.fadeOut, d - trimmed.fadeIn);
+  return sortClips(clips.map((x) => (x === c ? trimmed : x.start >= end - EPS ? { ...x, start: x.start - removed } : x)));
+}
+
+/** Butt every clip against the one before it, keeping the first clip where it is. */
+export function closeAllGaps(clips: Clip[]): Clip[] {
+  let at = -Infinity;
+  return sortClips(clips).map((c) => {
+    const start = at === -Infinity ? c.start : at;
+    at = start + clipDuration(c);
+    return Math.abs(start - c.start) > EPS ? { ...c, start } : c;
+  });
+}
+
+/** End of the picture: the last clip on a visible video track (0 when there is none). */
+export function videoEnd(tracks: Track[], exclude?: Set<string>): number {
+  let end = 0;
+  for (const t of tracks) {
+    if (t.kind !== "video" || t.hidden) continue;
+    for (const c of t.clips) if (!exclude?.has(c.id)) end = Math.max(end, clipEnd(c));
+  }
+  return end;
+}
+
 /** The gap (empty span) on a track that contains time `t`, if any. */
 export function gapAt(t: Track, time: number): { start: number; end: number } | null {
   const sorted = sortClips(t.clips);

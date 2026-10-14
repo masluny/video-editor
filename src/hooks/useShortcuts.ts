@@ -50,6 +50,11 @@ export function useShortcuts() {
         return;
       }
       if (e.altKey && (k === "x" || e.code === "KeyX")) return handled(() => s.setRange(null));
+      if (e.altKey && s.selection.length && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+        const frames = (e.key === "ArrowLeft" ? -1 : 1) * (e.shiftKey ? 10 : 1);
+        return handled(() => s.nudgeClips(s.selection, frames));
+      }
+      const range = (fn: () => void) => handled(() => (s.range ? fn() : s.toast("Set a range first: I marks the in point, O the out point.", "info")));
 
       switch (e.key) {
         case " ":
@@ -76,6 +81,10 @@ export function useShortcuts() {
           return;
         case "?":
           return handled(() => s.openDialog({ kind: "shortcuts" }));
+        case ";":
+          return range(() => s.liftRange());
+        case "'":
+          return range(() => s.extractRange());
         case "+":
         case "=":
           return handled(() => s.setZoom(s.zoom * 1.4));
@@ -87,6 +96,10 @@ export function useShortcuts() {
       switch (k) {
         case "s":
           return handled(() => s.splitAtPlayhead());
+        case "q":
+          return handled(() => s.rippleTrimToPlayhead("head"));
+        case "w":
+          return handled(() => s.rippleTrimToPlayhead("tail"));
         case "b":
           return handled(() => s.setTool("blade"));
         case "v":

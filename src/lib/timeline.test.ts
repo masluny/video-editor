@@ -10,11 +10,15 @@ import {
   nextEditPoint,
   overwrite,
   prevEditPoint,
+  closeAllGaps,
+  removeRange,
   rippleDelete,
+  rippleTrim,
   snapTime,
   snapToEdit,
   speechRanges,
   split,
+  videoEnd,
 } from "./timeline";
 
 const media: MediaAsset = {
@@ -130,5 +134,68 @@ describe("snapToEdit", () => {
   it("rounds to the frame grid elsewhere", () => {
     expect(snapToEdit(4.01, [track], 25)).toBe(4);
     expect(snapToEdit(8.195729 + 2 / 23.759, [track], 23.759)).toBeCloseTo(197 / 23.759, 9);
+  });
+});
+
+describe("removeRange", () => {
+  const track = () => [c("a", 0, 4), c("b", 4, 4, 20), c("d", 10, 2, 40)];
+
+  it("extracts a span across clips and closes it up", () => {
+    const out = removeRange(track(), 3, 5, true);
+    expect(spans(out)).toEqual([[0, 3, 0], [3, 6, 21], [8, 10, 40]]);
+    expect(out.map((x) => x.id)).toEqual(["a", "b", "d"]);
+  });
+
+  it("lifts a span, leaving a gap", () => {
+    expect(spans(removeRange(track(), 3, 5, false))).toEqual([[0, 3, 0], [5, 8, 21], [10, 12, 40]]);
+  });
+
+  it("splits a clip that spans the whole range into two pieces", () => {
+    const fading = { ...c("a", 0, 10), fadeIn: 1, fadeOut: 1 };
+    const out = removeRange([fading], 4, 6, true);
+    expect(spans(out)).toEqual([[0, 4, 0], [4, 8, 6]]);
+    expect(out[0]).toMatchObject({ id: "a", fadeIn: 1, fadeOut: 0 });
+    expect(out[1]).toMatchObject({ fadeIn: 0, fadeOut: 1 });
+    expect(out[1].id).not.toBe("a");
+  });
+
+  it("drops clips inside the range", () => {
+    expect(removeRange(track(), 9, 13, true).map((x) => x.id)).toEqual(["a", "b"]);
+  });
+});
+
+describe("rippleTrim", () => {
+  it("trims a head in place and pulls later clips left", () => {
+    const out = rippleTrim([c("a", 0, 4), c("b", 4, 4, 20), c("d", 9, 1)], "b", 5.5, "head");
+    expect(spans(out)).toEqual([[0, 4, 0], [4, 6.5, 21.5], [7.5, 8.5, 0]]);
+  });
+
+  it("trims a tail and pulls later clips left", () => {
+    const out = rippleTrim([c("a", 0, 4), c("b", 4, 4, 20), c("d", 9, 1)], "b", 5, "tail");
+    expect(spans(out)).toEqual([[0, 4, 0], [4, 5, 20], [6, 7, 0]]);
+  });
+
+  it("keeps fades within the shorter clip and ignores a playhead outside it", () => {
+    const fading = { ...c("a", 0, 4), fadeIn: 1, fadeOut: 2 };
+    const out = rippleTrim([fading], "a", 1.5, "tail");
+    expect(out[0]).toMatchObject({ fadeIn: 1, fadeOut: 0.5 });
+    const same = [c("a", 0, 4)];
+    expect(rippleTrim(same, "a", 6, "tail")).toBe(same);
+  });
+});
+
+describe("closeAllGaps", () => {
+  it("packs clips behind the first one", () => {
+    expect(spans(closeAllGaps([c("b", 6, 2), c("a", 1, 2), c("d", 20, 1)]))).toEqual([[1, 3, 0], [3, 5, 0], [5, 6, 0]]);
+  });
+});
+
+describe("videoEnd", () => {
+  const track = (kind: "video" | "audio", clips: Clip[], hidden = false) => ({ id: kind, kind, name: kind, hidden, locked: false, muted: false, solo: false, volume: 1, clips });
+
+  it("is the end of the last clip on a visible video track", () => {
+    expect(videoEnd([track("video", [c("v", 0, 8.2), c("w", 9, 1)]), track("audio", [c("m", 0, 30)])])).toBeCloseTo(10);
+    expect(videoEnd([track("video", [c("v", 0, 8.2), c("w", 9, 1)])], new Set(["w"]))).toBeCloseTo(8.2);
+    expect(videoEnd([track("video", [c("v", 0, 5)], true), track("audio", [c("m", 0, 30)])])).toBe(0);
   });
 });

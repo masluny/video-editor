@@ -136,6 +136,108 @@ describe("editing", () => {
   });
 });
 
+describe("music and the video's length", () => {
+  const audioClips = () => clipsOf("audio");
+
+  it("offers to trim a song that outlasts the video, and trims it to end with the picture", () => {
+    st().placeMedia("v", { at: 0 }); // 10 s of video
+    st().placeMedia("s", { at: 0 }); // 30 s song
+    const toast = st().toasts[st().toasts.length - 1];
+    expect(toast.message).toMatch(/runs 20.00s past the end of the video/);
+    toast.action!.run();
+    expect(audioClips().map((c) => [c.start, clipEnd(c)])).toEqual([[0, 10]]);
+  });
+
+  it("matches the video's length with an optional fade-out, leaving shorter clips alone", () => {
+    st().placeMedia("v", { at: 0 });
+    st().placeMedia("v", { at: 10, range: { in: 0, out: 2.5 } }); // video now ends at 12.5
+    const song = st().placeMedia("s", { at: 1 })!;
+    expect(st().matchVideoLength([song], 1.5)).toBe(1);
+    const c = findClip(st().project, song)!.clip;
+    expect(clipEnd(c)).toBeCloseTo(12.5, 9);
+    expect(c.fadeOut).toBe(1.5);
+    // Already matching: nothing left to do (but a fade can still be added).
+    expect(st().matchVideoLength([song])).toBe(0);
+    // Video clips are never touched.
+    const v = clipsOf("video")[0].id;
+    expect(st().matchVideoLength([v])).toBe(0);
+  });
+
+  it("loops a short song until the video ends, fading out only at the very end", () => {
+    st().placeMedia("v", { at: 0 });
+    const song = st().placeMedia("s", { at: 0, range: { in: 5, out: 9 } })!; // 4 s
+    st().updateClip(song, (c) => void (c.fadeOut = 1));
+    expect(st().loopToVideoLength(song)).toBe(2);
+    expect(audioClips().map((c) => [c.start, +clipEnd(c).toFixed(6), c.in, c.fadeOut])).toEqual([
+      [0, 4, 5, 0],
+      [4, 8, 5, 0],
+      [8, 10, 5, 1],
+    ]);
+    st().undo();
+    expect(audioClips()).toHaveLength(1);
+  });
+});
+
+describe("pro edits", () => {
+  it("ripple-trims the clip under the playhead (Q / W)", () => {
+    const a = st().placeMedia("v", { at: 0 })!;
+    st().placeMedia("v", { at: 10 });
+    st().select([]);
+    st().seek(4);
+    st().rippleTrimToPlayhead("head");
+    expect(clipsOf("video").map((c) => [c.start, clipEnd(c), c.in])).toEqual([[0, 6, 4], [6, 16, 0]]);
+    expect(st().playhead).toBe(0);
+    st().seek(2);
+    st().select([a]);
+    st().rippleTrimToPlayhead("tail");
+    expect(clipsOf("video").map((c) => [c.start, clipEnd(c), c.in])).toEqual([[0, 2, 4], [2, 12, 0]]);
+  });
+
+  it("extracts the In–Out range from every track and moves markers with it", () => {
+    st().placeMedia("v", { at: 0 });
+    st().placeMedia("s", { at: 0, range: { in: 0, out: 12 } });
+    st().addMarker(1);
+    st().addMarker(3);
+    st().addMarker(8);
+    st().setRange({ in: 2, out: 5 });
+    st().extractRange();
+    expect(clipsOf("video").map((c) => [c.start, +clipEnd(c).toFixed(6)])).toEqual([[0, 2], [2, 7]]);
+    expect(clipsOf("audio").map((c) => [c.start, +clipEnd(c).toFixed(6)])).toEqual([[0, 2], [2, 9]]);
+    expect(st().project.markers.map((m) => m.time)).toEqual([1, 5]);
+    expect(st().range).toBeNull();
+    expect(st().playhead).toBe(2);
+  });
+
+  it("lifts the range, leaving a gap, in one undo step", () => {
+    st().placeMedia("v", { at: 0 });
+    const before = st().past.length;
+    st().setRange({ in: 2, out: 5 });
+    st().liftRange();
+    expect(clipsOf("video").map((c) => [c.start, +clipEnd(c).toFixed(6)])).toEqual([[0, 2], [5, 10]]);
+    expect(st().past.length).toBe(before + 1);
+  });
+
+  it("nudges clips by frames, never before zero", () => {
+    const id = st().placeMedia("v", { at: 1 })!;
+    st().nudgeClips([id], 3);
+    expect(findClip(st().project, id)!.clip.start).toBeCloseTo(1.1, 9);
+    st().nudgeClips([id], -100);
+    expect(findClip(st().project, id)!.clip.start).toBe(0);
+  });
+
+  it("closes every gap on a track", () => {
+    st().placeMedia("v", { at: 0, range: { in: 0, out: 2 } });
+    st().placeMedia("v", { at: 5, range: { in: 0, out: 2 } });
+    st().placeMedia("v", { at: 9, range: { in: 0, out: 1 } });
+    const track = st().project.tracks.find((t) => t.clips.length)!;
+    st().closeTrackGaps(track.id);
+    expect(clipsOf("video").map((c) => [c.start, clipEnd(c)])).toEqual([[0, 2], [2, 4], [4, 5]]);
+    const steps = st().past.length;
+    st().closeTrackGaps(track.id); // nothing left to close: no empty undo step
+    expect(st().past.length).toBe(steps);
+  });
+});
+
 describe("migration", () => {
   it("loads v1 projects", () => {
     const v1 = {
