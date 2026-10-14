@@ -1,992 +1,997 @@
 import * as React from "react";
-import { useProjectStore } from "../../stores/projectStore";
-import { cn } from "../../lib/cn";
 import {
+  Copy,
+  Eye,
+  EyeOff,
+  Flag,
+  Lock,
+  Magnet,
+  Maximize2,
+  MousePointer2,
+  Plus,
   Scissors,
   Trash2,
-  ZoomIn,
-  ZoomOut,
+  Unlock,
   Volume2,
   VolumeX,
-  Lock,
-  Unlock,
-  Plus,
-  Video,
-  Music,
-  MousePointer2,
-  Magnet,
-  Bookmark,
-  X,
+  Wand2,
+  ZoomIn,
+  ZoomOut,
+  Headphones,
+  Unlink,
+  ClipboardPaste,
+  Type,
 } from "lucide-react";
-import type { Track, Clip, MediaAsset, Id } from "../../lib/types";
-import { getClipDuration, clipEnd, snapToFrame, snapCandidates, snapTime } from "../../lib/utils";
-import { importMedia, extractPathsFromDropEvent, assetUrl } from "../../lib/tauri";
-import { v4 as uuid } from "../../lib/uuid";
+import type { Clip, Id, Track, TrackKind } from "../../lib/types";
+import { findClip, store, useStore, ZOOM_MAX, ZOOM_MIN } from "../../store/store";
+import { useDrag } from "../../store/drag";
+import {
+  clipDuration,
+  clipEnd,
+  EPS,
+  gapAt,
+  MIN_CLIP,
+  projectDuration,
+  snapToFrame,
+  sourceBounds,
+  speedOf,
+} from "../../lib/timeline";
+import { ClipView, type ClipGrab } from "./ClipView";
+import { displayOrder, HEADER_W, RULER_H, snap, trackHeight, type TrackSize } from "./geometry";
+import { dropTarget, payloadKind, payloadLength } from "./drop";
+import { IconButton, Segmented } from "../ui/controls";
+import { openMenu, type MenuItem } from "../ui/Menu";
+import { useLocal } from "../../lib/useLocal";
+import { timecode } from "../../lib/format";
+import { cn } from "../../lib/cn";
+import { MARKER_COLORS } from "../../lib/defaults";
 
-const TRACK_H = 64;
-const SNAP_PX = 8;
+interface Row {
+  track: Track;
+  top: number;
+  height: number;
+}
+
+const mod = (e: { metaKey: boolean; ctrlKey: boolean }) => e.metaKey || e.ctrlKey;
 
 export function Timeline() {
-  const store = useProjectStore();
-  const {
-    project,
-    playhead,
-    setPlayhead,
-    zoom,
-    setZoom,
-    selectedClipId,
-    selectedClipIds,
-    selectClip,
-    toggleClipSelection,
-    deleteSelected,
-    splitClip,
-    moveClip,
-    moveSelectedBy,
-    addClipToTrack,
-    addTrack,
-    removeTrack,
-    addMedia,
-    toggleTrackMute,
-    toggleTrackLock,
-    setTrackVolume,
-    updateClip,
-    pushHistory,
-    activeTool,
-    setTool,
-    snapEnabled,
-    toggleSnap,
-    targetTrackId,
-    setTargetTrack,
-    thumbs,
-    exportRange,
-    setExportIn,
-    setExportOut,
-    setExportRange,
-    clearExportRange,
-  } = store;
+  const project = useStore((s) => s.project);
+  const zoom = useStore((s) => s.zoom);
+  const selection = useStore((s) => s.selection);
+  const tool = useStore((s) => s.tool);
+  const runtime = useStore((s) => s.runtime);
+  const [size, setSize] = useLocal<TrackSize>("revind.trackSize", "m");
+  const scroller = React.useRef<HTMLDivElement>(null);
+  const [view, setView] = React.useState({ left: 0, width: 1200 });
+  const [guide, setGuide] = React.useState<number | null>(null);
+  const [marquee, setMarquee] = React.useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
 
-  const tracksContainerRef = React.useRef<HTMLDivElement>(null);
-  const rulerRef = React.useRef<HTMLDivElement>(null);
-  const lanesRef = React.useRef<HTMLDivElement>(null);
-  const [snapGuide, setSnapGuide] = React.useState<number | null>(null);
-  const [menu, setMenu] = React.useState<
-    | { kind: "clip"; x: number; y: number; clip: Clip; track: Track }
-    | { kind: "track"; x: number; y: number; track: Track }
-    | null
-  >(null);
+  const rows = React.useMemo(() => {
+    const out: Row[] = [];
+    let y = RULER_H;
+    for (const track of displayOrder(project)) {
+      const h = trackHeight(track, size);
+      out.push({ track, top: y, height: h });
+      y += h;
+    }
+    return out;
+  }, [project, size]);
+  const rowsRef = React.useRef(rows);
+  rowsRef.current = rows;
 
-  const timeToPx = (t: number) => t * zoom;
-  const pxToTime = (px: number) => Math.max(0, px / zoom);
-  const fps = project.fps;
-  const effectiveTarget = targetTrackId ?? project.tracks.find((t) => t.kind === "video")?.id ?? project.tracks[0]?.id ?? null;
+  const duration = projectDuration(project);
+  const laneW = Math.max(view.width - HEADER_W, (duration + 20) * zoom, 400);
+  const totalH = rows.length ? rows[rows.length - 1].top + rows[rows.length - 1].height : RULER_H;
+  const viewStart = view.left / zoom;
+  const viewEnd = (view.left + view.width - HEADER_W) / zoom;
+  const selected = React.useMemo(() => new Set(selection), [selection]);
 
-  const totalDuration = React.useMemo(() => {
-    const end = project.tracks.reduce(
-      (max, t) => t.clips.reduce((m, c) => Math.max(m, clipEnd(c)), max),
-      0
-    );
-    return Math.max(end, playhead) + Math.max(6, 600 / zoom);
-  }, [project.tracks, playhead, zoom]);
+  // --- viewport tracking ------------------------------------------------------
+  React.useLayoutEffect(() => {
+    const el = scroller.current!;
+    let raf = 0;
+    const update = () => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => setView({ left: el.scrollLeft, width: el.clientWidth }));
+    };
+    update();
+    el.addEventListener("scroll", update, { passive: true });
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => {
+      el.removeEventListener("scroll", update);
+      ro.disconnect();
+      cancelAnimationFrame(raf);
+    };
+  }, []);
+
+  /** Client X -> timeline seconds. */
+  const timeAt = React.useCallback((clientX: number) => {
+    const el = scroller.current!;
+    const r = el.getBoundingClientRect();
+    return Math.max(0, (clientX - r.left - HEADER_W + el.scrollLeft) / store().zoom);
+  }, []);
+
+  // --- zoom: keep an anchor time under the same screen x -----------------------
+  const anchor = React.useRef<{ time: number; x: number } | null>(null);
+  const prevZoom = React.useRef(zoom);
+  React.useLayoutEffect(() => {
+    const el = scroller.current!;
+    if (prevZoom.current === zoom) return;
+    let a = anchor.current;
+    if (!a) {
+      const ph = store().playhead;
+      const x = ph * prevZoom.current - el.scrollLeft;
+      a = x >= 0 && x <= el.clientWidth - HEADER_W ? { time: ph, x } : { time: el.scrollLeft / prevZoom.current, x: 0 };
+    }
+    el.scrollLeft = Math.max(0, a.time * zoom - a.x);
+    anchor.current = null;
+    prevZoom.current = zoom;
+  }, [zoom]);
 
   React.useEffect(() => {
-    if (!menu) return;
-    const close = () => setMenu(null);
-    window.addEventListener("pointerdown", close);
-    window.addEventListener("keydown", close);
-    return () => {
-      window.removeEventListener("pointerdown", close);
-      window.removeEventListener("keydown", close);
+    const el = scroller.current!;
+    const onWheel = (e: WheelEvent) => {
+      if (!mod(e) && !e.altKey) return;
+      e.preventDefault();
+      const s = store();
+      const r = el.getBoundingClientRect();
+      const x = e.clientX - r.left - HEADER_W;
+      anchor.current = { time: (x + el.scrollLeft) / s.zoom, x };
+      s.setZoom(s.zoom * Math.exp(-e.deltaY * 0.0025));
     };
-  }, [menu]);
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
 
-  const handleDelete = () => {
-    if (selectedClipIds.length || selectedClipId) {
-      deleteSelected(false);
-      pushHistory();
-    }
-  };
+  // --- keep the playhead in view ----------------------------------------------
+  React.useEffect(
+    () =>
+      useStore.subscribe((s, prev) => {
+        const el = scroller.current;
+        if (!el) return;
+        const x = s.playhead * s.zoom;
+        const w = el.clientWidth - HEADER_W;
+        if (s.seekNonce !== prev.seekNonce) {
+          if (x < el.scrollLeft || x > el.scrollLeft + w) el.scrollLeft = Math.max(0, x - w / 2);
+        } else if (s.playing && s.playhead !== prev.playhead && x > el.scrollLeft + w - 4) {
+          el.scrollLeft = Math.max(0, x - 40);
+        }
+      }),
+    [],
+  );
 
-  const handleSplit = () => {
-    if (!selectedClipId) return;
-    const track = project.tracks.find((t) => t.clips.some((c) => c.id === selectedClipId));
-    if (track) {
-      splitClip(track.id, selectedClipId, playhead);
-      pushHistory();
-    }
-  };
+  const zoomToFit = React.useCallback(() => {
+    const el = scroller.current!;
+    const d = projectDuration(store().project);
+    anchor.current = { time: 0, x: 0 };
+    store().setZoom(d > 0 ? (el.clientWidth - HEADER_W - 40) / d : 60);
+  }, []);
 
-  // ----- ruler seek -----
-  const seekFromRuler = (clientX: number) => {
-    if (!rulerRef.current) return;
-    const rect = rulerRef.current.getBoundingClientRect();
-    setPlayhead(pxToTime(clientX - rect.left + rulerRef.current.scrollLeft));
-  };
-  const seekFromLanes = (clientX: number) => {
-    if (!lanesRef.current) return;
-    const rect = lanesRef.current.getBoundingClientRect();
-    setPlayhead(pxToTime(clientX - rect.left));
-  };
-  const handleRulerDown = (e: React.MouseEvent) => {
-    seekFromRuler(e.clientX);
-    const move = (ev: MouseEvent) => seekFromRuler(ev.clientX);
-    const up = () => {
-      window.removeEventListener("mousemove", move);
-      window.removeEventListener("mouseup", up);
+  // --- clip interactions -------------------------------------------------------
+  const onClipPointerDown = React.useCallback(
+    (e: React.PointerEvent, grab: ClipGrab, clip: Clip, track: Track) => {
+      if (e.button !== 0) return;
+      e.stopPropagation();
+      e.preventDefault();
+      const s = store();
+      if (track.locked) {
+        s.select([clip.id]);
+        return;
+      }
+      if (s.tool === "blade") {
+        const t = snap(timeAt(e.clientX), new Set(), { disabled: e.altKey }).time;
+        if (e.shiftKey) {
+          // Shift+blade cuts every unlocked track at that point.
+          const prev = s.playhead;
+          useStore.setState({ playhead: t });
+          s.select([]);
+          s.splitAtPlayhead();
+          useStore.setState({ playhead: prev });
+        } else s.splitClipAt(clip.id, t);
+        return;
+      }
+      if (e.shiftKey || mod(e)) {
+        s.toggleSelect(clip.id);
+        return;
+      }
+      if (!s.selection.includes(clip.id)) s.select([clip.id]);
+      if (grab === "move") startMove(e, clip, track);
+      else if (grab === "trim-left" || grab === "trim-right") startTrim(clip, track, grab === "trim-left");
+      else startFade(clip, grab === "fade-in");
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+
+  function trackDrag(onMove: (ev: PointerEvent) => void, onUp: (ev: PointerEvent, cancelled: boolean) => void) {
+    const move = (ev: PointerEvent) => onMove(ev);
+    const finish = (ev: PointerEvent, cancelled: boolean) => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", cancel);
+      window.removeEventListener("keydown", esc, true);
+      document.body.style.cursor = "";
+      onUp(ev, cancelled);
     };
-    window.addEventListener("mousemove", move);
-    window.addEventListener("mouseup", up);
-  };
-  const handlePlayheadDown = (e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    seekFromLanes(e.clientX);
-    const move = (ev: MouseEvent) => seekFromLanes(ev.clientX);
-    const up = () => {
-      window.removeEventListener("mousemove", move);
-      window.removeEventListener("mouseup", up);
+    const up = (ev: PointerEvent) => finish(ev, false);
+    const cancel = (ev: PointerEvent) => finish(ev, true);
+    const esc = (ev: KeyboardEvent) => {
+      if (ev.key !== "Escape") return;
+      ev.stopPropagation();
+      finish(new PointerEvent("pointercancel"), true);
     };
-    window.addEventListener("mousemove", move);
-    window.addEventListener("mouseup", up);
-  };
-  const handleLaneBackgroundDown = (e: React.MouseEvent) => {
-    if (e.button !== 0 || e.target !== e.currentTarget) return;
-    seekFromLanes(e.clientX);
-    selectClip(null, null);
-  };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", cancel);
+    window.addEventListener("keydown", esc, true);
+  }
 
-  // Determine which track lane a Y coordinate sits over.
-  const trackAtY = (clientY: number): Track | null => {
-    if (!lanesRef.current) return null;
-    const rect = lanesRef.current.getBoundingClientRect();
-    const idx = Math.floor((clientY - rect.top) / TRACK_H);
-    return project.tracks[idx] ?? null;
-  };
-
-  // Snap a proposed start so the clip's start OR end lands on a candidate edge.
-  const snapStart = (proposedStart: number, dur: number, edges: number[], disabled: boolean) => {
-    const startQ = snapToFrame(proposedStart, fps);
-    if (disabled || !snapEnabled) {
-      setSnapGuide(null);
-      return startQ;
-    }
-    const tol = SNAP_PX / zoom;
-    const a = snapTime(startQ, edges, tol);
-    const b = snapTime(startQ + dur, edges, tol);
-    const da = a ? Math.abs(a.time - startQ) : Infinity;
-    const db = b ? Math.abs(b.time - (startQ + dur)) : Infinity;
-    if (a && da <= db) {
-      setSnapGuide(a.guide);
-      return a.time;
-    }
-    if (b) {
-      setSnapGuide(b.guide);
-      return b.time - dur;
-    }
-    setSnapGuide(null);
-    return startQ;
-  };
-
-  const snapEdge = (proposed: number, edges: number[], disabled: boolean) => {
-    const q = snapToFrame(proposed, fps);
-    if (disabled || !snapEnabled) {
-      setSnapGuide(null);
-      return q;
-    }
-    const r = snapTime(q, edges, SNAP_PX / zoom);
-    setSnapGuide(r ? r.guide : null);
-    return r ? r.time : q;
-  };
-
-  // ----- clip interactions (move / trim / razor / select) -----
-  const onClipMouseDown = (
-    e: React.MouseEvent,
-    clip: Clip,
-    track: Track,
-    mode: "move" | "left" | "right"
-  ) => {
-    e.stopPropagation();
-    if (track.locked) return;
-
-    // Razor tool: a click on the body cuts the clip at the cursor.
-    if (mode === "move" && activeTool === "razor") {
-      const rect = lanesRef.current!.getBoundingClientRect();
-      const t = pxToTime(e.clientX - rect.left);
-      splitClip(track.id, clip.id, snapToFrame(t, fps));
-      pushHistory();
-      return;
-    }
-
-    // Selection (shift to extend).
-    if (mode === "move") {
-      if (e.shiftKey) toggleClipSelection(clip.id, track.id);
-      else if (!selectedClipIds.includes(clip.id)) selectClip(clip.id, track.id);
-    } else {
-      selectClip(clip.id, track.id);
-    }
-
-    const startX = e.clientX;
-    const startStart = clip.timeline_start;
-    const startIn = clip.source_in;
-    const speed = clip.speed || 1;
-    const dur = getClipDuration(clip);
-    const asset = project.media.find((m) => m.id === clip.media_id);
-    const maxOut = asset && asset.durationSec > 0 ? asset.durationSec : Infinity;
-    const MIN = 0.05;
-
-    // Same-track neighbours bound trims (you can't trim over an adjacent clip).
-    const sameTrack = track.clips.filter((c) => c.id !== clip.id);
-    const prevEnd = sameTrack
-      .filter((c) => c.timeline_start <= startStart + 1e-6)
-      .reduce((m, c) => Math.max(m, clipEnd(c)), 0);
-    const nextStart = sameTrack
-      .filter((c) => c.timeline_start >= clipEnd(clip) - 1e-6)
-      .reduce((m, c) => Math.min(m, c.timeline_start), Infinity);
-
-    const groupMove = mode === "move" && selectedClipIds.includes(clip.id) && selectedClipIds.length > 1;
-    const excludeIds = new Set(groupMove ? selectedClipIds : [clip.id]);
-    const edges = [...snapCandidates(project.tracks, excludeIds), playhead];
-
+  function startMove(e: React.PointerEvent, clip: Clip, track: Track) {
+    const s0 = store();
+    const proj = s0.project;
+    let ids = (s0.selection.includes(clip.id) ? s0.selection : [clip.id]).filter((id) => {
+      const hit = findClip(proj, id);
+      return hit && !hit.track.locked;
+    });
+    const lanes: Record<TrackKind, Track[]> = { video: [], audio: [] };
+    for (const t of displayOrder(proj)) lanes[t.kind].push(t);
+    const laneIndex = (id: Id) => {
+      const t = proj.tracks.find((x) => x.id === id)!;
+      return { kind: t.kind, i: lanes[t.kind].findIndex((x) => x.id === id) };
+    };
+    let items = ids.map((id) => {
+      const hit = findClip(proj, id)!;
+      return { id, ...laneIndex(hit.track.id), start: hit.clip.start, dur: clipDuration(hit.clip) };
+    });
+    const grabbed = laneIndex(track.id);
+    const minStart = Math.min(...items.map((i) => i.start));
+    const sx = e.clientX;
+    const sy = e.clientY;
     let moved = false;
-    let targetTrack = track;
+    let primary = clip.id;
 
-    const move = (ev: MouseEvent) => {
-      const rawDelta = (ev.clientX - startX) / zoom; // signed seconds delta
-      if (Math.abs(ev.clientX - startX) > 2) moved = true;
-      const disableSnap = ev.metaKey || ev.altKey;
-
-      if (mode === "move") {
-        if (groupMove) {
-          const d = Math.round(rawDelta * fps) / fps; // signed, frame-quantized
-          // live preview: shift each selected clip by d (no overwrite yet)
-          const st = useProjectStore.getState();
-          st.selectedClipIds.forEach((id) => {
-            for (const t of st.project.tracks) {
-              const c = t.clips.find((cc) => cc.id === id);
-              if (c) {
-                const orig = groupStarts.get(id) ?? c.timeline_start;
-                useProjectStore.getState().updateClip(t.id, id, {
-                  timeline_start: Math.max(0, orig + d),
-                });
-              }
-            }
-          });
-          setSnapGuide(null);
-        } else {
-          const newStart = snapStart(startStart + rawDelta, dur, edges, disableSnap);
-          updateClip(track.id, clip.id, { timeline_start: newStart });
-          targetTrack = trackAtY(ev.clientY) ?? track;
+    trackDrag(
+      (ev) => {
+        if (!moved && Math.hypot(ev.clientX - sx, ev.clientY - sy) < 4) return;
+        if (!moved) {
+          moved = true;
+          document.body.style.cursor = "grabbing";
+          if (ev.altKey) {
+            const map = store().duplicateInPlaceLive(ids);
+            items = items.map((i) => ({ ...i, id: map.get(i.id) ?? i.id }));
+            ids = items.map((i) => i.id);
+            primary = map.get(primary) ?? primary;
+          }
         }
-      } else if (mode === "left") {
-        // trim in-point: clamp to >= prevEnd, <= end-MIN, within media
-        let proposedStart = snapEdge(startStart + rawDelta, edges, disableSnap);
-        proposedStart = Math.max(prevEnd, proposedStart);
-        let newIn = startIn + (proposedStart - startStart) * speed;
-        if (newIn < 0) { newIn = 0; proposedStart = startStart - startIn / speed; }
-        if (proposedStart > clipEnd(clip) - MIN) proposedStart = clipEnd(clip) - MIN;
-        newIn = startIn + (proposedStart - startStart) * speed;
-        updateClip(track.id, clip.id, { source_in: newIn, timeline_start: Math.max(0, proposedStart) });
-        moved = true;
-      } else {
-        // trim out-point: clamp to <= nextStart and media duration
-        let proposedEnd = snapEdge(startStart + dur + rawDelta, edges, disableSnap);
-        if (isFinite(nextStart)) proposedEnd = Math.min(proposedEnd, nextStart);
-        let newOut = startIn + (proposedEnd - startStart) * speed;
-        newOut = Math.max(startIn + MIN, Math.min(newOut, maxOut));
-        updateClip(track.id, clip.id, { source_out: newOut });
-        moved = true;
-      }
-    };
+        const zoom = store().zoom;
+        let dt = Math.max(-minStart, (ev.clientX - sx) / zoom);
+        const g = items.find((i) => i.id === primary)!;
+        const exclude = new Set(ids);
+        const a = snap(g.start + dt, exclude, { disabled: ev.shiftKey });
+        const b = snap(g.start + g.dur + dt, exclude, { disabled: ev.shiftKey });
+        let shownGuide: number | null = null;
+        if (b.guide != null && (a.guide == null || Math.abs(b.time - (g.start + g.dur + dt)) < Math.abs(a.time - (g.start + dt)))) {
+          dt = b.time - g.dur - g.start;
+          shownGuide = b.guide;
+        } else {
+          dt = a.time - g.start;
+          shownGuide = a.guide;
+        }
+        dt = Math.max(-minStart, dt);
 
-    const groupStarts = new Map<string, number>();
-    if (groupMove) {
-      for (const t of project.tracks)
-        for (const c of t.clips) if (selectedClipIds.includes(c.id)) groupStarts.set(c.id, c.timeline_start);
+        // Vertical: move between lanes of the same kind.
+        let shift = 0;
+        const under = document.elementFromPoint(ev.clientX, ev.clientY)?.closest<HTMLElement>("[data-lane]");
+        if (under && under.dataset.kind === grabbed.kind) {
+          shift = lanes[grabbed.kind].findIndex((t) => t.id === under.dataset.lane) - grabbed.i;
+        }
+        const ok = items.every((i) => {
+          const dest = lanes[i.kind][i.i + shift];
+          return dest && !dest.locked;
+        });
+        if (!ok) shift = 0;
+        store().moveClipsLive(items.map((i) => ({ id: i.id, trackId: lanes[i.kind][i.i + shift].id, start: i.start + dt })));
+        setGuide(shownGuide);
+      },
+      (_ev, cancelled) => {
+        setGuide(null);
+        if (!moved) {
+          store().select([clip.id]);
+          return;
+        }
+        if (cancelled) {
+          store().cancelLive();
+          return;
+        }
+        store().settleClips(ids);
+        store().select(ids.filter((id) => findClip(store().project, id)));
+      },
+    );
+  }
+
+  function startTrim(clip: Clip, track: Track, left: boolean) {
+    const s0 = store();
+    const media = s0.project.media.find((m) => m.id === clip.mediaId);
+    const b = sourceBounds(clip, media);
+    const sp = speedOf(clip);
+    const end = clipEnd(clip);
+    const others = track.clips.filter((c) => c.id !== clip.id);
+    const prevEnd = Math.max(0, ...others.filter((c) => clipEnd(c) <= clip.start + EPS).map(clipEnd));
+    const nextStart = Math.min(Infinity, ...others.filter((c) => c.start >= end - EPS).map((c) => c.start));
+    document.body.style.cursor = "ew-resize";
+    trackDrag(
+      (ev) => {
+        const { time, guide } = snap(timeAt(ev.clientX), new Set([clip.id]), { disabled: ev.shiftKey });
+        if (left) {
+          const lo = Math.max(prevEnd, clip.start - (clip.in - b.min) / sp);
+          const t = Math.min(end - MIN_CLIP, Math.max(lo, time));
+          store().updateClip(
+            clip.id,
+            (c) => {
+              c.start = t;
+              c.in = clip.in + (t - clip.start) * sp;
+              const d = clipDuration(c as Clip);
+              c.fadeIn = Math.min(c.fadeIn, d);
+              c.fadeOut = Math.min(c.fadeOut, d - c.fadeIn);
+            },
+            { live: true },
+          );
+        } else {
+          const hi = Math.min(nextStart, clip.start + (b.max - clip.in) / sp);
+          const t = Math.max(clip.start + MIN_CLIP, Math.min(hi, time));
+          store().updateClip(
+            clip.id,
+            (c) => {
+              c.out = clip.in + (t - clip.start) * sp;
+              const d = clipDuration(c as Clip);
+              c.fadeOut = Math.min(c.fadeOut, d);
+              c.fadeIn = Math.min(c.fadeIn, d - c.fadeOut);
+            },
+            { live: true },
+          );
+        }
+        setGuide(guide);
+      },
+      (_ev, cancelled) => {
+        setGuide(null);
+        if (cancelled) store().cancelLive();
+        else store().commit();
+      },
+    );
+  }
+
+  function startFade(clip: Clip, fadeIn: boolean) {
+    document.body.style.cursor = "ew-resize";
+    const d = clipDuration(clip);
+    const fps = store().project.settings.fps;
+    trackDrag(
+      (ev) => {
+        const t = timeAt(ev.clientX);
+        if (fadeIn) {
+          const v = snapToFrame(Math.max(0, Math.min(d - clip.fadeOut, t - clip.start)), fps);
+          store().updateClip(clip.id, (c) => void (c.fadeIn = v), { live: true });
+        } else {
+          const v = snapToFrame(Math.max(0, Math.min(d - clip.fadeIn, clipEnd(clip) - t)), fps);
+          store().updateClip(clip.id, (c) => void (c.fadeOut = v), { live: true });
+        }
+      },
+      (_ev, cancelled) => (cancelled ? store().cancelLive() : store().commit()),
+    );
+  }
+
+  const onClipContextMenu = React.useCallback((e: React.MouseEvent, clip: Clip, track: Track) => {
+    const s = store();
+    if (!s.selection.includes(clip.id)) s.select([clip.id]);
+    const ids = store().selection;
+    const media = clip.mediaId ? s.project.media.find((m) => m.id === clip.mediaId) : undefined;
+    const hasAudio = clip.type === "media" && !!media?.hasAudio && media.kind !== "image";
+    const under = s.playhead > clip.start + EPS && s.playhead < clipEnd(clip) - EPS;
+    const items: MenuItem[] = [
+      { label: "Split at playhead", icon: <Scissors className="h-3.5 w-3.5" />, shortcut: "S", disabled: !under || track.locked, onSelect: () => s.splitClipAt(clip.id, s.playhead) },
+      { label: "Duplicate", icon: <Copy className="h-3.5 w-3.5" />, shortcut: "⌘D", disabled: track.locked, onSelect: () => s.duplicateClips(ids) },
+      { label: "Copy", shortcut: "⌘C", onSelect: () => s.copy() },
+      { label: "Cut", shortcut: "⌘X", disabled: track.locked, onSelect: () => s.cut() },
+      { separator: true },
+    ];
+    if (hasAudio) {
+      items.push(
+        { label: "Remove silences…", icon: <Wand2 className="h-3.5 w-3.5" />, disabled: track.locked, onSelect: () => s.openDialog({ kind: "silence", clipId: clip.id }) },
+        {
+          label: clip.muted ? "Unmute clip audio" : "Mute clip audio",
+          icon: clip.muted ? <Volume2 className="h-3.5 w-3.5" /> : <VolumeX className="h-3.5 w-3.5" />,
+          disabled: track.locked,
+          onSelect: () => s.updateClip(clip.id, (c) => void (c.muted = !c.muted)),
+        },
+      );
+      if (track.kind === "video")
+        items.push({ label: "Detach audio", icon: <Unlink className="h-3.5 w-3.5" />, disabled: track.locked || clip.muted, onSelect: () => s.detachAudio(clip.id) });
+      items.push({ separator: true });
     }
+    if (media)
+      items.push({ label: "Show in library", onSelect: () => s.setSelectedMedia(media.id) }, { separator: true });
+    items.push(
+      { label: "Delete", icon: <Trash2 className="h-3.5 w-3.5" />, shortcut: "⌫", danger: true, disabled: track.locked, onSelect: () => s.deleteClips(ids, false) },
+      { label: "Ripple delete", shortcut: "⇧⌫", danger: true, disabled: track.locked, onSelect: () => s.deleteClips(ids, true) },
+    );
+    openMenu(e, items);
+  }, []);
 
-    const up = (ev: MouseEvent) => {
-      window.removeEventListener("mousemove", move);
-      window.removeEventListener("mouseup", up);
-      setSnapGuide(null);
-      if (!moved) return;
-      // Finalize with overlap resolution + history.
-      if (mode === "move") {
-        if (groupMove) {
-          // we already previewed by shifting; resolve overlaps in place
-          moveSelectedBy(0);
-        } else {
-          const dest = trackAtY(ev.clientY) ?? targetTrack ?? track;
-          const finalStart = useProjectStore.getState().project.tracks
-            .find((t) => t.id === track.id)?.clips.find((c) => c.id === clip.id)?.timeline_start ?? startStart;
-          moveClip(track.id, dest.id, clip.id, finalStart);
+  const onClipDoubleClick = React.useCallback((clip: Clip) => {
+    const s = store();
+    s.select([clip.id]);
+    if (s.playhead < clip.start || s.playhead >= clipEnd(clip)) s.seek(clip.start);
+  }, []);
+
+  // --- lane background: marquee / deselect / menu ------------------------------
+  const onLanePointerDown = (e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    const s = store();
+    if (s.tool === "blade") return;
+    const el = scroller.current!;
+    const r = el.getBoundingClientRect();
+    const toContent = (cx: number, cy: number) => ({ x: cx - r.left + el.scrollLeft, y: cy - r.top + el.scrollTop });
+    const p0 = toContent(e.clientX, e.clientY);
+    const base = e.shiftKey || mod(e) ? s.selection : [];
+    let moved = false;
+    trackDrag(
+      (ev) => {
+        if (!moved && Math.hypot(ev.clientX - e.clientX, ev.clientY - e.clientY) < 4) return;
+        moved = true;
+        const p1 = toContent(ev.clientX, ev.clientY);
+        setMarquee({ x0: p0.x, y0: p0.y, x1: p1.x, y1: p1.y });
+        const x0 = Math.min(p0.x, p1.x) - HEADER_W;
+        const x1 = Math.max(p0.x, p1.x) - HEADER_W;
+        const y0 = Math.min(p0.y, p1.y);
+        const y1 = Math.max(p0.y, p1.y);
+        const z = store().zoom;
+        const hits: Id[] = [];
+        for (const row of rowsRef.current) {
+          if (row.track.locked || row.top + row.height < y0 || row.top > y1) continue;
+          for (const c of row.track.clips) if (c.start * z < x1 && clipEnd(c) * z > x0) hits.push(c.id);
         }
-      }
-      pushHistory();
-    };
-
-    window.addEventListener("mousemove", move);
-    window.addEventListener("mouseup", up);
+        store().select([...new Set([...base, ...hits])]);
+      },
+      () => {
+        setMarquee(null);
+        if (!moved && !e.shiftKey && !mod(e)) store().select([]);
+      },
+    );
   };
 
-  // ----- drops -----
-  const handleDropOnTrack = async (e: React.DragEvent, trackId: Id) => {
-    e.preventDefault();
-    e.stopPropagation(); // don't let the window-level drop handler import it twice
-    if (!lanesRef.current) return;
-    const rect = lanesRef.current.getBoundingClientRect();
-    const dropTime = snapToFrame(pxToTime(e.clientX - rect.left), fps);
-
-    const mediaId = e.dataTransfer.getData("application/x-revind-media");
-    if (mediaId) {
-      const asset = project.media.find((m) => m.id === mediaId);
-      if (asset) {
-        const dur = asset.durationSec > 0 ? asset.durationSec : 10;
-        addClipToTrack(trackId, makeClip(mediaId, dur, dropTime));
-        pushHistory();
-      }
-      return;
-    }
-
-    let paths = extractPathsFromDropEvent(e);
-    if (paths.length === 0 && e.dataTransfer?.files?.length) {
-      paths = Array.from(e.dataTransfer.files).map((f: any) => f?.path).filter((p): p is string => !!p);
-    }
-    if (paths.length === 0) return;
-    try {
-      const assets = await importMedia(paths);
-      if (assets && assets.length > 0) {
-        addMedia(assets, false);
-        const first = assets[0];
-        const dur = first.durationSec > 0 ? first.durationSec : 10;
-        addClipToTrack(trackId, makeClip(first.id, dur, dropTime));
-        pushHistory();
-      } else {
-        useProjectStore.getState().pushToast("Couldn't read that media file.", "error");
-      }
-    } catch (err: any) {
-      useProjectStore.getState().pushToast(`Import failed: ${err?.message || String(err)}`, "error");
-    }
-  };
-
-  const allowDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = "copy";
+  const onLaneContextMenu = (e: React.MouseEvent, track: Track) => {
+    const s = store();
+    const t = timeAt(e.clientX);
+    const gap = gapAt(track, t);
+    openMenu(e, [
+      { label: "Paste here", icon: <ClipboardPaste className="h-3.5 w-3.5" />, disabled: !s.clipboard.length, onSelect: () => (s.seek(snapToFrame(t, s.project.settings.fps)), s.paste()) },
+      { label: "Close gap", disabled: !gap || track.locked, onSelect: () => s.closeGapAt(track.id, t) },
+      ...(track.kind === "video"
+        ? [{ label: "Add title here", icon: <Type className="h-3.5 w-3.5" />, disabled: track.locked, onSelect: () => s.placeTitle(undefined, { trackId: track.id, at: t }) } as MenuItem]
+        : []),
+      { label: "Add marker here", icon: <Flag className="h-3.5 w-3.5" />, onSelect: () => s.addMarker(t) },
+      { separator: true },
+      ...trackMenu(track),
+    ]);
   };
 
   return (
-    <div className="workspace-panel flex flex-col h-full select-none">
-      {/* Toolbar */}
-      <div className="flex items-center justify-between px-3 h-12 bg-panel border-b border-border/80 text-xs shrink-0">
-        <div className="flex items-center gap-1">
-          {/* tool group */}
-          <div className="flex items-center bg-bg-secondary/80 border border-border/70 rounded-md p-0.5 mr-1">
-            <button
-              className={cn("btn-icon w-7 h-7", activeTool === "select" && "bg-accent/20 text-accent")}
-              onClick={() => setTool("select")}
-              title="Selection tool (V)"
-            >
-              <MousePointer2 className="w-3.5 h-3.5" />
-            </button>
-            <button
-              className={cn("btn-icon w-7 h-7", activeTool === "razor" && "bg-accent/20 text-accent")}
-              onClick={() => setTool("razor")}
-              title="Razor tool (B)"
-            >
-              <Scissors className="w-3.5 h-3.5" />
-            </button>
-          </div>
-          <button
-            className={cn("btn-icon w-7 h-7", snapEnabled && "bg-accent/20 text-accent")}
-            onClick={toggleSnap}
-            title="Snapping (S)"
-          >
-            <Magnet className="w-3.5 h-3.5" />
-          </button>
-
-          <div className="w-px h-6 bg-border/80 mx-1" />
-
-          <button className="btn-ghost text-xs" onClick={handleSplit} disabled={!selectedClipId} title="Split at playhead (⌘K)">
-            <Scissors className="w-3.5 h-3.5" /> Split
-          </button>
-          <button
-            className="btn-ghost text-xs hover:text-danger hover:bg-danger/10"
-            onClick={handleDelete}
-            disabled={!selectedClipId && selectedClipIds.length === 0}
-            title="Delete (⌫) · ripple delete (⇧⌫)"
-          >
-            <Trash2 className="w-3.5 h-3.5" /> Delete
-          </button>
-
-          <div className="w-px h-6 bg-border/80 mx-1" />
-
-          {/* Export range (work area) controls */}
-          <button
-            className={cn("btn-ghost text-xs", exportRange && "text-accent")}
-            onClick={() => setExportIn(playhead)}
-            title="Set export range IN at playhead (I)"
-          >
-            <Bookmark className="w-3.5 h-3.5" /> In
-          </button>
-          <button
-            className={cn("btn-ghost text-xs", exportRange && "text-accent")}
-            onClick={() => setExportOut(playhead)}
-            title="Set export range OUT at playhead (O)"
-          >
-            <Bookmark className="w-3.5 h-3.5 scale-x-[-1]" /> Out
-          </button>
-          {exportRange && (
-            <button
-              className="btn-ghost text-xs hover:text-danger hover:bg-danger/10"
-              onClick={clearExportRange}
-              title="Clear export range"
-            >
-              <X className="w-3.5 h-3.5" /> Clear
-            </button>
-          )}
-        </div>
-
-        <div className="flex items-center gap-3">
-          <div className="px-2.5 py-1 rounded-md bg-bg-secondary/85 border border-border font-mono text-text tabular-nums shadow-inset">
-            {formatTimecode(playhead, fps)}
-          </div>
-          <div className="flex items-center gap-1">
-            <button className="btn-icon w-7 h-7" onClick={() => setZoom(zoom - 15)} title="Zoom out (−)">
-              <ZoomOut className="w-3.5 h-3.5" />
-            </button>
-            <input type="range" min="5" max="200" value={zoom} onChange={(e) => setZoom(parseInt(e.target.value))} className="fader w-24" />
-            <button className="btn-icon w-7 h-7" onClick={() => setZoom(zoom + 15)} title="Zoom in (+)">
-              <ZoomIn className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <div className="flex flex-1 min-h-0 overflow-hidden">
-        {/* Track headers */}
-        <div className="w-44 shrink-0 bg-panel border-r border-border/80 flex flex-col pt-7">
-          <div className="flex-1 overflow-hidden">
-            {project.tracks.map((track) => (
-              <TrackHeader
-                key={track.id}
-                track={track}
-                targeted={effectiveTarget === track.id}
-                onTarget={() => setTargetTrack(track.id)}
-                onMenu={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  setMenu({ kind: "track", x: e.clientX, y: e.clientY, track });
-                }}
-                onToggleMute={() => toggleTrackMute(track.id)}
-                onToggleLock={() => toggleTrackLock(track.id)}
-                onChangeVolume={(v) => setTrackVolume(track.id, v)}
-              />
-            ))}
-          </div>
-          <div className="p-2 border-t border-border/80 grid grid-cols-2 gap-1.5">
-            <button className="btn-ghost !px-2 text-2xs justify-center" onClick={() => { addTrack("video"); pushHistory(); }}>
-              <Plus className="w-3 h-3" /> Video
-            </button>
-            <button className="btn-ghost !px-2 text-2xs justify-center" onClick={() => { addTrack("audio"); pushHistory(); }}>
-              <Plus className="w-3 h-3" /> Audio
-            </button>
-          </div>
-        </div>
-
-        {/* Tracks area */}
-        <div
-          ref={tracksContainerRef}
-          className="flex-1 overflow-auto relative"
-          onScroll={(e) => {
-            if (rulerRef.current) rulerRef.current.scrollLeft = e.currentTarget.scrollLeft;
-          }}
-        >
+    <div className="panel flex h-full min-h-0 flex-col">
+      <Toolbar size={size} onSize={setSize} onFit={zoomToFit} />
+      <div
+        ref={scroller}
+        className={cn("relative min-h-0 flex-1 overflow-auto overscroll-none bg-bg-deep/40", tool === "blade" && "[&_[data-lane]]:cursor-crosshair")}
+      >
+        <div className="relative" style={{ width: HEADER_W + laneW, height: Math.max(totalH, 1) }}>
           {/* Ruler */}
-          <div
-            ref={rulerRef}
-            className="h-7 bg-panel border-b border-border/80 sticky top-0 z-20 overflow-hidden cursor-ew-resize"
-            onMouseDown={handleRulerDown}
-          >
-            <div className="h-full relative" style={{ width: `${timeToPx(totalDuration)}px` }}>
-              {renderRulerTicks(totalDuration, zoom, fps)}
-
-              {/* Export range (work area bar) */}
-              {exportRange && (
-                <WorkAreaBar
-                  inPoint={exportRange.inPoint}
-                  outPoint={exportRange.outPoint}
-                  timeToPx={timeToPx}
-                  pxToTime={pxToTime}
-                  onChangeIn={(t) => setExportRange(t, exportRange.outPoint)}
-                  onChangeOut={(t) => setExportRange(exportRange.inPoint, t)}
-                  onMove={(inP, outP) => setExportRange(inP, outP)}
-                />
-              )}
+          <div className="sticky top-0 z-[20] flex" style={{ height: RULER_H, width: HEADER_W + laneW }}>
+            <div className="sticky left-0 z-[2] flex shrink-0 items-center gap-1 border-b border-r border-line bg-panel px-2" style={{ width: HEADER_W }}>
+              <AddTrackButton />
+              <span className="ml-auto font-mono text-2xs text-ink-dim tabular">{timecode(duration, project.settings.fps)}</span>
             </div>
+            <Ruler width={laneW} viewLeft={view.left} viewWidth={view.width - HEADER_W} timeAt={timeAt} />
           </div>
 
-          {/* Clip lanes */}
-          <div
-            ref={lanesRef}
-            className={cn("relative", activeTool === "razor" && "cursor-crosshair")}
-            style={{ width: `${timeToPx(totalDuration)}px` }}
-            onMouseDown={handleLaneBackgroundDown}
-          >
-            {project.tracks.map((track) => (
+          {/* Tracks */}
+          {rows.map((row) => (
+            <div key={row.track.id} className="absolute left-0 flex" style={{ top: row.top, height: row.height, width: HEADER_W + laneW }}>
+              <TrackHeader track={row.track} height={row.height} />
               <div
-                key={track.id}
+                data-lane={row.track.id}
+                data-kind={row.track.kind}
                 className={cn(
-                  "h-16 border-b border-border/60 relative",
-                  track.kind === "video" ? "bg-bg-secondary/16" : "bg-bg-secondary/10",
-                  effectiveTarget === track.id && "bg-accent/[0.055]",
-                  track.locked && "opacity-60"
+                  "relative border-b border-line-soft",
+                  row.track.kind === "audio" ? "bg-[#0f1211]" : "bg-[#0f0f13]",
+                  row.track.locked && "bg-[repeating-linear-gradient(135deg,transparent_0_8px,rgba(255,255,255,0.025)_8px_16px)]",
+                  row.track.hidden && "opacity-50",
                 )}
-                onDragOver={allowDrop}
-                onDrop={(e) => handleDropOnTrack(e, track.id)}
-                onMouseDown={handleLaneBackgroundDown}
-                onContextMenu={(e) => {
-                  if (e.target !== e.currentTarget) return;
-                  e.preventDefault();
-                  setMenu({ kind: "track", x: e.clientX, y: e.clientY, track });
-                }}
+                style={{ width: laneW }}
+                onPointerDown={onLanePointerDown}
+                onContextMenu={(e) => onLaneContextMenu(e, row.track)}
               >
-                {track.clips.length === 0 && (
-                    <div className="absolute inset-0 flex items-center pl-3 text-2xs text-text-dim pointer-events-none">
-                      Drop {track.kind} here
-                    </div>
-                )}
-                {track.clips.map((clip) => (
-                  <TimelineClip
-                    key={clip.id}
-                    clip={clip}
-                    asset={project.media.find((m) => m.id === clip.media_id)}
-                    kind={track.kind}
-                    locked={track.locked}
-                    razor={activeTool === "razor"}
-                    isSelected={selectedClipIds.includes(clip.id)}
-                    isPrimary={selectedClipId === clip.id}
-                    fps={fps}
-                    frames={thumbs[clip.media_id] || []}
-                    left={timeToPx(clip.timeline_start)}
-                    width={Math.max(10, timeToPx(getClipDuration(clip)))}
-                    onMouseDown={(e, m) => onClipMouseDown(e, clip, track, m)}
-                    onContextMenu={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      setMenu({ kind: "clip", x: e.clientX, y: e.clientY, clip, track });
-                    }}
-                  />
-                ))}
+                {row.track.clips.map((c) => {
+                  if (clipEnd(c) < viewStart - 2 || c.start > viewEnd + 2) return null;
+                  const media = c.mediaId ? project.media.find((m) => m.id === c.mediaId) : undefined;
+                  return (
+                    <ClipView
+                      key={c.id}
+                      clip={c}
+                      track={row.track}
+                      media={media}
+                      runtime={media ? runtime[media.id] : undefined}
+                      zoom={zoom}
+                      height={row.height}
+                      selected={selected.has(c.id)}
+                      blade={tool === "blade"}
+                      viewStart={viewStart}
+                      viewEnd={viewEnd}
+                      onPointerDown={onClipPointerDown}
+                      onContextMenu={onClipContextMenu}
+                      onDoubleClick={onClipDoubleClick}
+                    />
+                  );
+                })}
               </div>
-            ))}
-
-            {/* Snap guide */}
-            {snapGuide != null && (
-              <div className="absolute top-0 bottom-0 w-px bg-clip-audio z-40 pointer-events-none" style={{ left: `${timeToPx(snapGuide)}px` }} />
-            )}
-
-            {/* Playhead */}
-            <div
-              className="absolute top-0 bottom-0 z-30 w-3 -translate-x-1/2 cursor-ew-resize"
-              style={{ left: `${timeToPx(playhead)}px` }}
-              onMouseDown={handlePlayheadDown}
-              title="Drag to scrub"
-            >
-              <div className="absolute top-0 bottom-0 left-1/2 w-px -translate-x-1/2 bg-danger shadow-[0_0_10px_rgba(239,68,68,0.45)] pointer-events-none" />
-              <div className="absolute -top-0 left-1/2 w-2.5 h-2.5 -translate-x-1/2 rotate-45 bg-danger rounded-[2px] shadow pointer-events-none" />
             </div>
-          </div>
+          ))}
 
-          {menu && (
-            <TimelineContextMenu
-              menu={menu}
-              onClose={() => setMenu(null)}
-              onDuplicateClip={(track, clip) => {
-                const clone = { ...structuredClone(clip), id: uuid(), timeline_start: clipEnd(clip) };
-                addClipToTrack(track.id, clone);
-                selectClip(clone.id, track.id);
-                pushHistory();
+          <RangeOverlay height={totalH} />
+          <DropGhost rows={rows} />
+          {guide != null && (
+            <div className="pointer-events-none absolute top-0 z-[15] w-px bg-[#ffd84f]" style={{ left: HEADER_W + guide * zoom, height: totalH }} />
+          )}
+          {marquee && (
+            <div
+              className="pointer-events-none absolute z-[16] rounded-sm border border-accent bg-accent/10"
+              style={{
+                left: Math.min(marquee.x0, marquee.x1),
+                top: Math.min(marquee.y0, marquee.y1),
+                width: Math.abs(marquee.x1 - marquee.x0),
+                height: Math.abs(marquee.y1 - marquee.y0),
               }}
-              onDeleteClip={(track, clip, ripple) => {
-                selectClip(clip.id, track.id);
-                if (ripple) {
-                  useProjectStore.getState().deleteSelected(true);
-                } else {
-                  useProjectStore.getState().deleteSelected(false);
-                }
-                pushHistory();
-              }}
-              onTargetTrack={(track) => setTargetTrack(track.id)}
-              onToggleMute={(track) => { toggleTrackMute(track.id); pushHistory(); }}
-              onToggleLock={(track) => { toggleTrackLock(track.id); pushHistory(); }}
-              onDeleteTrack={(track) => { removeTrack(track.id); pushHistory(); }}
-              onAddTrack={(kind) => { addTrack(kind); pushHistory(); }}
             />
           )}
+          <Playhead height={totalH} timeAt={timeAt} viewLeft={view.left} />
         </div>
       </div>
     </div>
   );
-
-  function makeClip(mediaId: Id, dur: number, start: number): Clip {
-    return {
-      id: uuid(),
-      media_id: mediaId,
-      source_in: 0,
-      source_out: dur,
-      timeline_start: start,
-      speed: 1,
-      volume: 1,
-      muted: false,
-      opacity: 1,
-      transform: { x: 0, y: 0, scale: 1, rotation: 0 },
-      color: { brightness: 0, contrast: 1, saturation: 1, gamma: 1, hue: 0, blur: 0 },
-      keyframes: [],
-    };
-  }
 }
 
-function TrackHeader({
-  track,
-  targeted,
-  onTarget,
-  onMenu,
-  onToggleMute,
-  onToggleLock,
-  onChangeVolume,
-}: {
-  track: Track;
-  targeted: boolean;
-  onTarget: () => void;
-  onMenu: (e: React.MouseEvent) => void;
-  onToggleMute: () => void;
-  onToggleLock: () => void;
-  onChangeVolume: (v: number) => void;
-}) {
+// ------------------------------------------------------------------- toolbar
+
+function Toolbar({ size, onSize, onFit }: { size: TrackSize; onSize: (s: TrackSize) => void; onFit: () => void }) {
+  const tool = useStore((s) => s.tool);
+  const snapping = useStore((s) => s.snapping);
+  const zoom = useStore((s) => s.zoom);
+  const hasSel = useStore((s) => s.selection.length > 0);
+  const s = store;
+  const lz = (z: number) => Math.log(z);
+  return (
+    <div className="flex h-9 shrink-0 items-center gap-1 border-b border-line px-2">
+      <Segmented
+        value={tool}
+        onChange={(t) => s().setTool(t)}
+        size="sm"
+        options={[
+          { value: "select", label: <MousePointer2 className="h-3 w-3" />, title: "Select (V)" },
+          { value: "blade", label: <Scissors className="h-3 w-3" />, title: "Blade (B) — click a clip to cut it; Shift cuts all tracks" },
+        ]}
+      />
+      <div className="mx-1 h-4 w-px bg-line" />
+      <IconButton size="sm" title="Snapping (N)" active={snapping} onClick={() => s().toggleSnapping()}>
+        <Magnet className="h-3.5 w-3.5" />
+      </IconButton>
+      <IconButton size="sm" title="Split at playhead (S)" onClick={() => s().splitAtPlayhead()}>
+        <Scissors className="h-3.5 w-3.5" />
+      </IconButton>
+      <IconButton size="sm" title="Delete selection (⌫) · Shift: ripple" disabled={!hasSel} onClick={(e) => s().deleteClips(s().selection, e.shiftKey)}>
+        <Trash2 className="h-3.5 w-3.5" />
+      </IconButton>
+      <IconButton size="sm" title="Add marker (M)" onClick={() => s().addMarker()}>
+        <Flag className="h-3.5 w-3.5" />
+      </IconButton>
+      <div className="flex-1" />
+      <Segmented
+        value={size}
+        onChange={onSize}
+        size="sm"
+        className="mr-2"
+        options={[
+          { value: "s", label: "S", title: "Compact tracks" },
+          { value: "m", label: "M", title: "Medium tracks" },
+          { value: "l", label: "L", title: "Large tracks" },
+        ]}
+      />
+      <IconButton size="sm" title="Zoom out (−)" onClick={() => s().setZoom(zoom / 1.4)}>
+        <ZoomOut className="h-3.5 w-3.5" />
+      </IconButton>
+      <input
+        type="range"
+        className="range w-28"
+        min={lz(ZOOM_MIN)}
+        max={lz(ZOOM_MAX)}
+        step={0.01}
+        value={lz(zoom)}
+        style={{ ["--fill" as string]: `${((lz(zoom) - lz(ZOOM_MIN)) / (lz(ZOOM_MAX) - lz(ZOOM_MIN))) * 100}%` }}
+        onChange={(e) => s().setZoom(Math.exp(parseFloat(e.target.value)))}
+        title="Zoom (⌘ + scroll)"
+      />
+      <IconButton size="sm" title="Zoom in (+)" onClick={() => s().setZoom(zoom * 1.4)}>
+        <ZoomIn className="h-3.5 w-3.5" />
+      </IconButton>
+      <IconButton size="sm" title="Zoom to fit (Shift+Z)" onClick={onFit}>
+        <Maximize2 className="h-3.5 w-3.5" />
+      </IconButton>
+    </div>
+  );
+}
+
+function AddTrackButton() {
+  return (
+    <IconButton
+      size="xs"
+      title="Add track"
+      onClick={(e) =>
+        openMenu({ clientX: e.clientX, clientY: e.clientY + 8, preventDefault: () => {}, stopPropagation: () => {} }, [
+          { label: "Add video track", onSelect: () => store().addTrack("video") },
+          { label: "Add audio track", onSelect: () => store().addTrack("audio") },
+        ])
+      }
+    >
+      <Plus className="h-3.5 w-3.5" />
+    </IconButton>
+  );
+}
+
+// -------------------------------------------------------------- track header
+
+function trackMenu(track: Track): MenuItem[] {
+  const s = store();
+  return [
+    { label: "Add video track", onSelect: () => s.addTrack("video") },
+    { label: "Add audio track", onSelect: () => s.addTrack("audio") },
+    { separator: true },
+    { label: track.locked ? "Unlock track" : "Lock track", onSelect: () => s.updateTrack(track.id, { locked: !track.locked }) },
+    { label: `Delete ${track.name}`, danger: true, onSelect: () => s.removeTrack(track.id) },
+  ];
+}
+
+const TrackHeader = React.memo(function TrackHeader({ track, height }: { track: Track; height: number }) {
+  const [editing, setEditing] = React.useState(false);
+  const s = store;
   const isVideo = track.kind === "video";
   return (
     <div
-      className={cn(
-        "h-16 border-b border-border/60 px-3 py-2 flex flex-col justify-between cursor-pointer",
-        targeted ? "bg-accent/10 shadow-inset" : "hover:bg-surface-hover/40"
-      )}
-      onClick={onTarget}
-      onContextMenu={onMenu}
-      title={`Click to target ${track.name} for insert/overwrite/blade`}
+      className="sticky left-0 z-[10] flex shrink-0 flex-col justify-center gap-1 border-b border-r border-line bg-panel px-2"
+      style={{ width: HEADER_W, height }}
+      onContextMenu={(e) => openMenu(e, trackMenu(track))}
     >
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-1.5 min-w-0">
-          <div className={cn("flex items-center justify-center w-5 h-5 rounded", isVideo ? "bg-clip-video/15 text-clip-video" : "bg-clip-audio/15 text-clip-audio")}>
-            {isVideo ? <Video className="w-3 h-3" /> : <Music className="w-3 h-3" />}
-          </div>
-          <span className="font-semibold text-text text-xs truncate">{track.name}</span>
-          {targeted && <span className="w-1.5 h-1.5 rounded-full bg-accent" title="Target track" />}
-        </div>
-        <div className="flex items-center gap-0.5">
-          <button className="btn-icon w-6 h-6" onClick={(e) => { e.stopPropagation(); onToggleMute(); }} title={track.muted ? "Unmute" : "Mute"}>
-            {track.muted ? <VolumeX className="w-3.5 h-3.5 text-danger" /> : <Volume2 className="w-3.5 h-3.5" />}
-          </button>
-          <button className="btn-icon w-6 h-6" onClick={(e) => { e.stopPropagation(); onToggleLock(); }} title={track.locked ? "Unlock" : "Lock"}>
-            {track.locked ? <Lock className="w-3.5 h-3.5 text-clip-title" /> : <Unlock className="w-3.5 h-3.5" />}
-          </button>
+      <div className="flex items-center gap-1">
+        <span className={cn("h-3.5 w-1 shrink-0 rounded-full", isVideo ? "bg-video" : "bg-audio")} />
+        {editing ? (
+          <input
+            autoFocus
+            defaultValue={track.name}
+            className="field h-5 w-16 px-1 text-xs"
+            onBlur={(e) => {
+              s().updateTrack(track.id, { name: e.target.value.trim() || track.name });
+              setEditing(false);
+            }}
+            onKeyDown={(e) => {
+              e.stopPropagation();
+              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+              if (e.key === "Escape") setEditing(false);
+            }}
+          />
+        ) : (
+          <span className="w-10 truncate text-xs font-semibold text-ink" onDoubleClick={() => setEditing(true)} title="Double-click to rename">
+            {track.name}
+          </span>
+        )}
+        <div className="ml-auto flex items-center">
+          {isVideo && (
+            <IconButton size="xs" title={track.hidden ? "Show track" : "Hide track"} active={track.hidden} tone="danger" onClick={() => s().updateTrack(track.id, { hidden: !track.hidden })}>
+              {track.hidden ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
+            </IconButton>
+          )}
+          <IconButton size="xs" title={track.muted ? "Unmute track" : "Mute track"} active={track.muted} tone="danger" onClick={() => s().updateTrack(track.id, { muted: !track.muted })}>
+            {track.muted ? <VolumeX className="h-3 w-3" /> : <Volume2 className="h-3 w-3" />}
+          </IconButton>
+          <IconButton size="xs" title={track.solo ? "Unsolo" : "Solo (only soloed tracks are heard)"} active={track.solo} onClick={() => s().updateTrack(track.id, { solo: !track.solo })}>
+            <Headphones className="h-3 w-3" />
+          </IconButton>
+          <IconButton size="xs" title={track.locked ? "Unlock track" : "Lock track"} active={track.locked} onClick={() => s().updateTrack(track.id, { locked: !track.locked })}>
+            {track.locked ? <Lock className="h-3 w-3" /> : <Unlock className="h-3 w-3" />}
+          </IconButton>
         </div>
       </div>
-      <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
-        <Volume2 className="w-3 h-3 text-text-dim shrink-0" />
-        <input type="range" min="0" max="1" step="0.05" value={track.volume} onChange={(e) => onChangeVolume(parseFloat(e.target.value))} className="fader flex-1" title={`${track.name} volume`} />
-      </div>
+      {height >= 50 && (
+        <div className="flex items-center gap-1.5 pl-2" title={`Track volume ${Math.round(track.volume * 100)}%`}>
+          <input
+            type="range"
+            className="range h-3 flex-1"
+            min={0}
+            max={2}
+            step={0.01}
+            value={track.volume}
+            style={{ ["--fill" as string]: `${(track.volume / 2) * 100}%` }}
+            onChange={(e) => s().apply((p) => void (p.tracks.find((t) => t.id === track.id)!.volume = parseFloat(e.target.value)), { live: true })}
+            onPointerUp={() => s().commit()}
+            onKeyUp={() => s().commit()}
+            onDoubleClick={() => s().updateTrack(track.id, { volume: 1 })}
+          />
+          <span className="w-8 text-right font-mono text-2xs text-ink-dim tabular">{Math.round(track.volume * 100)}%</span>
+        </div>
+      )}
     </div>
   );
+});
+
+// --------------------------------------------------------------------- ruler
+
+function tickStep(zoom: number, fps: number): { major: number; minor: number } {
+  const steps = [1 / fps, 2 / fps, 5 / fps, 10 / fps, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1200, 1800, 3600];
+  const major = steps.find((s) => s * zoom >= 90) ?? 3600;
+  const minor = major >= 1 ? (major % 5 === 0 ? major / 5 : major / 2) : major / 2;
+  return { major, minor };
 }
 
-function TimelineClip({
-  clip, asset, kind, locked, razor, isSelected, isPrimary, fps, frames, left, width, onMouseDown, onContextMenu,
-}: {
-  clip: Clip;
-  asset?: MediaAsset;
-  kind: "video" | "audio";
-  locked: boolean;
-  razor: boolean;
-  isSelected: boolean;
-  isPrimary: boolean;
-  fps: number;
-  frames: string[];
-  left: number;
-  width: number;
-  onMouseDown: (e: React.MouseEvent, mode: "move" | "left" | "right") => void;
-  onContextMenu: (e: React.MouseEvent) => void;
-}) {
-  const isVideo = kind === "video";
-  const showFilmstrip = isVideo && frames.length > 0 && width > 40;
-  const filmstripTiles = React.useMemo(() => {
-    if (!showFilmstrip) return [];
-    const count = Math.min(180, Math.max(1, Math.ceil(width / 96)));
-    return Array.from({ length: count }, (_, i) => {
-      const idx = Math.min(frames.length - 1, Math.floor((i / count) * frames.length));
-      return frames[idx];
-    });
-  }, [frames, showFilmstrip, width]);
+function rulerLabel(t: number, major: number, fps: number): string {
+  if (major < 1) return timecode(t, fps);
+  const m = Math.floor(t / 60);
+  const s = Math.round(t - m * 60);
+  if (t >= 3600) return `${Math.floor(t / 3600)}:${String(m % 60).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+function Ruler({ width, viewLeft, viewWidth, timeAt }: { width: number; viewLeft: number; viewWidth: number; timeAt: (x: number) => number }) {
+  const canvas = React.useRef<HTMLCanvasElement>(null);
+  const zoom = useStore((s) => s.zoom);
+  const fps = useStore((s) => s.project.settings.fps);
+  const markers = useStore((s) => s.project.markers);
+  const w = Math.max(1, Math.min(width - viewLeft, viewWidth + 2));
+
+  React.useEffect(() => {
+    const cv = canvas.current;
+    if (!cv) return;
+    const dpr = window.devicePixelRatio || 1;
+    cv.width = Math.ceil(w * dpr);
+    cv.height = Math.ceil(RULER_H * dpr);
+    const ctx = cv.getContext("2d")!;
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, w, RULER_H);
+    const { major, minor } = tickStep(zoom, fps || 30);
+    const t0 = viewLeft / zoom;
+    const t1 = (viewLeft + w) / zoom;
+    ctx.fillStyle = "#3a3a44";
+    for (let i = Math.floor(t0 / minor); i * minor <= t1; i++) {
+      const x = Math.round(i * minor * zoom - viewLeft) + 0.5;
+      ctx.fillRect(x, RULER_H - 6, 1, 6);
+    }
+    ctx.fillStyle = "#6c6c78";
+    ctx.font = '10px "SF Mono", ui-monospace, Menlo, Consolas, monospace';
+    ctx.textBaseline = "top";
+    for (let i = Math.floor(t0 / major); i * major <= t1 + major; i++) {
+      const t = i * major;
+      const x = Math.round(t * zoom - viewLeft) + 0.5;
+      ctx.fillRect(x, RULER_H - 12, 1, 12);
+      ctx.fillText(rulerLabel(t, major, fps || 30), x + 4, 6);
+    }
+  }, [w, zoom, fps, viewLeft]);
+
+  const onPointerDown = (e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    const s = store();
+    if (s.playing) s.pause();
+    const seek = (x: number, free: boolean) => s.seek(free ? snapToFrame(timeAt(x), s.project.settings.fps) : snap(timeAt(x), new Set()).time);
+    seek(e.clientX, e.altKey);
+    const move = (ev: PointerEvent) => seek(ev.clientX, ev.altKey);
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
+
+  const onContextMenu = (e: React.MouseEvent) => {
+    const s = store();
+    const t = snapToFrame(timeAt(e.clientX), s.project.settings.fps);
+    openMenu(e, [
+      { label: "Add marker here", icon: <Flag className="h-3.5 w-3.5" />, onSelect: () => s.addMarker(t) },
+      { label: "Set range in here", shortcut: "I", onSelect: () => s.setRangeIn(t) },
+      { label: "Set range out here", shortcut: "O", onSelect: () => s.setRangeOut(t) },
+      { label: "Clear range", shortcut: "⌥X", disabled: !s.range, onSelect: () => s.setRange(null) },
+    ]);
+  };
 
   return (
     <div
-      className={cn(
-        "absolute top-1.5 bottom-1.5 rounded-md overflow-hidden group border shadow-[0_10px_22px_-18px_rgba(0,0,0,0.9)]",
-        isVideo ? "border-clip-video/55" : "border-clip-audio/55",
-        !showFilmstrip && (isVideo
-          ? "bg-gradient-to-b from-clip-video/35 to-clip-video/15"
-          : "bg-gradient-to-b from-clip-audio/35 to-clip-audio/15"),
-        isSelected ? "ring-2 ring-white/90 z-10" : "hover:brightness-110",
-        isPrimary && "ring-accent",
-        locked ? "cursor-not-allowed" : razor ? "cursor-crosshair" : "cursor-grab active:cursor-grabbing"
-      )}
-      style={{ left: `${left}px`, width: `${width}px` }}
-      onMouseDown={(e) => onMouseDown(e, "move")}
+      className="relative shrink-0 cursor-text border-b border-line bg-panel"
+      style={{ width, height: RULER_H }}
+      onPointerDown={onPointerDown}
       onContextMenu={onContextMenu}
-      title={asset ? `${asset.name} · in ${clip.source_in.toFixed(2)}s → out ${clip.source_out.toFixed(2)}s` : "Missing media"}
     >
-      {/* Filmstrip (video) */}
-      {showFilmstrip && (
-        <div className="absolute inset-0 flex pointer-events-none overflow-hidden bg-black/30">
-          {filmstripTiles.map((f, i) => (
-            <img
-              key={`${f}-${i}`}
-              src={assetUrl(f)}
-              className="h-full shrink-0 object-cover"
-              style={{ width: `${Math.max(56, width / filmstripTiles.length)}px` }}
-              draggable={false}
-              alt=""
-            />
-          ))}
-        </div>
-      )}
-      {/* Waveform-ish bars (audio) */}
-      {!isVideo && <AudioBars seed={clip.id} />}
-
-      {/* readability overlay + top stripe */}
-      <div className={cn("absolute top-0 left-0 right-0 h-1", isVideo ? "bg-clip-video" : "bg-clip-audio")} />
-      <div className="absolute inset-0 bg-gradient-to-t from-black/72 via-black/8 to-black/38 pointer-events-none" />
-      <div className="relative px-2 py-1 flex flex-col h-full justify-between pointer-events-none">
-        <span className="text-2xs font-semibold text-white truncate drop-shadow">{asset?.name ?? "Missing media"}</span>
-        <div className="flex items-center justify-between text-[9px] font-mono text-white/80 leading-none drop-shadow">
-          <span>{formatTimecode(getClipDuration(clip), fps)}</span>
-          {clip.speed !== 1 && <span className="text-clip-title">{clip.speed}×</span>}
-        </div>
-      </div>
-
-      {!locked && !razor && (
-        <>
-          <div onMouseDown={(e) => onMouseDown(e, "left")} className="absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize bg-white/0 group-hover:bg-white/70 transition-colors z-10" title="Trim in" />
-          <div onMouseDown={(e) => onMouseDown(e, "right")} className="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize bg-white/0 group-hover:bg-white/70 transition-colors z-10" title="Trim out" />
-        </>
-      )}
-    </div>
-  );
-}
-
-function TimelineContextMenu({
-  menu,
-  onClose,
-  onDuplicateClip,
-  onDeleteClip,
-  onTargetTrack,
-  onToggleMute,
-  onToggleLock,
-  onDeleteTrack,
-  onAddTrack,
-}: {
-  menu:
-    | { kind: "clip"; x: number; y: number; clip: Clip; track: Track }
-    | { kind: "track"; x: number; y: number; track: Track };
-  onClose: () => void;
-  onDuplicateClip: (track: Track, clip: Clip) => void;
-  onDeleteClip: (track: Track, clip: Clip, ripple: boolean) => void;
-  onTargetTrack: (track: Track) => void;
-  onToggleMute: (track: Track) => void;
-  onToggleLock: (track: Track) => void;
-  onDeleteTrack: (track: Track) => void;
-  onAddTrack: (kind: "video" | "audio") => void;
-}) {
-  const item = "w-full px-3 py-2 text-left hover:bg-surface-hover";
-  return (
-    <div
-      className="fixed z-[80] min-w-44 rounded-lg border border-border bg-surface shadow-panel py-1 text-xs"
-      style={{ left: menu.x, top: menu.y }}
-      onPointerDown={(e) => e.stopPropagation()}
-    >
-      {menu.kind === "clip" ? (
-        <>
-          <button className={item} onClick={() => { onDuplicateClip(menu.track, menu.clip); onClose(); }}>
-            Copy / duplicate clip
-          </button>
-          <button className={item} onClick={() => { onDeleteClip(menu.track, menu.clip, false); onClose(); }}>
-            Delete clip
-          </button>
-          <button className={item} onClick={() => { onDeleteClip(menu.track, menu.clip, true); onClose(); }}>
-            Ripple delete
-          </button>
-        </>
-      ) : (
-        <>
-          <button className={item} onClick={() => { onTargetTrack(menu.track); onClose(); }}>
-            Target {menu.track.name}
-          </button>
-          <button className={item} onClick={() => { onToggleMute(menu.track); onClose(); }}>
-            {menu.track.muted ? "Unmute" : "Mute"} track
-          </button>
-          <button className={item} onClick={() => { onToggleLock(menu.track); onClose(); }}>
-            {menu.track.locked ? "Unlock" : "Lock"} track
-          </button>
-          <div className="h-px bg-border my-1" />
-          <button className={item} onClick={() => { onAddTrack("video"); onClose(); }}>
-            Add video track
-          </button>
-          <button className={item} onClick={() => { onAddTrack("audio"); onClose(); }}>
-            Add audio track
-          </button>
-          <div className="h-px bg-border my-1" />
-          <button className="w-full px-3 py-2 text-left text-danger hover:bg-danger/10" onClick={() => { onDeleteTrack(menu.track); onClose(); }}>
-            Delete track
-          </button>
-        </>
-      )}
-    </div>
-  );
-}
-
-// Lightweight stylized waveform for audio clips (deterministic from the clip id).
-function AudioBars({ seed }: { seed: string }) {
-  const bars = React.useMemo(() => {
-    let h = 0;
-    for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
-    const rand = () => { h = (h * 1664525 + 1013904223) >>> 0; return (h >>> 8) / 0xffffff; };
-    return Array.from({ length: 48 }, () => 0.25 + rand() * 0.7);
-  }, [seed]);
-  return (
-    <div className="absolute inset-0 flex items-center gap-px px-1 pointer-events-none opacity-70">
-      {bars.map((v, i) => (
-        <div key={i} className="flex-1 bg-clip-audio rounded-full" style={{ height: `${v * 70}%` }} />
+      <canvas ref={canvas} className="pointer-events-none absolute top-0" style={{ left: viewLeft, width: w, height: RULER_H }} />
+      <RangeBand />
+      {markers.map((m) => (
+        <MarkerFlag key={m.id} id={m.id} time={m.time} label={m.label} color={m.color} zoom={zoom} timeAt={timeAt} />
       ))}
     </div>
   );
 }
 
-/** Draggable work area bar for export range. Rendered inside the ruler area. */
-function WorkAreaBar({
-  inPoint,
-  outPoint,
-  timeToPx,
-  pxToTime,
-  onChangeIn,
-  onChangeOut,
-  onMove,
-}: {
-  inPoint: number;
-  outPoint: number;
-  timeToPx: (t: number) => number;
-  pxToTime: (px: number) => number;
-  onChangeIn: (t: number) => void;
-  onChangeOut: (t: number) => void;
-  onMove: (inP: number, outP: number) => void;
-}) {
-  const left = timeToPx(inPoint);
-  const width = Math.max(4, timeToPx(outPoint) - left);
-
-  const startDrag = (mode: "in" | "out" | "body") => (e: React.MouseEvent) => {
-    e.stopPropagation();
-    e.preventDefault();
-    const startX = e.clientX;
-    const startIn = inPoint;
-    const startOut = outPoint;
-    const dur = outPoint - inPoint;
-
-    const move = (ev: MouseEvent) => {
-      const dx = ev.clientX - startX;
-      const dt = pxToTime(Math.abs(dx)) * Math.sign(dx);
-
-      if (mode === "in") {
-        onChangeIn(Math.max(0, Math.min(startIn + dt, startOut - 0.05)));
-      } else if (mode === "out") {
-        onChangeOut(Math.max(startIn + 0.05, startOut + dt));
-      } else {
-        const newIn = Math.max(0, startIn + dt);
-        onMove(newIn, newIn + dur);
-      }
-    };
-    const up = () => {
-      window.removeEventListener("mousemove", move);
-      window.removeEventListener("mouseup", up);
-    };
-    window.addEventListener("mousemove", move);
-    window.addEventListener("mouseup", up);
-  };
-
+function RangeBand() {
+  const range = useStore((s) => s.range);
+  const zoom = useStore((s) => s.zoom);
+  if (!range) return null;
   return (
-    <>
-      {/* Dimmed regions outside the work area */}
-      <div
-        className="absolute top-0 bottom-0 bg-black/30 pointer-events-none"
-        style={{ left: 0, width: `${left}px` }}
-      />
-      <div
-        className="absolute top-0 bottom-0 bg-black/30 pointer-events-none"
-        style={{ left: `${left + width}px`, right: 0 }}
-      />
-
-      {/* Selected region body (draggable) */}
-      <div
-        className="absolute top-0 bottom-0 bg-accent/25 border-t-2 border-accent cursor-grab active:cursor-grabbing z-10"
-        style={{ left: `${left}px`, width: `${width}px` }}
-        onMouseDown={startDrag("body")}
-        title={`Export range: ${inPoint.toFixed(1)}s – ${outPoint.toFixed(1)}s`}
-      />
-
-      {/* IN handle */}
-      <div
-        className="absolute top-0 bottom-0 w-2 cursor-ew-resize z-20 group"
-        style={{ left: `${left - 4}px` }}
-        onMouseDown={startDrag("in")}
-        title="Drag to adjust range IN"
-      >
-        <div className="absolute top-0 bottom-0 left-1 w-0.5 bg-accent group-hover:bg-accent-hover" />
-      </div>
-
-      {/* OUT handle */}
-      <div
-        className="absolute top-0 bottom-0 w-2 cursor-ew-resize z-20 group"
-        style={{ left: `${left + width - 4}px` }}
-        onMouseDown={startDrag("out")}
-        title="Drag to adjust range OUT"
-      >
-        <div className="absolute top-0 bottom-0 right-1 w-0.5 bg-accent group-hover:bg-accent-hover" />
-      </div>
-    </>
+    <div
+      className="pointer-events-none absolute bottom-0 h-1.5 rounded-sm bg-accent/70"
+      style={{ left: range.in * zoom, width: (range.out - range.in) * zoom }}
+      title="Export range"
+    />
   );
 }
 
-function renderRulerTicks(totalSecs: number, zoom: number, fps: number) {
-  const ticks = [];
-  let step = 1;
-  if (zoom < 10) step = 10;
-  else if (zoom < 25) step = 5;
-  else if (zoom < 60) step = 2;
-  else if (zoom > 120) step = 0.5;
-
-  for (let t = 0; t <= totalSecs; t += step) {
-    const major = step >= 5 || t % (step * 5) < 0.001;
-    ticks.push(
-      <div key={t} className="absolute top-0 bottom-0 flex flex-col justify-center" style={{ left: `${t * zoom}px` }}>
-        <div className={cn("w-px", major ? "h-3 bg-border-hover" : "h-1.5 bg-border")} />
-        {major && <span className="absolute top-0.5 left-1 text-[9px] font-mono text-text-dim">{formatTimecode(t, fps).slice(3)}</span>}
-      </div>
-    );
-  }
-  return ticks;
+function RangeOverlay({ height }: { height: number }) {
+  const range = useStore((s) => s.range);
+  const zoom = useStore((s) => s.zoom);
+  if (!range) return null;
+  return (
+    <div
+      className="pointer-events-none absolute z-[5] border-x border-accent/60 bg-accent/[0.06]"
+      style={{ left: HEADER_W + range.in * zoom, width: (range.out - range.in) * zoom, top: RULER_H, height: height - RULER_H }}
+    />
+  );
 }
 
-function formatTimecode(sec: number, fps: number): string {
-  if (!isFinite(sec) || sec < 0) sec = 0;
-  const h = Math.floor(sec / 3600);
-  const m = Math.floor((sec % 3600) / 60);
-  const s = Math.floor(sec % 60);
-  const f = Math.floor((sec % 1) * fps);
-  const pad = (n: number) => n.toString().padStart(2, "0");
-  return `${pad(h)}:${pad(m)}:${pad(s)}:${pad(f)}`;
+function MarkerFlag({ id, time, label, color, zoom, timeAt }: { id: Id; time: number; label: string; color: string; zoom: number; timeAt: (x: number) => number }) {
+  const [editing, setEditing] = React.useState(false);
+  const onPointerDown = (e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    const s = store();
+    const sx = e.clientX;
+    let moved = false;
+    const move = (ev: PointerEvent) => {
+      if (!moved && Math.abs(ev.clientX - sx) < 3) return;
+      moved = true;
+      const t = snap(timeAt(ev.clientX), new Set(), { disabled: ev.altKey }).time;
+      s.apply((p) => {
+        const m = p.markers.find((x) => x.id === id);
+        if (m) m.time = t;
+      }, { live: true });
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      if (moved) {
+        store().apply((p) => void p.markers.sort((a, b) => a.time - b.time), { live: true });
+        store().commit();
+      } else store().seek(time);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
+  const onContextMenu = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const s = store();
+    openMenu(e, [
+      { label: "Rename…", onSelect: () => setEditing(true) },
+      { label: "Go to marker", onSelect: () => s.seek(time) },
+      { separator: true },
+      ...MARKER_COLORS.map(
+        (c, i): MenuItem => ({
+          label: ["Amber", "Sky", "Rose", "Lime", "Lilac"][i] ?? "Colour",
+          icon: <span className={cn("h-3 w-3 rounded-full", c === color && "ring-2 ring-white/70")} style={{ background: c }} />,
+          onSelect: () => s.updateMarker(id, { color: c }),
+        }),
+      ),
+      { separator: true },
+      { label: "Delete marker", danger: true, onSelect: () => s.removeMarker(id) },
+    ]);
+  };
+  return (
+    <div className="absolute top-0 z-[3]" style={{ left: time * zoom - 5 }}>
+      <div
+        onPointerDown={onPointerDown}
+        onContextMenu={onContextMenu}
+        onDoubleClick={(e) => {
+          e.stopPropagation();
+          setEditing(true);
+        }}
+        className="flex cursor-pointer items-start"
+        title={label ? `${label} · drag to move, double-click to rename` : "Marker · drag to move, double-click to name"}
+      >
+        <svg width="10" height="14" viewBox="0 0 10 14" className="shrink-0">
+          <path d="M0 0h10v9l-5 5-5-5z" fill={color} />
+        </svg>
+        {label && !editing && <span className="ml-0.5 max-w-[120px] truncate rounded-sm bg-black/50 px-1 text-2xs leading-[14px] text-ink">{label}</span>}
+      </div>
+      {editing && (
+        <input
+          autoFocus
+          defaultValue={label}
+          placeholder="Marker name"
+          className="field absolute left-3 top-0 h-5 w-36 px-1 text-xs"
+          onPointerDown={(e) => e.stopPropagation()}
+          onBlur={(e) => {
+            store().updateMarker(id, { label: e.target.value.trim() });
+            setEditing(false);
+          }}
+          onKeyDown={(e) => {
+            e.stopPropagation();
+            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+            if (e.key === "Escape") setEditing(false);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------ playhead
+
+function Playhead({ height, timeAt, viewLeft }: { height: number; timeAt: (x: number) => number; viewLeft: number }) {
+  const playhead = useStore((s) => s.playhead);
+  const zoom = useStore((s) => s.zoom);
+  const onPointerDown = (e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    const s = store();
+    if (s.playing) s.pause();
+    const move = (ev: PointerEvent) => s.seek(snap(timeAt(ev.clientX), new Set(), { disabled: ev.altKey }).time);
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
+  // Drawn above the sticky ruler; hidden while scrolled under the track headers.
+  if (playhead * zoom < viewLeft - 1) return null;
+  return (
+    <div className="pointer-events-none absolute top-0 z-[22]" style={{ left: HEADER_W + playhead * zoom, height }}>
+      <div className="absolute -left-px top-0 h-full w-[2px] bg-playhead shadow-[0_0_8px_rgba(255,79,109,0.5)]" />
+      <div
+        onPointerDown={onPointerDown}
+        className="pointer-events-auto absolute -left-[6px] top-[14px] h-4 w-3 cursor-ew-resize rounded-b-[3px] rounded-t-[1px] bg-playhead"
+        style={{ clipPath: "polygon(0 0, 100% 0, 100% 60%, 50% 100%, 0 60%)" }}
+      />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- drop ghost
+
+function DropGhost({ rows }: { rows: Row[] }) {
+  const payload = useDrag((s) => s.payload);
+  const x = useDrag((s) => s.x);
+  const y = useDrag((s) => s.y);
+  const zoom = useStore((s) => s.zoom);
+  if (!payload || payload.kind === "files") return null;
+  const target = dropTarget(payload, x, y);
+  if (!target) return null;
+  const kind = payloadKind(payload);
+  const row =
+    rows.find((r) => r.track.id === target.trackId) ??
+    rows.find((r) => r.track.kind === kind && !r.track.locked);
+  if (!row) return null;
+  const len = payloadLength(payload);
+  return (
+    <>
+      <div
+        className={cn(
+          "pointer-events-none absolute z-[14] rounded-[5px] border-2 border-dashed",
+          kind === "audio" ? "border-audio bg-audio/20" : payload.kind === "title" ? "border-title bg-title/20" : "border-video bg-video/20",
+        )}
+        style={{ left: HEADER_W + target.at * zoom, width: Math.max(4, len * zoom), top: row.top + 3, height: row.height - 6 }}
+      />
+      {target.guide != null && (
+        <div className="pointer-events-none absolute top-0 z-[15] w-px bg-[#ffd84f]" style={{ left: HEADER_W + target.guide * zoom, height: rows.length ? rows[rows.length - 1].top + rows[rows.length - 1].height : 0 }} />
+      )}
+    </>
+  );
 }

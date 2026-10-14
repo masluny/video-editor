@@ -1,0 +1,782 @@
+import { create } from "zustand";
+import { current, isDraft, produce, type Draft } from "immer";
+import type { Clip, Id, MediaAsset, Project, ProjectSettings, Track, TrackKind } from "../lib/types";
+import { mediaClip, newProject, newTrack, titleClip, MARKER_COLORS } from "../lib/defaults";
+import {
+  clipDuration,
+  clipEnd,
+  EPS,
+  gapAt,
+  closeGap,
+  insert,
+  keepSourceRanges,
+  overwrite,
+  projectDuration,
+  rippleDelete,
+  snapToEdit,
+  snapToFrame,
+  sortClips,
+  split,
+} from "../lib/timeline";
+import { uid } from "../lib/uid";
+import type { Waveform } from "../lib/backend";
+import { stripExtension } from "../lib/format";
+
+export type Tool = "select" | "blade";
+export type PlaceMode = "overwrite" | "insert";
+
+export interface MediaRuntime {
+  thumbs?: string[];
+  waveform?: Waveform;
+  /** Playable stand-in for formats the webview can't decode. */
+  proxy?: string;
+  proxyProgress?: number;
+  proxyError?: string;
+  /** Original file can't be played by the webview. */
+  needsProxy?: boolean;
+  missing?: boolean;
+}
+
+export interface Toast {
+  id: Id;
+  kind: "info" | "success" | "error";
+  message: string;
+  action?: { label: string; run: () => void };
+}
+
+export type Dialog =
+  | { kind: "export" }
+  | { kind: "settings" }
+  | { kind: "shortcuts" }
+  | { kind: "silence"; clipId: Id }
+  | { kind: "source"; mediaId: Id }
+  | null;
+
+interface ClipboardEntry {
+  clip: Clip;
+  /** Index among tracks of the same kind. */
+  laneIndex: number;
+  kind: TrackKind;
+}
+
+interface State {
+  project: Project;
+  past: Project[];
+  future: Project[];
+  /** Project as it was before an in-progress drag (live edits). */
+  liveBase: Project | null;
+  savedProject: Project;
+  filePath: string | null;
+
+  playhead: number;
+  playing: boolean;
+  /** Shuttle rate for J/K/L; 1 = normal. */
+  rate: number;
+  /** Bumped whenever the user (not playback) moves the playhead. */
+  seekNonce: number;
+
+  selection: Id[];
+  selectedMedia: Id | null;
+  tool: Tool;
+  snapping: boolean;
+  /** Pixels per second. */
+  zoom: number;
+  range: { in: number; out: number } | null;
+
+  runtime: Record<Id, MediaRuntime>;
+  toasts: Toast[];
+  dialog: Dialog;
+  clipboard: ClipboardEntry[];
+
+  // --- document --------------------------------------------------------------
+  apply: (recipe: (p: Draft<Project>) => void, opts?: { live?: boolean }) => void;
+  commit: () => void;
+  cancelLive: () => void;
+  undo: () => void;
+  redo: () => void;
+  loadProject: (p: Project, path: string | null, opts?: { dirty?: boolean }) => void;
+  newProject: () => void;
+  markSaved: (path: string) => void;
+
+  // --- media -----------------------------------------------------------------
+  addMedia: (assets: MediaAsset[]) => MediaAsset[];
+  removeMedia: (id: Id) => void;
+  relinkMedia: (id: Id, asset: Omit<MediaAsset, "id">) => void;
+  setRuntime: (id: Id, patch: Partial<MediaRuntime>) => void;
+  /** Put media on the timeline. Returns the new clip id. */
+  placeMedia: (mediaId: Id, opts?: { trackId?: Id; at?: number; mode?: PlaceMode; range?: { in: number; out: number } }) => Id | null;
+  placeTitle: (style: Partial<Clip["title"]> | undefined, opts?: { trackId?: Id; at?: number }) => Id | null;
+
+  // --- clips -----------------------------------------------------------------
+  updateClip: (id: Id, fn: (c: Draft<Clip>) => void, opts?: { live?: boolean }) => void;
+  updateClips: (ids: Id[], fn: (c: Draft<Clip>) => void, opts?: { live?: boolean }) => void;
+  /** Live (uncommitted) move of clips, possibly across tracks; overlaps are resolved by settleClips. */
+  moveClipsLive: (moves: { id: Id; trackId: Id; start: number }[]) => void;
+  /** Live copies of clips at the same place (Alt-drag). Returns old id -> new id. */
+  duplicateInPlaceLive: (ids: Id[]) => Map<Id, Id>;
+  /** Resolve overlaps after a drag: moved clips overwrite whatever they now cover. */
+  settleClips: (ids: Id[]) => void;
+  deleteClips: (ids: Id[], ripple: boolean) => void;
+  splitAtPlayhead: () => void;
+  splitClipAt: (id: Id, time: number) => void;
+  duplicateClips: (ids: Id[]) => void;
+  copy: () => void;
+  cut: () => void;
+  paste: () => void;
+  detachAudio: (id: Id) => void;
+  replaceWithRanges: (id: Id, ranges: [number, number][]) => number;
+  closeGapAt: (trackId: Id, time: number) => void;
+
+  // --- tracks ----------------------------------------------------------------
+  addTrack: (kind: TrackKind) => void;
+  removeTrack: (id: Id) => void;
+  updateTrack: (id: Id, patch: Partial<Omit<Track, "id" | "clips" | "kind">>) => void;
+
+  // --- markers / range / settings ---------------------------------------------
+  addMarker: (time?: number) => void;
+  removeMarker: (id: Id) => void;
+  updateMarker: (id: Id, patch: { label?: string; color?: string; time?: number }) => void;
+  setRange: (range: { in: number; out: number } | null) => void;
+  setRangeIn: (t: number) => void;
+  setRangeOut: (t: number) => void;
+  updateSettings: (patch: Partial<ProjectSettings>) => void;
+  renameProject: (name: string) => void;
+
+  // --- transport & view -------------------------------------------------------
+  seek: (t: number) => void;
+  setPlayheadFromPlayback: (t: number) => void;
+  play: () => void;
+  pause: () => void;
+  togglePlay: () => void;
+  setRate: (r: number) => void;
+  select: (ids: Id[]) => void;
+  toggleSelect: (id: Id) => void;
+  selectAll: () => void;
+  setSelectedMedia: (id: Id | null) => void;
+  setTool: (t: Tool) => void;
+  toggleSnapping: () => void;
+  setZoom: (z: number) => void;
+
+  toast: (message: string, kind?: Toast["kind"], action?: Toast["action"]) => void;
+  dismissToast: (id: Id) => void;
+  openDialog: (d: Dialog) => void;
+}
+
+/** Plain snapshot of a draft value, so pure helpers never see immer proxies. */
+function plain<T>(v: T | Draft<T>): T {
+  return (isDraft(v) ? current(v as Draft<T>) : v) as T;
+}
+
+export const ZOOM_MIN = 2;
+export const ZOOM_MAX = 600;
+const HISTORY_LIMIT = 200;
+
+const initial = newProject();
+
+export function findClip(p: Project, id: Id): { track: Track; clip: Clip; index: number } | null {
+  for (const track of p.tracks) {
+    const index = track.clips.findIndex((c) => c.id === id);
+    if (index >= 0) return { track, clip: track.clips[index], index };
+  }
+  return null;
+}
+
+/** First track of `kind` that is unlocked and has room for [start, start+len). */
+function pickTrack(p: Draft<Project> | Project, kind: TrackKind, start: number, len: number, preferred?: Id): Draft<Track> | Track | null {
+  const fits = (t: Track) => !t.locked && t.clips.every((c) => clipEnd(c) <= start + EPS || c.start >= start + len - EPS);
+  const tracks = p.tracks.filter((t) => t.kind === kind) as Track[];
+  const pref = tracks.find((t) => t.id === preferred && !t.locked);
+  if (pref) return pref;
+  return tracks.find(fits) ?? tracks.find((t) => !t.locked) ?? null;
+}
+
+function nextTrackName(p: Project, kind: TrackKind) {
+  const prefix = kind === "video" ? "V" : "A";
+  let n = p.tracks.filter((t) => t.kind === kind).length + 1;
+  while (p.tracks.some((t) => t.name === `${prefix}${n}`)) n++;
+  return `${prefix}${n}`;
+}
+
+/** Insert a new track keeping video tracks before audio tracks. */
+function insertTrack(p: Draft<Project>, track: Track) {
+  if (track.kind === "video") {
+    const lastVideo = p.tracks.map((t) => t.kind).lastIndexOf("video");
+    p.tracks.splice(lastVideo + 1, 0, track);
+  } else p.tracks.push(track);
+}
+
+export const useStore = create<State>()((set, get) => ({
+  project: initial,
+  past: [],
+  future: [],
+  liveBase: null,
+  savedProject: initial,
+  filePath: null,
+
+  playhead: 0,
+  playing: false,
+  rate: 1,
+  seekNonce: 0,
+
+  selection: [],
+  selectedMedia: null,
+  tool: "select",
+  snapping: true,
+  zoom: 60,
+  range: null,
+
+  runtime: {},
+  toasts: [],
+  dialog: null,
+  clipboard: [],
+
+  // ---------------------------------------------------------------- document
+  apply: (recipe, opts) => {
+    const { project, liveBase, past } = get();
+    const next = produce(project, recipe);
+    if (next === project) return;
+    if (opts?.live) {
+      set({ project: next, liveBase: liveBase ?? project });
+    } else {
+      const base = liveBase ?? project;
+      set({ project: next, past: [...past, base].slice(-HISTORY_LIMIT), future: [], liveBase: null });
+    }
+  },
+
+  commit: () => {
+    const { liveBase, project, past } = get();
+    if (!liveBase) return;
+    if (liveBase !== project) set({ past: [...past, liveBase].slice(-HISTORY_LIMIT), future: [], liveBase: null });
+    else set({ liveBase: null });
+  },
+
+  cancelLive: () => {
+    const { liveBase } = get();
+    if (liveBase) set({ project: liveBase, liveBase: null });
+  },
+
+  undo: () => {
+    get().commit();
+    const { past, project, future } = get();
+    if (!past.length) return;
+    const prev = past[past.length - 1];
+    set({ project: prev, past: past.slice(0, -1), future: [project, ...future] });
+    pruneSelection();
+  },
+
+  redo: () => {
+    get().commit();
+    const { past, project, future } = get();
+    if (!future.length) return;
+    set({ project: future[0], future: future.slice(1), past: [...past, project] });
+    pruneSelection();
+  },
+
+  loadProject: (p, path, opts) =>
+    set({
+      project: p,
+      savedProject: opts?.dirty ? newProject() : p,
+      filePath: path,
+      past: [],
+      future: [],
+      liveBase: null,
+      selection: [],
+      selectedMedia: null,
+      playhead: 0,
+      playing: false,
+      range: null,
+      seekNonce: get().seekNonce + 1,
+    }),
+
+  newProject: () => {
+    const p = newProject();
+    get().loadProject(p, null);
+  },
+
+  markSaved: (path) => set({ savedProject: get().project, filePath: path }),
+
+  // ------------------------------------------------------------------- media
+  addMedia: (assets) => {
+    const known = new Map(get().project.media.map((m) => [m.path, m]));
+    const added: MediaAsset[] = [];
+    const result: MediaAsset[] = [];
+    for (const a of assets) {
+      const existing = known.get(a.path);
+      if (existing) result.push(existing);
+      else {
+        known.set(a.path, a);
+        added.push(a);
+        result.push(a);
+      }
+    }
+    if (added.length) get().apply((p) => void p.media.push(...added));
+    return result;
+  },
+
+  removeMedia: (id) => {
+    get().apply((p) => {
+      p.media = p.media.filter((m) => m.id !== id);
+      for (const t of p.tracks) t.clips = t.clips.filter((c) => c.mediaId !== id);
+    });
+    pruneSelection();
+    if (get().selectedMedia === id) set({ selectedMedia: null });
+  },
+
+  relinkMedia: (id, asset) => {
+    get().apply((p) => {
+      const m = p.media.find((x) => x.id === id);
+      if (m) Object.assign(m, asset, { id });
+    });
+    get().setRuntime(id, { missing: false, thumbs: undefined, waveform: undefined, proxy: undefined, needsProxy: undefined });
+  },
+
+  setRuntime: (id, patch) => set((s) => ({ runtime: { ...s.runtime, [id]: { ...s.runtime[id], ...patch } } })),
+
+  placeMedia: (mediaId, opts = {}) => {
+    const st = get();
+    const media = st.project.media.find((m) => m.id === mediaId);
+    if (!media) return null;
+    const fps = st.project.settings.fps;
+    const at = snapToEdit(opts.at ?? st.playhead, st.project.tracks, fps);
+    const clip = mediaClip(media, at, opts.range);
+    const len = clipDuration(clip);
+    const kind: TrackKind = media.kind === "audio" ? "audio" : "video";
+    const firstVisual = kind === "video" && !st.project.tracks.some((t) => t.clips.some((c) => c.type === "media" && st.project.media.find((m) => m.id === c.mediaId)?.hasVideo));
+
+    let placedOn: Id | null = null;
+    st.apply((p) => {
+      let track = (opts.trackId && p.tracks.find((t) => t.id === opts.trackId && t.kind === kind && !t.locked)) || pickTrack(p, kind, at, len);
+      if (!track) {
+        const t = newTrack(kind, nextTrackName(p as Project, kind));
+        insertTrack(p, t);
+        track = p.tracks.find((x) => x.id === t.id)!;
+      }
+      track.clips = (opts.mode === "insert" ? insert : overwrite)(plain(track.clips) as Clip[], clip) as Draft<Clip>[];
+      placedOn = track.id;
+      // First real footage in an empty project: adopt its size & frame rate.
+      if (firstVisual && media.kind === "video" && media.width > 0 && media.height > 0) {
+        const s = p.settings;
+        if (s.width !== media.width || s.height !== media.height || (media.fps > 0 && Math.abs(s.fps - media.fps) > 0.01)) {
+          s.width = media.width % 2 ? media.width + 1 : media.width;
+          s.height = media.height % 2 ? media.height + 1 : media.height;
+          if (media.fps >= 10 && media.fps <= 120) s.fps = Math.round(media.fps * 1000) / 1000;
+          adopted = { w: s.width, h: s.height, fps: s.fps };
+        }
+      }
+    });
+    if (adopted) {
+      const a = adopted as { w: number; h: number; fps: number };
+      get().toast(`Project set to ${a.w}×${a.h} · ${+a.fps.toFixed(3)} fps to match “${stripExtension(media.name)}”.`, "info", {
+        label: "Settings",
+        run: () => get().openDialog({ kind: "settings" }),
+      });
+      adopted = null;
+    }
+    if (placedOn) set({ selection: [clip.id] });
+    return placedOn ? clip.id : null;
+  },
+
+  placeTitle: (style, opts = {}) => {
+    const st = get();
+    const { width, height } = st.project.settings;
+    // Presets are authored for 1080p; scale sizes to the project frame.
+    const k = Math.min(width, height) / 1080;
+    const s = { ...style };
+    if (s.fontSize) s.fontSize = Math.round(s.fontSize * k);
+    if (s.boxPadding) s.boxPadding = Math.round(s.boxPadding * k);
+    if (s.boxRadius) s.boxRadius = Math.round(s.boxRadius * k);
+    if (s.strokeWidth) s.strokeWidth = Math.max(1, Math.round(s.strokeWidth * k));
+    const at = snapToEdit(opts.at ?? st.playhead, st.project.tracks, st.project.settings.fps);
+    const clip = titleClip(at, s);
+    const len = clipDuration(clip);
+    let placed = false;
+    st.apply((p) => {
+      // Titles go on the highest video track that has room, else a new top track.
+      const videos = p.tracks.filter((t) => t.kind === "video");
+      const free = (t: Track) => !t.locked && t.clips.every((c) => clipEnd(c) <= at + EPS || c.start >= at + len - EPS);
+      let track = (opts.trackId && p.tracks.find((t) => t.id === opts.trackId && t.kind === "video" && !t.locked)) || null;
+      if (!track) {
+        const top = [...videos].reverse().find((t) => free(t as Track));
+        // Never put a title *under* footage: only reuse a track above every occupied one.
+        const highestUsed = videos.map((t) => t.clips.some((c) => clipEnd(c) > at + EPS && c.start < at + len - EPS)).lastIndexOf(true);
+        if (top && videos.indexOf(top) > highestUsed) track = top;
+      }
+      if (!track) {
+        const t = newTrack("video", nextTrackName(p as Project, "video"));
+        insertTrack(p, t);
+        track = p.tracks.find((x) => x.id === t.id)!;
+      }
+      track.clips = overwrite(plain(track.clips) as Clip[], clip) as Draft<Clip>[];
+      placed = true;
+    });
+    if (placed) set({ selection: [clip.id] });
+    return placed ? clip.id : null;
+  },
+
+  // ------------------------------------------------------------------- clips
+  updateClip: (id, fn, opts) => get().updateClips([id], fn, opts),
+
+  updateClips: (ids, fn, opts) => {
+    const set_ = new Set(ids);
+    get().apply((p) => {
+      for (const t of p.tracks) {
+        if (t.locked) continue;
+        for (const c of t.clips) if (set_.has(c.id)) fn(c);
+      }
+    }, opts);
+  },
+
+  moveClipsLive: (moves) => {
+    const byId = new Map(moves.map((m) => [m.id, m]));
+    get().apply((p) => {
+      const pulled: { clip: Clip; dest: Id }[] = [];
+      for (const t of p.tracks) {
+        if (!t.clips.some((c) => byId.has(c.id))) continue;
+        const keep: Draft<Clip>[] = [];
+        for (const c of t.clips) {
+          const m = byId.get(c.id);
+          if (m && m.trackId !== t.id) pulled.push({ clip: { ...plain(c), start: Math.max(0, m.start) }, dest: m.trackId });
+          else {
+            if (m) c.start = Math.max(0, m.start);
+            keep.push(c);
+          }
+        }
+        t.clips = keep;
+      }
+      for (const { clip, dest } of pulled) {
+        const t = p.tracks.find((x) => x.id === dest);
+        if (t) t.clips.push(clip as Draft<Clip>);
+      }
+    }, { live: true });
+  },
+
+  duplicateInPlaceLive: (ids) => {
+    const map = new Map<Id, Id>();
+    const want = new Set(ids);
+    get().apply((p) => {
+      for (const t of p.tracks) {
+        if (t.locked) continue;
+        for (const c of plain(t.clips) as Clip[]) {
+          if (!want.has(c.id)) continue;
+          const copy = { ...structuredClone(c), id: uid() };
+          map.set(c.id, copy.id);
+          t.clips.push(copy as Draft<Clip>);
+        }
+      }
+    }, { live: true });
+    return map;
+  },
+
+  settleClips: (ids) => {
+    const moving = new Set(ids);
+    get().apply((p) => {
+      for (const t of p.tracks) {
+        const all = plain(t.clips) as Clip[];
+        const movers = all.filter((c) => moving.has(c.id));
+        if (!movers.length) continue;
+        let resolved = all.filter((c) => !moving.has(c.id));
+        for (const m of sortClips(movers)) resolved = overwrite(resolved, { ...m, start: Math.max(0, m.start) });
+        t.clips = resolved as Draft<Clip>[];
+      }
+    }, { live: true });
+    get().commit();
+  },
+
+  deleteClips: (ids, ripple) => {
+    if (!ids.length) return;
+    const del = new Set(ids);
+    get().apply((p) => {
+      for (const t of p.tracks) {
+        if (t.locked || !t.clips.some((c) => del.has(c.id))) continue;
+        const all = plain(t.clips) as Clip[];
+        t.clips = (ripple ? rippleDelete(all, del) : all.filter((c) => !del.has(c.id))) as Draft<Clip>[];
+      }
+    });
+    pruneSelection();
+  },
+
+  splitAtPlayhead: () => {
+    const { playhead, selection, project } = get();
+    const sel = new Set(selection);
+    // Selected clips under the playhead, or every unlocked clip under it.
+    const targets = project.tracks.flatMap((t) =>
+      t.locked ? [] : t.clips.filter((c) => playhead > c.start + EPS && playhead < clipEnd(c) - EPS),
+    );
+    const chosen = sel.size && targets.some((c) => sel.has(c.id)) ? targets.filter((c) => sel.has(c.id)) : targets;
+    if (!chosen.length) return;
+    const ids = new Set(chosen.map((c) => c.id));
+    const newSel: Id[] = [];
+    get().apply((p) => {
+      for (const t of p.tracks) {
+        if (t.locked) continue;
+        const out: Clip[] = [];
+        for (const c of plain(t.clips) as Clip[]) {
+          const parts = ids.has(c.id) ? split(c, playhead) : null;
+          if (parts) {
+            out.push(...parts);
+            if (sel.has(c.id)) newSel.push(parts[1].id);
+          } else out.push(c);
+        }
+        t.clips = out as Draft<Clip>[];
+      }
+    });
+    if (newSel.length) set({ selection: newSel });
+  },
+
+  splitClipAt: (id, time) => {
+    get().apply((p) => {
+      for (const t of p.tracks) {
+        if (t.locked) continue;
+        const i = t.clips.findIndex((c) => c.id === id);
+        if (i < 0) continue;
+        const parts = split(plain(t.clips[i]) as Clip, time);
+        if (parts) t.clips.splice(i, 1, ...(parts as Draft<Clip>[]));
+      }
+    });
+  },
+
+  duplicateClips: (ids) => {
+    const { project } = get();
+    const picked = ids.map((id) => findClip(project, id)).filter((x): x is NonNullable<typeof x> => !!x && !x.track.locked);
+    if (!picked.length) return;
+    const lo = Math.min(...picked.map((x) => x.clip.start));
+    const hi = Math.max(...picked.map((x) => clipEnd(x.clip)));
+    const shift = hi - lo;
+    const created: Id[] = [];
+    get().apply((p) => {
+      for (const { track, clip } of picked) {
+        const t = p.tracks.find((x) => x.id === track.id)!;
+        const copy = { ...structuredClone(clip), id: uid(), start: clip.start + shift };
+        t.clips = overwrite(plain(t.clips) as Clip[], copy) as Draft<Clip>[];
+        created.push(copy.id);
+      }
+    });
+    set({ selection: created });
+  },
+
+  copy: () => {
+    const { project, selection } = get();
+    const entries: ClipboardEntry[] = [];
+    for (const id of selection) {
+      const hit = findClip(project, id);
+      if (!hit) continue;
+      const lanes = project.tracks.filter((t) => t.kind === hit.track.kind);
+      entries.push({ clip: structuredClone(hit.clip), kind: hit.track.kind, laneIndex: lanes.indexOf(hit.track) });
+    }
+    if (entries.length) {
+      set({ clipboard: entries });
+      get().toast(`Copied ${entries.length} clip${entries.length > 1 ? "s" : ""}.`, "info");
+    }
+  },
+
+  cut: () => {
+    const { selection } = get();
+    if (!selection.length) return;
+    get().copy();
+    get().deleteClips(selection, false);
+  },
+
+  paste: () => {
+    const { clipboard, playhead, project } = get();
+    if (!clipboard.length) return;
+    const lo = Math.min(...clipboard.map((e) => e.clip.start));
+    const at = snapToEdit(playhead, project.tracks, project.settings.fps);
+    const created: Id[] = [];
+    get().apply((p) => {
+      for (const e of clipboard) {
+        // Media might have been removed since copying.
+        if (e.clip.type === "media" && !p.media.some((m) => m.id === e.clip.mediaId)) continue;
+        let lanes = p.tracks.filter((t) => t.kind === e.kind);
+        while (lanes.length <= e.laneIndex) {
+          insertTrack(p, newTrack(e.kind, nextTrackName(p as Project, e.kind)));
+          lanes = p.tracks.filter((t) => t.kind === e.kind);
+        }
+        const t = lanes[e.laneIndex];
+        if (t.locked) continue;
+        const c = { ...structuredClone(e.clip), id: uid(), start: at + (e.clip.start - lo) };
+        t.clips = overwrite(plain(t.clips) as Clip[], c) as Draft<Clip>[];
+        created.push(c.id);
+      }
+    });
+    if (created.length) set({ selection: created });
+  },
+
+  detachAudio: (id) => {
+    const { project } = get();
+    const hit = findClip(project, id);
+    if (!hit || hit.track.kind !== "video" || hit.clip.type !== "media") return;
+    const media = project.media.find((m) => m.id === hit.clip.mediaId);
+    if (!media?.hasAudio) {
+      get().toast("This clip has no audio to detach.", "info");
+      return;
+    }
+    if (hit.clip.muted) {
+      get().toast("This clip's audio is already detached or muted.", "info");
+      return;
+    }
+    const len = clipDuration(hit.clip);
+    const audio: Clip = {
+      ...structuredClone(hit.clip),
+      id: uid(),
+      opacity: 1,
+      label: undefined,
+    };
+    get().apply((p) => {
+      let track = pickTrack(p, "audio", audio.start, len) as Draft<Track> | null;
+      if (!track || track.clips.some((c) => clipEnd(c) > audio.start + EPS && c.start < audio.start + len - EPS)) {
+        const t = newTrack("audio", nextTrackName(p as Project, "audio"));
+        insertTrack(p, t);
+        track = p.tracks.find((x) => x.id === t.id)!;
+      }
+      track.clips = overwrite(plain(track.clips) as Clip[], audio) as Draft<Clip>[];
+      const v = p.tracks.find((t) => t.id === hit.track.id)!.clips.find((c) => c.id === id)!;
+      v.muted = true;
+    });
+    set({ selection: [audio.id] });
+    get().toast("Audio detached to its own track.", "success");
+  },
+
+  replaceWithRanges: (id, ranges) => {
+    const { project } = get();
+    const hit = findClip(project, id);
+    if (!hit) return 0;
+    const pieces = keepSourceRanges(hit.clip, ranges);
+    if (!pieces.length) return 0;
+    const before = clipDuration(hit.clip);
+    const after = pieces.reduce((s, c) => s + clipDuration(c), 0);
+    const removed = before - after;
+    const end = clipEnd(hit.clip);
+    get().apply((p) => {
+      const t = p.tracks.find((x) => x.id === hit.track.id)!;
+      const rest = (plain(t.clips) as Clip[]).filter((c) => c.id !== id).map((c) => (c.start >= end - EPS ? { ...c, start: c.start - removed } : c));
+      t.clips = sortClips([...rest, ...pieces]) as Draft<Clip>[];
+    });
+    set({ selection: pieces.map((c) => c.id) });
+    return removed;
+  },
+
+  closeGapAt: (trackId, time) => {
+    const t = get().project.tracks.find((x) => x.id === trackId);
+    if (!t || t.locked) return;
+    const gap = gapAt(t, time);
+    if (!gap) return;
+    get().apply((p) => {
+      const tr = p.tracks.find((x) => x.id === trackId)!;
+      tr.clips = closeGap(plain(tr.clips) as Clip[], gap.end, gap.end - gap.start) as Draft<Clip>[];
+    });
+  },
+
+  // ------------------------------------------------------------------ tracks
+  addTrack: (kind) => get().apply((p) => insertTrack(p, newTrack(kind, nextTrackName(p as Project, kind)))),
+
+  removeTrack: (id) => {
+    const { project } = get();
+    const t = project.tracks.find((x) => x.id === id);
+    if (!t) return;
+    if (project.tracks.filter((x) => x.kind === t.kind).length <= 1) {
+      get().toast(`Keep at least one ${t.kind} track.`, "info");
+      return;
+    }
+    get().apply((p) => void (p.tracks = p.tracks.filter((x) => x.id !== id)));
+    pruneSelection();
+  },
+
+  updateTrack: (id, patch) =>
+    get().apply((p) => {
+      const t = p.tracks.find((x) => x.id === id);
+      if (t) Object.assign(t, patch);
+    }),
+
+  // ---------------------------------------------- markers / range / settings
+  addMarker: (time) => {
+    const t = snapToFrame(time ?? get().playhead, get().project.settings.fps);
+    if (get().project.markers.some((m) => Math.abs(m.time - t) < 1e-3)) return;
+    get().apply((p) => {
+      p.markers.push({ id: uid(), time: t, label: "", color: MARKER_COLORS[p.markers.length % MARKER_COLORS.length] });
+      p.markers.sort((a, b) => a.time - b.time);
+    });
+  },
+
+  removeMarker: (id) => get().apply((p) => void (p.markers = p.markers.filter((m) => m.id !== id))),
+
+  updateMarker: (id, patch) =>
+    get().apply((p) => {
+      const m = p.markers.find((x) => x.id === id);
+      if (m) Object.assign(m, patch);
+      p.markers.sort((a, b) => a.time - b.time);
+    }),
+
+  setRange: (range) => set({ range: range && range.out - range.in > 1e-3 ? range : null }),
+
+  setRangeIn: (t) => {
+    const { range, project } = get();
+    const out = range && range.out > t + 1e-3 ? range.out : Math.max(t + 1, projectDuration(project));
+    set({ range: { in: Math.max(0, t), out } });
+  },
+
+  setRangeOut: (t) => {
+    const { range } = get();
+    const inP = range && range.in < t - 1e-3 ? range.in : 0;
+    if (t <= inP + 1e-3) return;
+    set({ range: { in: inP, out: t } });
+  },
+
+  updateSettings: (patch) => get().apply((p) => void Object.assign(p.settings, patch)),
+
+  renameProject: (name) => get().apply((p) => void (p.name = name.trim() || "Untitled")),
+
+  // -------------------------------------------------------- transport & view
+  seek: (t) => set((s) => ({ playhead: Math.max(0, t), seekNonce: s.seekNonce + 1 })),
+  setPlayheadFromPlayback: (t) => set({ playhead: Math.max(0, t) }),
+  play: () => set({ playing: true }),
+  pause: () => set({ playing: false, rate: 1 }),
+  togglePlay: () => set((s) => ({ playing: !s.playing, rate: 1 })),
+  setRate: (r) => set({ rate: r }),
+
+  select: (ids) => set({ selection: ids }),
+  toggleSelect: (id) => set((s) => ({ selection: s.selection.includes(id) ? s.selection.filter((x) => x !== id) : [...s.selection, id] })),
+  selectAll: () => set((s) => ({ selection: s.project.tracks.flatMap((t) => (t.locked ? [] : t.clips.map((c) => c.id))) })),
+  setSelectedMedia: (id) => set({ selectedMedia: id }),
+  setTool: (t) => set({ tool: t }),
+  toggleSnapping: () => set((s) => ({ snapping: !s.snapping })),
+  setZoom: (z) => set({ zoom: Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z)) }),
+
+  toast: (message, kind = "info", action) => {
+    const t: Toast = { id: uid(), kind, message, action };
+    set((s) => ({ toasts: [...s.toasts.slice(-4), t] }));
+  },
+  dismissToast: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
+  openDialog: (d) => set({ dialog: d }),
+}));
+
+// Set inside placeMedia's recipe, read right after it (immer recipes can't return extra data).
+let adopted: { w: number; h: number; fps: number } | null = null;
+
+function pruneSelection() {
+  const { project, selection } = useStore.getState();
+  if (!selection.length) return;
+  const ids = new Set(project.tracks.flatMap((t) => t.clips.map((c) => c.id)));
+  const next = selection.filter((id) => ids.has(id));
+  if (next.length !== selection.length) useStore.setState({ selection: next });
+}
+
+/** Non-reactive access for event handlers. */
+export const store = () => useStore.getState();
+
+let commitTimer: ReturnType<typeof setTimeout> | undefined;
+/**
+ * Commit pending live edits after a short pause. For inputs that fire a burst of
+ * changes with no clear end (colour pickers), so the burst becomes one undo step.
+ */
+export function commitSoon(delay = 450) {
+  clearTimeout(commitTimer);
+  commitTimer = setTimeout(() => useStore.getState().commit(), delay);
+}
+
+export function isDirty(s: Pick<State, "project" | "savedProject">): boolean {
+  return s.project !== s.savedProject;
+}
+
+if (import.meta.env.DEV && typeof window !== "undefined") {
+  (window as unknown as { __revind: typeof useStore }).__revind = useStore;
+}
