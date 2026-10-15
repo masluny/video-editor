@@ -6,6 +6,7 @@ import { openMenu, type MenuItem } from "./ui/Menu";
 import { recentProjects } from "../lib/recent";
 import { basename, stripExtension } from "../lib/format";
 import { importViaDialog, newProject, openProject, saveProject } from "../lib/actions";
+import { commands } from "../lib/commands";
 import { useExportJob } from "./dialogs/exportJob";
 import { isTauri } from "../lib/backend";
 import { cn } from "../lib/cn";
@@ -42,6 +43,29 @@ export function TopBar() {
     ]);
   };
 
+  // The everyday editing actions; the rest are a search away (⌘K).
+  const editMenu = (e: React.MouseEvent) => {
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const byId = new Map(commands().map((c) => [c.id, c]));
+    const groups = [
+      ["undo", "redo"],
+      ["cut", "copy", "paste", "paste-look", "duplicate", "delete", "ripple-delete", "select-all"],
+      ["split", "trim-start", "trim-end", "freeze", "dissolve", "marker"],
+    ];
+    const items: MenuItem[] = groups.flatMap((ids, i) => [
+      ...(i ? [{ separator: true } as MenuItem] : []),
+      ...ids
+        .map((id) => byId.get(id))
+        .filter((c): c is NonNullable<typeof c> => !!c)
+        .map((c): MenuItem => ({ label: c.label, shortcut: c.shortcut, disabled: !!c.blocked?.(), onSelect: () => c.run() })),
+    ]);
+    openMenu({ clientX: r.left, clientY: r.bottom + 4 }, [
+      ...items,
+      { separator: true },
+      { label: "Search all actions…", icon: <Search className="h-3.5 w-3.5" />, shortcut: "⌘K", onSelect: () => store().openDialog({ kind: "commands" }) },
+    ]);
+  };
+
   return (
     <header
       data-tauri-drag-region
@@ -49,6 +73,9 @@ export function TopBar() {
     >
       <Button variant="ghost" size="sm" onClick={fileMenu} className="gap-1">
         File <ChevronDown className="h-3 w-3 text-ink-dim" />
+      </Button>
+      <Button variant="ghost" size="sm" onClick={editMenu} className="gap-1">
+        Edit <ChevronDown className="h-3 w-3 text-ink-dim" />
       </Button>
       <div className="mx-1 h-4 w-px bg-line" />
       <IconButton title={`Undo (${cmd}Z)`} disabled={!canUndo} onClick={() => store().undo()}>

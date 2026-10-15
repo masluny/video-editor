@@ -47,6 +47,7 @@ export function commands(): Command[] {
     { id: "delete", label: "Delete selection", group: "Edit", shortcut: "⌫", keywords: "remove", blocked: () => need(s().selection.length > 0, "Nothing selected"), run: () => s().deleteClips(s().selection, false) },
     { id: "ripple-delete", label: "Ripple delete (close the gap)", group: "Edit", shortcut: "⇧⌫", blocked: () => need(s().selection.length > 0, "Nothing selected"), run: () => s().deleteClips(s().selection, true) },
     { id: "duplicate", label: "Duplicate", group: "Edit", shortcut: "⌘D", keywords: "copy clone", blocked: () => need(s().selection.length > 0, "Nothing selected"), run: () => s().duplicateClips(s().selection) },
+    { id: "cut", label: "Cut", group: "Edit", shortcut: "⌘X", blocked: () => need(s().selection.length > 0, "Nothing selected"), run: () => s().cut() },
     { id: "copy", label: "Copy", group: "Edit", shortcut: "⌘C", blocked: () => need(s().selection.length > 0, "Nothing selected"), run: () => s().copy() },
     { id: "paste", label: "Paste at playhead", group: "Edit", shortcut: "⌘V", blocked: () => need(s().clipboard.length > 0, "Clipboard is empty"), run: () => s().paste() },
     {
