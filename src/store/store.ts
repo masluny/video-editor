@@ -29,7 +29,7 @@ import type { Waveform } from "../lib/backend";
 import { seconds, stripExtension } from "../lib/format";
 import { clipBefore, DEFAULT_DISSOLVE } from "../lib/transitions";
 import type { Cue } from "../lib/subtitles";
-import { DUCK_DEFAULTS, duckingPoints, speechRegions } from "../lib/envelope";
+import { activeLevel, DUCK_DEFAULTS, duckingPoints, speechRegions } from "../lib/envelope";
 
 export type Tool = "select" | "blade";
 export type PlaceMode = "overwrite" | "insert";
@@ -152,6 +152,11 @@ interface State {
    */
   duckUnderVoice: (ids: Id[]) => number;
   clearVolumeChanges: (ids: Id[]) => void;
+  /**
+   * Set clip volumes so the selected clips sound equally loud (to their median), from their
+   * waveforms. Returns how many changed, or -1 while waveforms load.
+   */
+  evenOutVolume: (ids: Id[]) => number;
   /** Cross-dissolve into a clip from the one before it (0 removes it). */
   setDissolve: (id: Id, seconds: number) => void;
   /** Turn the cut into a clip into a dip to black: fade out, then in. */
@@ -783,6 +788,39 @@ export const useStore = create<State>()((set, get) => ({
   },
 
   clearVolumeChanges: (ids) => get().updateClips(ids, (c) => void delete c.volumePoints),
+
+  evenOutVolume: (ids) => {
+    const { project, runtime } = get();
+    const levels = new Map<Id, number>();
+    for (const id of ids) {
+      const hit = findClip(project, id);
+      const c = hit?.clip;
+      const m = c?.type === "media" ? project.media.find((x) => x.id === c.mediaId) : undefined;
+      if (!c || !m?.hasAudio || m.kind === "image" || c.freeze || hit.track.locked) continue;
+      const wf = runtime[m.id]?.waveform;
+      if (!wf) return -1;
+      const level = activeLevel(wf.peaks.slice(Math.floor(c.in * wf.rate), Math.ceil(c.out * wf.rate)).map((v) => v / 255), wf.rate);
+      if (level > 0) levels.set(id, level);
+    }
+    if (levels.size < 2) return 0;
+    // Heard loudness = clip volume x source level; meet in the middle.
+    const heard = [...levels].map(([id, l]) => findClip(project, id)!.clip.volume * l).sort((a, b) => a - b);
+    const target = heard[Math.floor(heard.length / 2)];
+    let changed = 0;
+    get().apply((p) => {
+      for (const t of p.tracks)
+        for (const c of t.clips) {
+          const l = levels.get(c.id);
+          if (l == null) continue;
+          const v = Math.round(Math.min(4, Math.max(0.05, target / l)) * 100) / 100;
+          if (Math.abs(v - c.volume) > 0.005) {
+            c.volume = v;
+            changed++;
+          }
+        }
+    });
+    return changed;
+  },
 
   setDissolve: (id, seconds) =>
     get().updateClip(id, (c) => {

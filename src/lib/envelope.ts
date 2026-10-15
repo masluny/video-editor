@@ -68,6 +68,19 @@ export function duckingPoints(speech: [number, number][], span: [number, number]
   return out;
 }
 
+/** Loudness of the active (non-quiet) parts of a level track, as an RMS; 0 when silent. */
+export function activeLevel(levels: ArrayLike<number>, rate: number): number {
+  const active = speechRegions(levels, rate, 0.1, 0.05);
+  let sum = 0;
+  let n = 0;
+  for (const [a, b] of active)
+    for (let i = Math.floor(a * rate); i < Math.min(levels.length, Math.ceil(b * rate)); i++) {
+      sum += levels[i] * levels[i];
+      n++;
+    }
+  return n ? Math.sqrt(sum / n) : 0;
+}
+
 /**
  * Where there's sound worth ducking under, in seconds: levels (0..1, `rate` per second,
  * e.g. the timeline waveform's peaks) above a threshold relative to the loud parts, held

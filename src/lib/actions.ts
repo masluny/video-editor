@@ -111,6 +111,15 @@ async function clipBeats(c: Clip, media: MediaAsset, path: string): Promise<Beat
   }
 }
 
+/** Make the selected clips equally loud, with feedback. */
+export function evenOutVolume(ids: Id[]) {
+  const s = store();
+  const n = s.evenOutVolume(ids);
+  if (n < 0) s.toast("Still reading the sound of your clips. Try again in a moment.", "info");
+  else if (n === 0) s.toast("These clips are already about as loud as each other (or have no sound).", "info");
+  else s.toast(`Evened out the volume of ${n} clip${n > 1 ? "s" : ""}. Undo to compare.`, "success");
+}
+
 /** Find the beat of a clip's sound and put a marker on every `every`-th beat. */
 export async function addBeatMarkers(clipId: Id, every = 1) {
   const s = store();

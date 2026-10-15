@@ -269,6 +269,21 @@ describe("ducking", () => {
   });
 });
 
+describe("even out volume", () => {
+  it("brings clips to their median loudness from the waveforms", () => {
+    const quiet = st().placeMedia("v", { at: 0, range: { in: 0, out: 3 } })!;
+    const loud = st().placeMedia("v", { at: 3, range: { in: 5, out: 8 } })!;
+    const mid = st().placeMedia("s", { at: 0, range: { in: 0, out: 3 } })!;
+    expect(st().evenOutVolume([quiet, loud, mid])).toBe(-1);
+    // Talk at 0.1 for the first 5 s of the video, 0.4 after; the song plays at 0.2.
+    st().setRuntime("v", { waveform: { rate: 100, peaks: Array.from({ length: 1000 }, (_, i) => (i < 500 ? 26 : 102)) } });
+    st().setRuntime("s", { waveform: { rate: 100, peaks: new Array(3000).fill(51) } });
+    expect(st().evenOutVolume([quiet, loud, mid])).toBe(2);
+    const vol = (id: string) => findClip(st().project, id)!.clip.volume;
+    expect([vol(quiet), vol(loud), vol(mid)]).toEqual([1.96, 0.5, 1]);
+  });
+});
+
 describe("freeze frame", () => {
   it("holds the frame under the playhead and pushes the rest of the track along", () => {
     const a = st().placeMedia("v", { at: 0 })!; // 10s, 30 fps project

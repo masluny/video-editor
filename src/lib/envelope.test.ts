@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { duckingPoints, gainAt, mergeRegions, speechRegions } from "./envelope";
+import { activeLevel, duckingPoints, gainAt, mergeRegions, speechRegions } from "./envelope";
 
 describe("volume envelopes", () => {
   it("interpolates between points and holds outside them", () => {
@@ -41,5 +41,12 @@ describe("volume envelopes", () => {
     talk(6, 6.1); // a click: too short
     expect(speechRegions(levels, rate).map(([a, b]) => [+a.toFixed(1), +b.toFixed(1)])).toEqual([[1, 4]]);
     expect(speechRegions(new Array(500).fill(0.005), rate)).toEqual([]);
+  });
+
+  it("measures loudness over the parts with sound only", () => {
+    const levels = new Array(1000).fill(0.005);
+    for (let i = 200; i < 400; i++) levels[i] = 0.4;
+    expect(activeLevel(levels, 100)).toBeCloseTo(0.4, 2); // the silence doesn't drag it down
+    expect(activeLevel(new Array(300).fill(0), 100)).toBe(0);
   });
 });

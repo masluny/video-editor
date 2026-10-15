@@ -33,7 +33,7 @@ import { clipBefore, dissolveInto } from "../../lib/transitions";
 import { DEFAULT_MOTION_AMOUNT, ENTRANCE_PRESETS, isEntrance, MOTION_PRESETS, motionAmount, motionPreset, type MotionPreset } from "../../lib/motion";
 import { cn } from "../../lib/cn";
 import { cornerLayout, type Corner } from "../../lib/visual";
-import { duckUnderVoice } from "../../lib/actions";
+import { duckUnderVoice, evenOutVolume } from "../../lib/actions";
 import { useLocal } from "../../lib/useLocal";
 
 export function Inspector() {
@@ -206,6 +206,9 @@ function MultiInspector({ ids }: { ids: string[] }) {
         <div className="flex gap-2 pt-1">
           <Button size="sm" onClick={() => upd((c) => void (c.muted = !first.muted), false)}>
             {first.muted ? "Unmute all" : "Mute all"}
+          </Button>
+          <Button size="sm" onClick={() => evenOutVolume(ids)} title="Set each clip's volume so they sound equally loud">
+            <AudioLines className="h-3.5 w-3.5" /> Even out volume
           </Button>
           <Button size="sm" variant="danger" onClick={() => store().deleteClips(ids, false)}>
             Delete

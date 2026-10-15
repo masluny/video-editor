@@ -54,7 +54,7 @@ import { seconds, timecode } from "../../lib/format";
 import { cn } from "../../lib/cn";
 import { MARKER_COLORS } from "../../lib/defaults";
 import { clipAfter, clipBefore, DEFAULT_DISSOLVE, dissolveInto } from "../../lib/transitions";
-import { addBeatMarkers, duckUnderVoice, exportCaptions } from "../../lib/actions";
+import { addBeatMarkers, duckUnderVoice, evenOutVolume, exportCaptions } from "../../lib/actions";
 
 interface Row {
   track: Track;
@@ -451,6 +451,7 @@ export function Timeline() {
         ...(clip.volumePoints ? [{ label: "Clear volume changes", disabled: track.locked, onSelect: () => s.clearVolumeChanges(ids) } as MenuItem] : []),
         { separator: true },
       );
+    if (hasAudio && ids.length > 1) items.push({ label: `Even out volume (${ids.length} clips)`, icon: <AudioLines className="h-3.5 w-3.5" />, onSelect: () => evenOutVolume(ids) });
     if (hasAudio)
       items.push(
         { label: "Add beat markers", icon: <Flag className="h-3.5 w-3.5" />, onSelect: () => void addBeatMarkers(clip.id) },
