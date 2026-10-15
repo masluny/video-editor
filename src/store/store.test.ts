@@ -178,6 +178,21 @@ describe("music and the video's length", () => {
   });
 });
 
+describe("markers", () => {
+  it("adds a batch in one undo step, skipping duplicates, and clears them all", () => {
+    st().addMarker(1);
+    const before = st().past.length;
+    expect(st().addMarkers([0.5, 1, 1.0004, 2, -1])).toBe(2);
+    expect(st().project.markers.map((m) => m.time)).toEqual([0.5, 1, 2]);
+    expect(st().past.length).toBe(before + 1);
+    expect(st().addMarkers([2])).toBe(0);
+    st().clearMarkers();
+    expect(st().project.markers).toEqual([]);
+    st().undo();
+    expect(st().project.markers).toHaveLength(3);
+  });
+});
+
 describe("captions", () => {
   it("puts cues on a new captions track on top, styled as subtitles, in one undo step", () => {
     st().placeMedia("v", { at: 0 }); // 1080×1920 project

@@ -161,6 +161,9 @@ interface State {
 
   // --- markers / range / settings ---------------------------------------------
   addMarker: (time?: number) => void;
+  /** Add many markers in one undo step (skipping duplicates). Returns how many were added. */
+  addMarkers: (times: number[], color?: string) => number;
+  clearMarkers: () => void;
   removeMarker: (id: Id) => void;
   updateMarker: (id: Id, patch: { label?: string; color?: string; time?: number }) => void;
   setRange: (range: { in: number; out: number } | null) => void;
@@ -189,7 +192,8 @@ interface State {
   setZoom: (z: number) => void;
   setFullscreen: (on: boolean) => void;
 
-  toast: (message: string, kind?: Toast["kind"], action?: Toast["action"]) => void;
+  /** Show a toast; returns its id (for dismissing a progress message early). */
+  toast: (message: string, kind?: Toast["kind"], action?: Toast["action"]) => Id;
   dismissToast: (id: Id) => void;
   openDialog: (d: Dialog) => void;
 }
@@ -887,6 +891,21 @@ export const useStore = create<State>()((set, get) => ({
     });
   },
 
+  addMarkers: (times, color = MARKER_COLORS[1]) => {
+    const taken = get().project.markers.map((m) => m.time);
+    const fresh = [...new Set(times.map((t) => Math.round(t * 1e4) / 1e4))].filter((t) => t >= 0 && !taken.some((x) => Math.abs(x - t) < 1e-3));
+    if (!fresh.length) return 0;
+    get().apply((p) => {
+      for (const time of fresh) p.markers.push({ id: uid(), time, label: "", color });
+      p.markers.sort((a, b) => a.time - b.time);
+    });
+    return fresh.length;
+  },
+
+  clearMarkers: () => {
+    if (get().project.markers.length) get().apply((p) => void (p.markers = []));
+  },
+
   removeMarker: (id) => get().apply((p) => void (p.markers = p.markers.filter((m) => m.id !== id))),
 
   updateMarker: (id, patch) =>
@@ -938,6 +957,7 @@ export const useStore = create<State>()((set, get) => ({
   toast: (message, kind = "info", action) => {
     const t: Toast = { id: uid(), kind, message, action };
     set((s) => ({ toasts: [...s.toasts.slice(-4), t] }));
+    return t.id;
   },
   dismissToast: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
   openDialog: (d) => set({ dialog: d }),

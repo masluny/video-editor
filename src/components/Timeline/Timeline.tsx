@@ -52,7 +52,7 @@ import { seconds, timecode } from "../../lib/format";
 import { cn } from "../../lib/cn";
 import { MARKER_COLORS } from "../../lib/defaults";
 import { clipAfter, clipBefore, DEFAULT_DISSOLVE, dissolveInto } from "../../lib/transitions";
-import { exportCaptions } from "../../lib/actions";
+import { addBeatMarkers, exportCaptions } from "../../lib/actions";
 
 interface Row {
   track: Track;
@@ -440,6 +440,12 @@ export function Timeline() {
       { separator: true },
     ];
     if (track.kind === "audio") items.push(...videoLengthItems(clip, ids, track), { separator: true });
+    if (hasAudio)
+      items.push(
+        { label: "Add beat markers", icon: <Flag className="h-3.5 w-3.5" />, onSelect: () => void addBeatMarkers(clip.id) },
+        { label: "Add beat markers (every 4th beat)", onSelect: () => void addBeatMarkers(clip.id, 4) },
+        { separator: true },
+      );
     if (hasAudio) {
       items.push(
         { label: "Remove silences…", icon: <Wand2 className="h-3.5 w-3.5" />, disabled: track.locked, onSelect: () => s.openDialog({ kind: "silence", clipId: clip.id }) },
@@ -968,6 +974,7 @@ function Ruler({ width, viewLeft, viewWidth, timeAt }: { width: number; viewLeft
       { label: "Set range in here", shortcut: "I", onSelect: () => s.setRangeIn(t) },
       { label: "Set range out here", shortcut: "O", onSelect: () => s.setRangeOut(t) },
       { label: "Clear range", shortcut: "⌥X", disabled: !s.range, onSelect: () => s.setRange(null) },
+      { label: "Clear all markers", disabled: !s.project.markers.length, onSelect: () => s.clearMarkers() },
       { separator: true },
       { label: "Lift range", shortcut: ";", disabled: !s.range, onSelect: () => s.liftRange() },
       { label: "Extract range (close the gap)", shortcut: "'", disabled: !s.range, onSelect: () => s.extractRange() },
@@ -983,9 +990,11 @@ function Ruler({ width, viewLeft, viewWidth, timeAt }: { width: number; viewLeft
     >
       <canvas ref={canvas} className="pointer-events-none absolute top-0" style={{ left: viewLeft, width: w, height: RULER_H }} />
       <RangeBand />
-      {markers.map((m) => (
-        <MarkerFlag key={m.id} id={m.id} time={m.time} label={m.label} color={m.color} zoom={zoom} timeAt={timeAt} />
-      ))}
+      {markers.map((m, i) => {
+        // Crowded unnamed markers (e.g. beats) shrink to ticks so the time labels stay readable.
+        const gap = Math.min(i > 0 ? m.time - markers[i - 1].time : Infinity, i < markers.length - 1 ? markers[i + 1].time - m.time : Infinity);
+        return <MarkerFlag key={m.id} id={m.id} time={m.time} label={m.label} color={m.color} zoom={zoom} timeAt={timeAt} tick={!m.label && gap * zoom < 40} />;
+      })}
     </div>
   );
 }
@@ -1015,7 +1024,7 @@ function RangeOverlay({ height }: { height: number }) {
   );
 }
 
-function MarkerFlag({ id, time, label, color, zoom, timeAt }: { id: Id; time: number; label: string; color: string; zoom: number; timeAt: (x: number) => number }) {
+function MarkerFlag({ id, time, label, color, zoom, timeAt, tick }: { id: Id; time: number; label: string; color: string; zoom: number; timeAt: (x: number) => number; tick: boolean }) {
   const [editing, setEditing] = React.useState(false);
   const onPointerDown = (e: React.PointerEvent) => {
     if (e.button !== 0) return;
@@ -1073,9 +1082,13 @@ function MarkerFlag({ id, time, label, color, zoom, timeAt }: { id: Id; time: nu
         className="flex cursor-pointer items-start"
         title={label ? `${label} · drag to move, double-click to rename` : "Marker · drag to move, double-click to name"}
       >
-        <svg width="10" height="14" viewBox="0 0 10 14" className="shrink-0">
-          <path d="M0 0h10v9l-5 5-5-5z" fill={color} />
-        </svg>
+        {tick ? (
+          <span className="mx-[3px] mt-[18px] block h-3 w-1 rounded-sm" style={{ background: color }} />
+        ) : (
+          <svg width="10" height="14" viewBox="0 0 10 14" className="shrink-0">
+            <path d="M0 0h10v9l-5 5-5-5z" fill={color} />
+          </svg>
+        )}
         {label && !editing && <span className="ml-0.5 max-w-[120px] truncate rounded-sm bg-black/50 px-1 text-2xs leading-[14px] text-ink">{label}</span>}
       </div>
       {editing && (

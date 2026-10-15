@@ -8,6 +8,9 @@ import { basename, stripExtension } from "./format";
 import { clipDuration } from "./timeline";
 import { isDirty, store, findClip, useStore } from "../store/store";
 import { captionsOf, isSubtitlePath, parseSubtitles, toSrt } from "./subtitles";
+import { BEAT_RATE, detectBeats, mono, toBeatRate } from "./beats";
+import { fileUrl } from "./backend";
+import { speedOf } from "./timeline";
 
 export async function importFiles(paths: string[], place?: { trackId?: Id; at: number }): Promise<MediaAsset[]> {
   // Subtitle files become a captions track; everything else is probed as media.
@@ -72,6 +75,44 @@ export async function exportCaptions(trackId: Id) {
     s.toast(`Saved ${cues.length} caption${cues.length > 1 ? "s" : ""} to ${basename(out)}.`, "success");
   } catch (e) {
     s.toast(`Couldn't save captions: ${e instanceof Error ? e.message : String(e)}`, "error");
+  }
+}
+
+/** Find the beat of a clip's sound and put a marker on every `every`-th beat. */
+export async function addBeatMarkers(clipId: Id, every = 1) {
+  const s = store();
+  const hit = findClip(s.project, clipId);
+  const media = hit?.clip.mediaId ? s.project.media.find((m) => m.id === hit.clip.mediaId) : undefined;
+  if (!hit || !media?.hasAudio) return;
+  const rt = s.runtime[media.id];
+  const path = rt?.needsProxy ? rt.proxy : media.path;
+  if (!path || rt?.missing) {
+    s.toast("This clip's sound isn't available yet. Try again once its preview is ready.", "info");
+    return;
+  }
+  const busy = s.toast("Listening for the beat…", "info");
+  try {
+    const data = await (await fetch(fileUrl(path))).arrayBuffer();
+    let ctx: OfflineAudioContext;
+    try {
+      ctx = new OfflineAudioContext(1, 1, BEAT_RATE);
+    } catch {
+      ctx = new OfflineAudioContext(1, 1, 44100); // some WebKits only decode at common rates
+    }
+    const audio = await ctx.decodeAudioData(data);
+    // Only the part of the source the clip uses.
+    const c = hit.clip;
+    const [a, b] = [Math.floor(c.in * audio.sampleRate), Math.min(audio.length, Math.ceil(c.out * audio.sampleRate))];
+    const channels = Array.from({ length: audio.numberOfChannels }, (_, i) => audio.getChannelData(i).subarray(a, b));
+    const { bpm, times } = detectBeats(toBeatRate(mono(channels), audio.sampleRate));
+    const at = times.filter((_, i) => i % every === 0).map((t) => c.start + t / speedOf(c));
+    const n = store().addMarkers(at);
+    s.dismissToast(busy);
+    if (n) s.toast(`Added ${n} beat marker${n > 1 ? "s" : ""} at ${Math.round(bpm * speedOf(c))} BPM. Clip edges now snap to the beat.`, "success");
+    else s.toast("Couldn't find a steady beat in this clip.", "info");
+  } catch (e) {
+    s.dismissToast(busy);
+    s.toast(`Couldn't analyse the sound: ${e instanceof Error ? e.message : String(e)}`, "error");
   }
 }
 
