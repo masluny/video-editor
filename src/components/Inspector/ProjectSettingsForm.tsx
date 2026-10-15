@@ -4,6 +4,16 @@ import { NumberField } from "../ui/NumberField";
 import { FORMAT_PRESETS, FPS_OPTIONS } from "../../lib/defaults";
 import { fpsLabel } from "../../lib/format";
 
+/** After a change of frame shape, offer to crop letterboxed clips to fill the new frame. */
+function offerFill() {
+  const s = store();
+  const { media, tracks } = s.project;
+  const picture = new Set(media.filter((m) => m.hasVideo).map((m) => m.id));
+  const boxed = tracks.some((t) => t.kind === "video" && t.clips.some((c) => c.type === "media" && picture.has(c.mediaId!) && c.transform.fit === "contain"));
+  if (!boxed) return;
+  s.toast("Clips keep their shape and may show bars in the new frame.", "info", { label: "Fill frame", run: () => store().fitClips("cover") });
+}
+
 /** Frame size, frame rate and background colour of the project. */
 export function ProjectSettingsForm() {
   const settings = useStore((s) => s.project.settings);
@@ -20,7 +30,10 @@ export function ProjectSettingsForm() {
           options={[...FORMAT_PRESETS.map((p) => ({ value: p.id, label: p.name })), ...(preset === "custom" ? [{ value: "custom", label: "Custom" }] : [])]}
           onChange={(id) => {
             const p = FORMAT_PRESETS.find((x) => x.id === id);
-            if (p) set({ width: p.width, height: p.height });
+            if (!p) return;
+            const reshaped = Math.abs(p.width / p.height - settings.width / settings.height) > 0.01;
+            set({ width: p.width, height: p.height });
+            if (reshaped) offerFill();
           }}
         />
       </FieldRow>

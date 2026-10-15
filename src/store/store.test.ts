@@ -178,6 +178,20 @@ describe("music and the video's length", () => {
   });
 });
 
+describe("reframing", () => {
+  it("sets how picture clips fit, skipping titles, sound and locked tracks", () => {
+    const a = st().placeMedia("v", { at: 0 })!;
+    const b = st().placeMedia("v", { at: 10 })!;
+    st().placeTitle({ text: "Hi" }, { at: 0 });
+    st().placeMedia("s", { at: 0 });
+    expect(st().fitClips("cover", [a])).toBe(1);
+    expect(st().fitClips("cover")).toBe(1); // only b was left
+    expect([a, b].map((id) => findClip(st().project, id)!.clip.transform.fit)).toEqual(["cover", "cover"]);
+    const title = st().project.tracks.flatMap((t) => t.clips).find((c) => c.type === "title")!;
+    expect(title.transform.fit).toBe("contain");
+  });
+});
+
 describe("markers", () => {
   it("adds a batch in one undo step, skipping duplicates, and clears them all", () => {
     st().addMarker(1);

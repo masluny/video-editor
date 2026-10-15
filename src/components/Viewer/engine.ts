@@ -269,18 +269,22 @@ export class Engine {
     const m = clip.motion ? motionAt(clip.motion, d > 0 ? (t - clip.start) / d : 0) : null;
     const tf = m ? { ...clip.transform, scale: clip.transform.scale * m.scale, x: clip.transform.x + m.x, y: clip.transform.y + m.y } : clip.transform;
     const box = fitBox(mw, mh, W, H, tf.fit);
-    const sx = tf.scale * (tf.flipH ? -1 : 1);
-    const sy = tf.scale * (tf.flipV ? -1 : 1);
-    const filter = cssFilter(clip.color);
+    // Boxes bigger than the frame (Fill into another shape) are laid out at frame size and
+    // scaled up by the transform instead: huge video layout boxes can fail to paint.
+    const q = Math.max(1, box.width / W, box.height / H);
+    const [bw, bh] = [box.width / q, box.height / q];
+    const sx = tf.scale * q * (tf.flipH ? -1 : 1);
+    const sy = tf.scale * q * (tf.flipV ? -1 : 1);
+    const filter = cssFilter(clip.color, 1 / q);
     const clipPath = cssClipPath(clip.crop);
-    const key = `${W}x${H}|${box.width}|${box.height}|${tf.x}|${tf.y}|${tf.rotation}|${sx}|${sy}|${filter}|${clipPath}`;
+    const key = `${W}x${H}|${bw}|${bh}|${tf.x}|${tf.y}|${tf.rotation}|${sx}|${sy}|${filter}|${clipPath}`;
     const s = el.style;
     if (this.geometry.get(el) !== key) {
       this.geometry.set(el, key);
-      s.width = `${box.width}px`;
-      s.height = `${box.height}px`;
-      s.left = `${(W - box.width) / 2}px`;
-      s.top = `${(H - box.height) / 2}px`;
+      s.width = `${bw}px`;
+      s.height = `${bh}px`;
+      s.left = `${(W - bw) / 2}px`;
+      s.top = `${(H - bh) / 2}px`;
       s.transform = `translate(${tf.x}px, ${tf.y}px) rotate(${tf.rotation}deg) scale(${sx}, ${sy})`;
       s.filter = filter;
       s.clipPath = clipPath;

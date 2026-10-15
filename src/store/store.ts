@@ -160,6 +160,8 @@ interface State {
   replaceWithRanges: (id: Id, ranges: [number, number][]) => number;
   closeGapAt: (trackId: Id, time: number) => void;
   closeTrackGaps: (trackId: Id) => void;
+  /** Set how picture clips (all, or just `ids`) fit the frame. Returns how many changed. */
+  fitClips: (fit: Clip["transform"]["fit"], ids?: Id[]) => number;
 
   // --- tracks ----------------------------------------------------------------
   addTrack: (kind: TrackKind) => void;
@@ -895,6 +897,24 @@ export const useStore = create<State>()((set, get) => ({
       const tr = p.tracks.find((x) => x.id === trackId)!;
       tr.clips = closeGap(plain(tr.clips) as Clip[], gap.end, gap.end - gap.start) as Draft<Clip>[];
     });
+  },
+
+  fitClips: (fit, ids) => {
+    const { project } = get();
+    const want = ids && new Set(ids);
+    const picture = new Set(project.media.filter((m) => m.hasVideo).map((m) => m.id));
+    let n = 0;
+    get().apply((p) => {
+      for (const t of p.tracks) {
+        if (t.kind !== "video" || t.locked) continue;
+        for (const c of t.clips) {
+          if (c.type !== "media" || !picture.has(c.mediaId!) || (want && !want.has(c.id)) || c.transform.fit === fit) continue;
+          c.transform.fit = fit;
+          n++;
+        }
+      }
+    });
+    return n;
   },
 
   closeTrackGaps: (trackId) => {

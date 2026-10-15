@@ -175,6 +175,18 @@ function MultiInspector({ ids }: { ids: string[] }) {
     <>
       <div className="px-3 py-3 text-sm text-ink">{clips.length} clips selected</div>
       <Section id="multi" title="Shared">
+        <FieldRow label="Fit">
+          <Segmented
+            className="flex-1"
+            value={first.transform.fit}
+            onChange={(fit) => store().fitClips(fit, ids)}
+            options={[
+              { value: "contain", label: "Fit", title: "Show the whole picture (letterbox)" },
+              { value: "cover", label: "Fill", title: "Fill the frame (crop overflow)" },
+              { value: "stretch", label: "Stretch", title: "Stretch to the frame" },
+            ]}
+          />
+        </FieldRow>
         <SliderField label="Opacity" value={first.opacity} min={0} max={1} step={0.01} displayScale={100} suffix="%" defaultValue={1} onChange={(v, o) => upd((c) => void (c.opacity = v), o.live)} onCommit={commit} />
         <SliderField label="Volume" value={first.volume} min={0} max={2} step={0.01} displayScale={100} suffix="%" defaultValue={1} onChange={(v, o) => upd((c) => void (c.volume = v), o.live)} onCommit={commit} />
         <SliderField label="Fade in" value={first.fadeIn} min={0} max={10} sliderMax={3} step={0.05} suffix="s" defaultValue={0} onChange={(v, o) => upd((c) => void (c.fadeIn = Math.min(v, clipDuration(c as Clip) - c.fadeOut)), o.live)} onCommit={commit} />

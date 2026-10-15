@@ -11,14 +11,15 @@ export function fitBox(mw: number, mh: number, w: number, h: number, fit: Fit): 
 }
 
 /** CSS filter string; order must match graph.rs::color_filters. */
-export function cssFilter(c: ColorAdjust): string {
+/** CSS filter for a colour adjustment; `blurScale` compensates an element drawn at a different size. */
+export function cssFilter(c: ColorAdjust, blurScale = 1): string {
   const parts: string[] = [];
   if (Math.abs(c.brightness - 1) > 1e-4) parts.push(`brightness(${c.brightness})`);
   if (Math.abs(c.contrast - 1) > 1e-4) parts.push(`contrast(${c.contrast})`);
   if (Math.abs(c.saturation - 1) > 1e-4) parts.push(`saturate(${c.saturation})`);
   if (c.sepia > 1e-4) parts.push(`sepia(${c.sepia})`);
   if (Math.abs(c.hue) > 1e-4) parts.push(`hue-rotate(${c.hue}deg)`);
-  if (c.blur > 0.01) parts.push(`blur(${c.blur}px)`);
+  if (c.blur > 0.01) parts.push(`blur(${c.blur * blurScale}px)`);
   return parts.join(" ") || "none";
 }
 
