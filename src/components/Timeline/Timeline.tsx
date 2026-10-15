@@ -430,6 +430,9 @@ export function Timeline() {
           lay((c) => (c.id === clip.id ? fit({ ...c, out: clip.in + (t - clip.start) * sp }) : c));
         }
         setGuide(guide);
+        // Show the frame at the edge: the first frame for a head, the last for a tail.
+        const fps = s0.project.settings.fps || 30;
+        store().setPeek(left ? edge : Math.max(0, edge - 0.5 / fps));
         const now = findClip(store().project, clip.id)?.clip;
         const match = !roll && magnet != null && magnet > 0 && Math.abs(edge - magnet) < EPS;
         const len = seconds(now ? clipDuration(now) : 0);
@@ -438,6 +441,7 @@ export function Timeline() {
       (_ev, cancelled) => {
         setGuide(null);
         setHint(null);
+        store().setPeek(null);
         if (cancelled) store().cancelLive();
         else store().commit();
       },

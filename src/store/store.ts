@@ -97,6 +97,8 @@ interface State {
   selectedMedia: Id | null;
   tool: Tool;
   snapping: boolean;
+  /** A time the viewer shows instead of the playhead (the edge being trimmed), or null. */
+  peek: number | null;
   /** Magnetic main track: trims and deletes on V1 close up instead of leaving gaps. */
   rippleMain: boolean;
   /** Pixels per second. */
@@ -250,6 +252,7 @@ interface State {
   setTool: (t: Tool) => void;
   toggleSnapping: () => void;
   toggleRippleMain: () => void;
+  setPeek: (t: number | null) => void;
   setZoom: (z: number) => void;
   setFullscreen: (on: boolean) => void;
 
@@ -348,6 +351,7 @@ export const useStore = create<State>()((set, get) => ({
   tool: "select",
   snapping: true,
   rippleMain: true,
+  peek: null,
   zoom: 60,
   fullscreen: false,
   formatChosen: false,
@@ -1325,6 +1329,7 @@ export const useStore = create<State>()((set, get) => ({
   setTool: (t) => set({ tool: t }),
   toggleSnapping: () => set((s) => ({ snapping: !s.snapping })),
   toggleRippleMain: () => set((s) => ({ rippleMain: !s.rippleMain })),
+  setPeek: (t) => set({ peek: t }),
   setZoom: (z) => set({ zoom: Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z)) }),
   setFullscreen: (on) => set({ fullscreen: on }),
 

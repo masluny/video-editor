@@ -90,7 +90,9 @@ export function Viewer() {
         if (s.playing) engine.play(s.playhead);
         else engine.pause();
       }
-      if (s.seekNonce !== prev.seekNonce) engine.seek(s.playhead);
+      if (s.seekNonce !== prev.seekNonce && s.peek == null) engine.seek(s.playhead);
+      // Trimming shows the frame at the edge being dragged, then goes back to the playhead.
+      if (s.peek !== prev.peek && !s.playing) engine.seek(s.peek ?? s.playhead);
     });
     return () => {
       unsub();
@@ -406,6 +408,7 @@ function Transport({
   onGuides: () => void;
 }) {
   const playhead = useStore((s) => s.playhead);
+  const peek = useStore((s) => s.peek);
   const playing = useStore((s) => s.playing);
   const rate = useStore((s) => s.rate);
   const fps = useStore((s) => s.project.settings.fps);
@@ -415,7 +418,9 @@ function Transport({
   return (
     <div className="flex h-12 shrink-0 items-center gap-3 border-t border-line bg-panel px-3">
       <div className="flex min-w-[180px] items-baseline gap-1.5 font-mono tabular">
-        <span className="text-md text-ink">{timecode(playhead, fps, true)}</span>
+        <span className={cn("text-md", peek != null ? "text-accent-ink" : "text-ink")} title={peek != null ? "The frame at the edge you're trimming" : undefined}>
+          {timecode(peek ?? playhead, fps, true)}
+        </span>
         <span className="text-xs text-ink-dim">/ {timecode(total, fps, true)}</span>
       </div>
       <div className="flex flex-1 items-center justify-center gap-1">
