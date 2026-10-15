@@ -22,6 +22,7 @@ import { clipAt, clipEnd, nextEditPoint, prevEditPoint, projectDuration } from "
 import { timecode } from "../../lib/format";
 import { fitBox } from "../../lib/visual";
 import { titleBounds } from "../../lib/title";
+import { isAnimated, posed } from "../../lib/keyframes";
 import { IconButton } from "../ui/controls";
 import { importViaDialog } from "../../lib/actions";
 import { exportFrame } from "../dialogs/ExportDialog";
@@ -249,13 +250,17 @@ function TransformOverlay({ k }: { k: number }) {
   });
   const settings = useStore((s) => s.project.settings);
   const media = useStore((s) => (target?.mediaId ? s.project.media.find((m) => m.id === target.mediaId) : undefined));
+  const playhead = useStore((s) => (target?.keyframes ? s.playhead : 0));
   const [guide, setGuide] = React.useState<{ x: boolean; y: boolean }>({ x: false, y: false });
   if (!target || k <= 0 || (target.type === "media" && (!media || media.kind === "audio"))) return null;
 
   const W = settings.width;
   const H = settings.height;
-  const tf = target.transform;
+  // Keyed clips show (and drag) their pose at the playhead.
+  const tf = posed(target, playhead - target.start).transform;
+  // Titles move their text block, unless their position is keyed (then they move like clips).
   const isTitle = target.type === "title";
+  const movesText = isTitle && !isAnimated(target, "position");
   const fb = isTitle ? { width: W, height: H } : fitBox(media!.width, media!.height, W, H, tf.fit);
   const tb = isTitle && target.title ? titleBounds(target.title, W, H) : null;
 
@@ -266,14 +271,14 @@ function TransformOverlay({ k }: { k: number }) {
     const id = target.id;
     const sx = e.clientX;
     const sy = e.clientY;
-    const x0 = isTitle ? target.title!.x : tf.x;
-    const y0 = isTitle ? target.title!.y : tf.y;
+    const x0 = movesText ? target.title!.x : tf.x;
+    const y0 = movesText ? target.title!.y : tf.y;
     const el = e.currentTarget as HTMLElement;
     el.setPointerCapture(e.pointerId);
     const move = (ev: PointerEvent) => {
       const dx = (ev.clientX - sx) / k;
       const dy = (ev.clientY - sy) / k;
-      if (isTitle) {
+      if (movesText) {
         const s = tf.scale || 1;
         let nx = x0 + (dx / s / W) * 100;
         let ny = y0 + (dy / s / H) * 100;
@@ -294,10 +299,7 @@ function TransformOverlay({ k }: { k: number }) {
         if (snapX) nx = 0;
         if (snapY) ny = 0;
         setGuide({ x: snapX, y: snapY });
-        store().updateClip(id, (c) => {
-          c.transform.x = Math.round(nx);
-          c.transform.y = Math.round(ny);
-        }, { live: true });
+        store().setPose(id, { x: Math.round(nx), y: Math.round(ny) }, { live: true });
       }
     };
     const up = () => {
@@ -324,7 +326,7 @@ function TransformOverlay({ k }: { k: number }) {
     const move = (ev: PointerEvent) => {
       const d = Math.hypot(ev.clientX - cx, ev.clientY - cy);
       const next = Math.max(0.05, Math.min(10, (s0 * d) / d0));
-      store().updateClip(id, (c) => void (c.transform.scale = Math.round(next * 1000) / 1000), { live: true });
+      store().setPose(id, { scale: Math.round(next * 1000) / 1000 }, { live: true });
     };
     const up = () => {
       el.removeEventListener("pointermove", move);

@@ -2,6 +2,7 @@
 
 import type { Motion } from "./motion";
 import type { VolumePoint } from "./envelope";
+import type { Keyframes } from "./keyframes";
 
 export type Id = string;
 
@@ -155,6 +156,8 @@ export interface Clip {
   transitionIn?: number;
   /** Zoom / pan across the clip (see lib/motion.ts). */
   motion?: Motion;
+  /** Position / scale / rotation / opacity over time, on the clip clock (see lib/keyframes.ts). */
+  keyframes?: Keyframes;
   /** Volume envelope in source time, e.g. from ducking (see lib/envelope.ts). */
   volumePoints?: VolumePoint[];
   /** Fill the frame behind the clip with a blurred, enlarged copy of it (bars → blur). */

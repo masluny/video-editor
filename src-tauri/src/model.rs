@@ -176,6 +176,8 @@ pub struct Clip {
     pub motion: Option<Motion>,
     /// Volume envelope in source time (src/lib/envelope.ts).
     pub volume_points: Vec<VolumePoint>,
+    /// Position / scale / rotation / opacity over time, on the clip clock (src/lib/keyframes.ts).
+    pub keyframes: Keyframes,
     /// What fills the frame behind the clip.
     pub backdrop: Option<Backdrop>,
     /// Frame hold: the source frame at `in` for the clip's whole length, silent.
@@ -210,6 +212,7 @@ impl Default for Clip {
             transition_in: 0.0,
             motion: None,
             volume_points: vec![],
+            keyframes: Keyframes::default(),
             backdrop: None,
             freeze: false,
         }
@@ -251,6 +254,31 @@ pub struct VolumePoint {
 impl Default for VolumePoint {
     fn default() -> Self {
         Self { t: 0.0, gain: 1.0 }
+    }
+}
+
+/// A keyed value on the clip clock (`in + local * speed`); linear in between, held outside.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct Key {
+    pub t: f64,
+    pub v: f64,
+}
+
+/// Keyed properties of a clip; an empty list means the static value applies.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct Keyframes {
+    pub x: Vec<Key>,
+    pub y: Vec<Key>,
+    pub scale: Vec<Key>,
+    pub rotation: Vec<Key>,
+    pub opacity: Vec<Key>,
+}
+
+impl Keyframes {
+    pub fn is_empty(&self) -> bool {
+        self.x.is_empty() && self.y.is_empty() && self.scale.is_empty() && self.rotation.is_empty() && self.opacity.is_empty()
     }
 }
 

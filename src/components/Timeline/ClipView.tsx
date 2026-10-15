@@ -6,6 +6,7 @@ import { clipDuration, speedOf } from "../../lib/timeline";
 import { gainAt } from "../../lib/envelope";
 import { fileUrl, type Waveform } from "../../lib/backend";
 import { isDefaultColor } from "../../lib/visual";
+import { keyTimes } from "../../lib/keyframes";
 import { cn } from "../../lib/cn";
 
 export type ClipGrab = "move" | "trim-left" | "trim-right" | "fade-in" | "fade-out";
@@ -98,6 +99,13 @@ export const ClipView = React.memo(function ClipView({
         />
       )}
       {clip.volumePoints && <VolumeLine clip={clip} zoom={zoom} width={width} height={height} />}
+      {clip.keyframes && (
+        <div className="pointer-events-none absolute inset-x-0 bottom-[3px] h-2">
+          {keyTimes(clip).map((l) => (
+            <span key={l} className="absolute h-[7px] w-[7px] -translate-x-1/2 rotate-45 rounded-[1px] border border-black/50 bg-white/90" style={{ left: Math.min(width - 4, Math.max(4, l * zoom)) }} />
+          ))}
+        </div>
+      )}
       {missing && <div className="absolute inset-0 bg-[repeating-linear-gradient(45deg,rgba(239,91,91,0.25)_0_6px,transparent_6px_12px)]" />}
 
       {/* Fades */}

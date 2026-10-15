@@ -4,6 +4,9 @@ import {
   AlignLeft,
   AlignRight,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  Diamond,
   Film,
   FlipHorizontal2,
   FlipVertical2,
@@ -27,6 +30,7 @@ import { defaultColor, defaultCrop, defaultTransform, TITLE_FONTS } from "../../
 import { NumberField, SliderField } from "../ui/NumberField";
 import { Button, ColorInput, FieldRow, IconButton, Segmented, Select, Switch } from "../ui/controls";
 import { ProjectSettingsForm } from "./ProjectSettingsForm";
+import { openMenu } from "../ui/Menu";
 import { bytes, duration as fmtDuration, fpsLabel, seconds, timecode } from "../../lib/format";
 import { projectDuration } from "../../lib/timeline";
 import { clipBefore, dissolveInto } from "../../lib/transitions";
@@ -35,6 +39,7 @@ import { cn } from "../../lib/cn";
 import { cornerLayout, type Corner } from "../../lib/visual";
 import { cutToBeat, duckUnderVoice, evenOutVolume } from "../../lib/actions";
 import { useLocal } from "../../lib/useLocal";
+import { GROUP_PROPS, hasKeyAt, isAnimated, keyClock, keyTimes, keyTolerance, posed, type KeyGroup, type KeyProp } from "../../lib/keyframes";
 
 export function Inspector() {
   const selection = useStore((s) => s.selection);
@@ -84,6 +89,43 @@ function ResetButton({ onClick, title = "Reset" }: { onClick: () => void; title?
     <IconButton size="xs" title={title} onClick={onClick}>
       <RotateCcw className="h-3 w-3" />
     </IconButton>
+  );
+}
+
+/**
+ * The keyframe diamond for a property: hollow when it doesn't change over time; once it
+ * does, filled on a key and with arrows to the previous / next key.
+ */
+function KeyButton({ clip, group, label }: { clip: Clip; group: KeyGroup; label: string }) {
+  const playhead = useStore((s) => (clip.keyframes ? s.playhead : 0));
+  const fps = useStore((s) => s.project.settings.fps);
+  const animated = isAnimated(clip, group);
+  const local = Math.max(0, Math.min(clipDuration(clip), playhead - clip.start));
+  const here = animated && GROUP_PROPS[group].some((p) => hasKeyAt(clip.keyframes?.[p], keyClock(clip, local), keyTolerance(clip, fps)));
+  const times = animated ? keyTimes(clip, group).map((l) => clip.start + l) : [];
+  const prev = [...times].reverse().find((t) => t < playhead - 1e-4);
+  const next = times.find((t) => t > playhead + 1e-4);
+  const nav = "flex h-5 w-3 items-center justify-center text-ink-dim enabled:hover:text-ink disabled:opacity-30";
+  return (
+    <div className="flex shrink-0 items-center" onContextMenu={(e) => animated && openMenu(e, [{ label: `Stop animating ${label.toLowerCase()}`, onSelect: () => store().clearKeyframes(clip.id, group) }])}>
+      {animated && (
+        <button className={nav} disabled={prev === undefined} title="Previous keyframe" onClick={() => prev !== undefined && store().seek(prev)}>
+          <ChevronLeft className="h-3 w-3" />
+        </button>
+      )}
+      <button
+        className={cn("flex h-5 w-5 items-center justify-center rounded transition-colors", animated ? "text-accent-ink hover:text-white" : "text-ink-faint hover:text-ink")}
+        title={!animated ? `Animate ${label.toLowerCase()}: add a keyframe at the playhead` : here ? "Remove this keyframe" : "Add a keyframe at the playhead"}
+        onClick={() => store().toggleKeyframe(clip.id, group)}
+      >
+        <Diamond className={cn("h-3 w-3", here && "fill-current")} />
+      </button>
+      {animated && (
+        <button className={nav} disabled={next === undefined} title="Next keyframe" onClick={() => next !== undefined && store().seek(next)}>
+          <ChevronRight className="h-3 w-3" />
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -249,6 +291,14 @@ function ClipInspector({ clip, track, media }: { clip: Clip; track: Track; media
   });
   const Icon = isTitle ? Type : track.kind === "audio" ? Music : media?.kind === "image" ? ImageIcon : Film;
   const dur = clipDuration(clip);
+  // Keyed properties show (and edit) their value at the playhead.
+  const playhead = useStore((s) => (clip.keyframes ? s.playhead : 0));
+  const pose = posed(clip, Math.max(0, Math.min(dur, playhead - clip.start)));
+  const commit = () => store().commit();
+  const poseField = (p: KeyProp, also: Partial<Record<KeyProp, number>> = {}) => ({
+    onChange: (v: number, o: { live: boolean }) => store().setPose(id, { ...also, [p]: v }, o),
+    onCommit: commit,
+  });
 
   return (
     <div className={cn(locked && "pointer-events-none opacity-60")}>
@@ -303,7 +353,17 @@ function ClipInspector({ clip, track, media }: { clip: Clip; track: Track; media
         <Section
           id="transform"
           title="Transform"
-          actions={<ResetButton title="Reset transform" onClick={() => upd((c) => void (c.transform = defaultTransform()))} />}
+          actions={
+            <ResetButton
+              title="Reset transform"
+              onClick={() =>
+                upd((c) => {
+                  c.transform = defaultTransform();
+                  if (c.keyframes) c.keyframes = c.keyframes.opacity ? { opacity: c.keyframes.opacity } : undefined;
+                })
+              }
+            />
+          }
         >
           {!isTitle && (
             <FieldRow label="Fit">
@@ -350,24 +410,28 @@ function ClipInspector({ clip, track, media }: { clip: Clip; track: Track; media
                     onClick={() => {
                       const { width: W, height: H } = store().project.settings;
                       const l = cornerLayout(corner, media.width || W, media.height || H, W, H);
-                      upd((c) => void Object.assign(c.transform, { fit: "contain", scale: l.scale, x: l.x, y: l.y }));
+                      upd((c) => void (c.transform.fit = "contain"), true);
+                      store().setPose(id, { scale: l.scale, x: l.x, y: l.y });
+                      commit();
                     }}
                   >
                     {arrow}
                   </button>
                 ))}
-                <button className={chip(false)} title="Full frame" onClick={() => upd((c) => void Object.assign(c.transform, { scale: 1, x: 0, y: 0 }))}>
+                <button className={chip(false)} title="Full frame" onClick={() => store().setPose(id, { scale: 1, x: 0, y: 0 })}>
                   Full
                 </button>
               </div>
             </FieldRow>
           )}
           <FieldRow label="Position">
-            <NumberField label="X" {...num((c) => c.transform.x, (c, v) => void (c.transform.x = v))} suffix="px" className="flex-1" />
-            <NumberField label="Y" {...num((c) => c.transform.y, (c, v) => void (c.transform.y = v))} suffix="px" className="flex-1" />
+            {/* Position keys x and y together, so each edit keys both. */}
+            <NumberField label="X" value={pose.transform.x} {...poseField("x", { y: pose.transform.y })} suffix="px" className="min-w-0 flex-1" />
+            <NumberField label="Y" value={pose.transform.y} {...poseField("y", { x: pose.transform.x })} suffix="px" className="min-w-0 flex-1" />
+            <KeyButton clip={clip} group="position" label="Position" />
           </FieldRow>
-          <SliderField label="Scale" {...num((c) => c.transform.scale, (c, v) => void (c.transform.scale = v))} min={0.05} max={10} sliderMin={0.1} sliderMax={3} step={0.01} displayScale={100} suffix="%" defaultValue={1} />
-          <SliderField label="Rotation" {...num((c) => c.transform.rotation, (c, v) => void (c.transform.rotation = v))} min={-3600} max={3600} sliderMin={-180} sliderMax={180} step={1} suffix="°" defaultValue={0} />
+          <SliderField label="Scale" value={pose.transform.scale} {...poseField("scale")} min={0.05} max={10} sliderMin={0.1} sliderMax={3} step={0.01} displayScale={100} suffix="%" defaultValue={1} trailing={<KeyButton clip={clip} group="scale" label="Scale" />} />
+          <SliderField label="Rotation" value={pose.transform.rotation} {...poseField("rotation")} min={-3600} max={3600} sliderMin={-180} sliderMax={180} step={1} suffix="°" defaultValue={0} trailing={<KeyButton clip={clip} group="rotation" label="Rotation" />} />
           <FieldRow label="Flip">
             <IconButton title="Flip horizontally" active={clip.transform.flipH} onClick={() => upd((c) => void (c.transform.flipH = !c.transform.flipH))}>
               <FlipHorizontal2 className="h-4 w-4" />
@@ -403,7 +467,7 @@ function ClipInspector({ clip, track, media }: { clip: Clip; track: Track; media
 
       {visual && (
         <Section id="compositing" title="Opacity & fades">
-          <SliderField label="Opacity" {...num((c) => c.opacity, (c, v) => void (c.opacity = v))} min={0} max={1} step={0.01} displayScale={100} suffix="%" defaultValue={1} />
+          <SliderField label="Opacity" value={pose.opacity} {...poseField("opacity")} min={0} max={1} step={0.01} displayScale={100} suffix="%" defaultValue={1} trailing={<KeyButton clip={clip} group="opacity" label="Opacity" />} />
           <FadeFields clip={clip} upd={upd} />
         </Section>
       )}

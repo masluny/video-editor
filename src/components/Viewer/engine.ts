@@ -19,6 +19,7 @@ import { backdropBlur, cssClipPath, cssFilter, fadeFactor, fitBox } from "../../
 import { titleImageUrl } from "../../lib/title";
 import { dissolveAt, dissolveGain, dissolveMix } from "../../lib/transitions";
 import { motionAt, motionProgress } from "../../lib/motion";
+import { posed, propAt } from "../../lib/keyframes";
 import { gainAt } from "../../lib/envelope";
 import { mediaTime, Slot, Transport, type Voice } from "./playback";
 
@@ -269,8 +270,10 @@ export class Engine {
 
   /** Position/transform/colour an element like graph.rs does; geometry writes are cached. */
   private place(el: HTMLElement, clip: Clip, mw: number, mh: number, W: number, H: number, t: number, alpha = 1, z = 1) {
+    const pose = posed(clip, t - clip.start);
     const m = clip.motion ? motionAt(clip.motion, motionProgress(clip.motion, t - clip.start, clipDuration(clip))) : null;
-    const tf = m ? { ...clip.transform, scale: clip.transform.scale * m.scale, x: clip.transform.x + m.x, y: clip.transform.y + m.y } : clip.transform;
+    const base = pose.transform;
+    const tf = m ? { ...base, scale: base.scale * m.scale, x: base.x + m.x, y: base.y + m.y } : base;
     const box = fitBox(mw, mh, W, H, tf.fit);
     // Boxes bigger than the frame (Fill into another shape) are laid out at frame size and
     // scaled up by the transform instead: huge video layout boxes can fail to paint.
@@ -292,7 +295,7 @@ export class Engine {
       s.filter = filter;
       s.clipPath = clipPath;
     }
-    const opacity = String(Math.max(0, Math.min(1, clip.opacity * fadeFactor(clip, t - clip.start) * alpha)));
+    const opacity = String(Math.max(0, Math.min(1, pose.opacity * fadeFactor(clip, t - clip.start) * alpha)));
     if (s.opacity !== opacity) s.opacity = opacity;
     if (s.zIndex !== String(z)) s.zIndex = String(z);
     if (s.visibility !== "visible") s.visibility = "visible";
@@ -418,7 +421,7 @@ export class Engine {
     if (s.filter !== filter) s.filter = filter;
     const box = [`${-m / f}px`, `${cw / f}px`, `${ch / f}px`];
     if (s.width !== box[1] || s.height !== box[2]) [s.left, s.top, s.width, s.height] = [box[0], box[0], box[1], box[2]];
-    s.opacity = String(Math.max(0, Math.min(1, clip.opacity * fadeFactor(clip, t - clip.start) * alpha)));
+    s.opacity = String(Math.max(0, Math.min(1, propAt(clip, "opacity", t - clip.start) * fadeFactor(clip, t - clip.start) * alpha)));
     if (s.visibility !== "visible") s.visibility = "visible";
     return true;
   }

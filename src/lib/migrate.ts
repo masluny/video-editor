@@ -7,6 +7,7 @@ import { uid } from "./uid";
 import { basename } from "./format";
 import type { Motion, MotionPreset } from "./motion";
 import type { VolumePoint } from "./envelope";
+import type { Key, KeyProp, Keyframes } from "./keyframes";
 
 type Json = Record<string, any>;
 
@@ -85,6 +86,23 @@ function volumePoints(v: Json | undefined): VolumePoint[] | undefined {
   return pts.length ? pts : undefined;
 }
 
+const KEY_RANGE: Record<KeyProp, [number, number]> = { x: [-1e5, 1e5], y: [-1e5, 1e5], scale: [0.01, 20], rotation: [-3600, 3600], opacity: [0, 1] };
+
+function keyframes(v: Json | undefined): Keyframes | undefined {
+  if (!v || typeof v !== "object") return undefined;
+  const out: Keyframes = {};
+  for (const p of Object.keys(KEY_RANGE) as KeyProp[]) {
+    if (!Array.isArray(v[p])) continue;
+    const [lo, hi] = KEY_RANGE[p];
+    const keys = v[p]
+      .filter((k: Json) => k && Number.isFinite(k.t) && Number.isFinite(k.v))
+      .map((k: Json) => ({ t: k.t as number, v: num(k.v, 0, lo, hi) }))
+      .sort((a: Key, b: Key) => a.t - b.t);
+    if (keys.length) out[p] = keys;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
 function crop(c: Json | undefined): Crop {
   if (!c) return defaultCrop();
   return { top: num(c.top, 0, 0, 0.95), right: num(c.right, 0, 0, 0.95), bottom: num(c.bottom, 0, 0, 0.95), left: num(c.left, 0, 0, 0.95) };
@@ -156,6 +174,7 @@ function clip(c: Json, mediaIds: Set<string>): Clip | null {
     transitionIn: num(c.transitionIn, 0, 0, 10) || undefined,
     motion: motion(c.motion),
     volumePoints: volumePoints(c.volumePoints),
+    keyframes: keyframes(c.keyframes),
     backdrop: c.backdrop === "blur" ? "blur" : undefined,
     freeze: c.freeze === true || undefined,
     title: type === "title" ? titleStyle(c.title) : undefined,

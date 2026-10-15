@@ -32,6 +32,7 @@ import { seconds, stripExtension } from "../lib/format";
 import { clipBefore, DEFAULT_DISSOLVE } from "../lib/transitions";
 import type { Cue } from "../lib/subtitles";
 import { activeLevel, DUCK_DEFAULTS, duckingPoints, speechRegions } from "../lib/envelope";
+import { GROUP_PROPS, hasKeyAt, keyClock, keyTolerance, propAt, withKey, type KeyGroup, type KeyProp } from "../lib/keyframes";
 
 export type Tool = "select" | "blade";
 export type PlaceMode = "overwrite" | "insert";
@@ -188,6 +189,15 @@ interface State {
   cutToBeat: (ids: Id[], every?: number) => number;
   /** Set how picture clips (all, or just `ids`) fit the frame. Returns how many changed. */
   fitClips: (fit: Clip["transform"]["fit"], ids?: Id[]) => number;
+  /**
+   * Set transform / opacity values as seen at the playhead: on a keyed property this keys
+   * the value there; otherwise it sets the static value.
+   */
+  setPose: (id: Id, values: Partial<Record<KeyProp, number>>, opts?: { live?: boolean }) => void;
+  /** The diamond: start animating a property, or add / remove its key at the playhead. */
+  toggleKeyframe: (id: Id, group: KeyGroup) => void;
+  /** Stop animating a property, keeping its value at the playhead. */
+  clearKeyframes: (id: Id, group: KeyGroup) => void;
   /** Fill the bars behind picture clips (all, or `ids`) with their blurred copy, or not. */
   setBackdrop: (backdrop: Clip["backdrop"], ids?: Id[]) => number;
 
@@ -1031,6 +1041,68 @@ export const useStore = create<State>()((set, get) => ({
     });
     set({ selection: pieces.map((c) => c.id) });
     return removed;
+  },
+
+  setPose: (id, values, opts) => {
+    const { project, playhead } = get();
+    const fps = project.settings.fps;
+    get().updateClip(
+      id,
+      (c) => {
+        const snap = plain(c) as Clip;
+        const t = keyClock(snap, Math.max(0, Math.min(clipDuration(snap), playhead - snap.start)));
+        const tol = keyTolerance(snap, fps);
+        for (const [p, v] of Object.entries(values) as [KeyProp, number][]) {
+          if (snap.keyframes?.[p]?.length) c.keyframes![p] = withKey(snap.keyframes[p], t, v, tol);
+          else if (p === "opacity") c.opacity = v;
+          else c.transform[p] = v;
+        }
+      },
+      opts,
+    );
+  },
+
+  toggleKeyframe: (id, group) => {
+    const { project, playhead } = get();
+    get().updateClip(id, (c) => {
+      const snap = plain(c) as Clip;
+      const local = Math.max(0, Math.min(clipDuration(snap), playhead - snap.start));
+      const t = keyClock(snap, local);
+      const tol = keyTolerance(snap, project.settings.fps);
+      const props = GROUP_PROPS[group];
+      const keyed = props.some((p) => snap.keyframes?.[p]?.length);
+      const here = keyed && props.some((p) => hasKeyAt(snap.keyframes?.[p], t, tol));
+      const kf = (c.keyframes ??= {});
+      for (const p of props) {
+        const v = propAt(snap, p, local);
+        if (!here) kf[p] = withKey(snap.keyframes?.[p], t, v, tol);
+        else {
+          const rest = (snap.keyframes?.[p] ?? []).filter((k) => Math.abs(k.t - t) > tol);
+          if (rest.length) kf[p] = rest;
+          else {
+            delete kf[p];
+            if (p === "opacity") c.opacity = v;
+            else c.transform[p] = v;
+          }
+        }
+      }
+      if (!Object.keys(kf).length) c.keyframes = undefined;
+    });
+  },
+
+  clearKeyframes: (id, group) => {
+    const { playhead } = get();
+    get().updateClip(id, (c) => {
+      const snap = plain(c) as Clip;
+      const local = Math.max(0, Math.min(clipDuration(snap), playhead - snap.start));
+      for (const p of GROUP_PROPS[group]) {
+        const v = propAt(snap, p, local);
+        if (c.keyframes) delete c.keyframes[p];
+        if (p === "opacity") c.opacity = v;
+        else c.transform[p] = v;
+      }
+      if (c.keyframes && !Object.keys(c.keyframes).length) c.keyframes = undefined;
+    });
   },
 
   closeGapAt: (trackId, time) => {

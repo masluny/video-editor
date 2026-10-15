@@ -477,3 +477,44 @@ describe("cut to the beat", () => {
     ]);
   });
 });
+
+describe("keyframes", () => {
+  it("animates a property from the diamond and keys edits at the playhead", () => {
+    const id = st().placeMedia("v", { at: 2, range: { in: 1, out: 9 } })!;
+    const clip = () => findClip(st().project, id)!.clip;
+    st().seek(3); // 1s in: clip clock 2
+    st().toggleKeyframe(id, "position");
+    expect(clip().keyframes).toEqual({ x: [{ t: 2, v: 0 }], y: [{ t: 2, v: 0 }] });
+    st().seek(7); // 5s in: clip clock 6
+    st().setPose(id, { x: 300, y: -100 });
+    expect(clip().keyframes!.x).toEqual([{ t: 2, v: 0 }, { t: 6, v: 300 }]);
+    // Unkeyed properties still set their static value.
+    st().setPose(id, { scale: 2 });
+    expect(clip().transform.scale).toBe(2);
+    expect(clip().keyframes!.scale).toBeUndefined();
+    // The diamond on an existing key removes it; on the last one, the value stays put.
+    st().toggleKeyframe(id, "position");
+    expect(clip().keyframes!.x).toEqual([{ t: 2, v: 0 }]);
+    st().seek(3);
+    st().toggleKeyframe(id, "position");
+    expect(clip().keyframes).toBeUndefined();
+    expect(clip().transform).toMatchObject({ x: 0, y: 0 });
+  });
+
+  it("adds a key with the current in-between value, and clears to the value at the playhead", () => {
+    const id = st().placeMedia("v", { at: 0, range: { in: 0, out: 10 } })!;
+    const clip = () => findClip(st().project, id)!.clip;
+    st().toggleKeyframe(id, "opacity");
+    st().seek(10);
+    st().setPose(id, { opacity: 0 });
+    st().seek(5);
+    st().toggleKeyframe(id, "opacity"); // no key here yet: adds one at 50%
+    expect(clip().keyframes!.opacity).toEqual([{ t: 0, v: 1 }, { t: 5, v: 0.5 }, { t: 10, v: 0 }]);
+    st().seek(7.5);
+    st().clearKeyframes(id, "opacity");
+    expect(clip().keyframes).toBeUndefined();
+    expect(clip().opacity).toBeCloseTo(0.25);
+    st().undo();
+    expect(clip().keyframes!.opacity).toHaveLength(3);
+  });
+});
