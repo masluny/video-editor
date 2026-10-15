@@ -174,6 +174,37 @@ export function magneticInsert(clips: Clip[], movers: Clip[], at: number): Clip[
   return sortClips(out);
 }
 
+/** Where a clip's source time 0 falls on the timeline: what keeps two clips in sync. */
+export function sourceOrigin(c: Clip): number {
+  return c.start - c.in / speedOf(c);
+}
+
+/**
+ * Detached audio follows its video: in `next`, every linked clip whose video's source
+ * origin moved since `prev` (a move, a reorder, a ripple), but which didn't move itself,
+ * shifts by the same amount. Returns `next` untouched when nothing has to follow.
+ */
+export function followLinks(prev: Project, next: Project): Project {
+  if (prev === next || !next.tracks.some((t) => t.clips.some((c) => c.link))) return next;
+  const origins = (p: Project) => new Map(p.tracks.flatMap((t) => t.clips.map((c) => [c.id, sourceOrigin(c)] as const)));
+  const [before, after] = [origins(prev), origins(next)];
+  const shifts = new Map<string, number>();
+  for (const t of next.tracks)
+    for (const c of t.clips) {
+      if (!c.link) continue;
+      const [v0, v1, a0] = [before.get(c.link), after.get(c.link), before.get(c.id)];
+      if (v0 == null || v1 == null || a0 == null || Math.abs(v1 - v0) < EPS || Math.abs(after.get(c.id)! - a0) > EPS) continue;
+      shifts.set(c.id, v1 - v0);
+    }
+  if (!shifts.size) return next;
+  return {
+    ...next,
+    tracks: next.tracks.map((t) =>
+      t.clips.some((c) => shifts.has(c.id)) ? { ...t, clips: sortClips(t.clips.map((c) => (shifts.has(c.id) ? { ...c, start: Math.max(0, c.start + shifts.get(c.id)!) } : c))) } : t,
+    ),
+  };
+}
+
 /** Remove clips and close the gaps they leave. */
 export function rippleDelete(clips: Clip[], ids: Set<string>): Clip[] {
   const removed = clips.filter((c) => ids.has(c.id));

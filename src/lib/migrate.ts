@@ -180,6 +180,7 @@ function clip(c: Json, mediaIds: Set<string>): Clip | null {
     freeze: c.freeze === true || undefined,
     title: type === "title" ? titleStyle(c.title) : undefined,
     label: typeof c.label === "string" && c.label ? c.label : undefined,
+    link: typeof c.link === "string" && c.link ? c.link : undefined,
   };
 }
 

@@ -167,6 +167,8 @@ export interface Clip {
   /** A frame hold: shows the source frame at `in` for the whole clip, silently. */
   freeze?: boolean;
   title?: TitleStyle;
+  /** Detached audio: the video clip it came from, which it moves with to stay in sync. */
+  link?: Id;
   /** Optional user label shown on the clip. */
   label?: string;
 }

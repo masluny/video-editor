@@ -30,6 +30,7 @@ import {
   ZoomOut,
   Headphones,
   Unlink,
+  Link2,
   ClipboardPaste,
   Type,
 } from "lucide-react";
@@ -495,6 +496,12 @@ export function Timeline() {
         : []),
       { separator: true },
     ];
+    if (clip.link && findClip(s.project, clip.link))
+      items.push(
+        { label: "Select its video", icon: <Link2 className="h-3.5 w-3.5" />, onSelect: () => s.select([clip.link!]) },
+        { label: "Unlink from video", onSelect: () => s.updateClip(clip.id, (c) => void (c.link = undefined)) },
+        { separator: true },
+      );
     if (track.kind === "audio")
       items.push(
         ...videoLengthItems(clip, ids, track),

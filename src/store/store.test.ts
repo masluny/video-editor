@@ -592,3 +592,41 @@ describe("paste look", () => {
     expect(findClip(st().project, t2)!.clip.title).toMatchObject({ text: "Two", fontSize: 40, color: "#ff0000" });
   });
 });
+
+describe("detached audio stays in sync", () => {
+  it("follows its video through reorders and ripples, but not through head trims or its own moves", () => {
+    const a = st().placeMedia("v", { at: 0, range: { in: 0, out: 2 } })!;
+    const b = st().placeMedia("v", { at: 2, range: { in: 4, out: 6 } })!;
+    st().detachAudio(a);
+    const audio = () => st().project.tracks.filter((t) => t.kind === "audio").flatMap((t) => t.clips).find((c) => c.link === a)!;
+    expect(audio().start).toBe(0);
+    // Reorder A after B on the magnetic main track: its sound goes with it.
+    const v1 = st().project.tracks.find((t) => t.kind === "video")!.id;
+    st().dragLive(st().project, [{ id: a, trackId: v1, start: 1.5 }], true);
+    st().settleClips([a]);
+    expect(findClip(st().project, a)!.clip.start).toBe(2);
+    expect(audio().start).toBe(2);
+    // A plain head trim keeps the picture where it was: no shift.
+    st().updateClip(a, (c) => void ((c.start = 2.5), (c.in = 0.5)));
+    expect(audio().start).toBe(2);
+    // Nudging the audio itself (fixing sync by hand) sticks.
+    st().updateClip(audio().id, (c) => void (c.start = 2.1));
+    expect(audio().start).toBe(2.1);
+    // Ripple-deleting B (before A) pulls both A and its audio back.
+    st().deleteClips([b], true);
+    expect(findClip(st().project, a)!.clip.start).toBeCloseTo(0.5);
+    expect(audio().start).toBeCloseTo(0.1);
+  });
+
+  it("links copies to the copy of their video", () => {
+    const a = st().placeMedia("v", { at: 0, range: { in: 0, out: 2 } })!;
+    st().detachAudio(a);
+    const audio = st().project.tracks.filter((t) => t.kind === "audio").flatMap((t) => t.clips)[0];
+    st().duplicateClips([a, audio.id]);
+    const copies = st().selection.map((id) => findClip(st().project, id)!.clip);
+    const [video, sound] = [copies.find((c) => c.type === "media" && !c.link)!, copies.find((c) => c.link)!];
+    expect(sound.link).toBe(video.id);
+    st().duplicateClips([audio.id]); // alone: no video copy to follow
+    expect(findClip(st().project, st().selection[0])!.clip.link).toBeUndefined();
+  });
+});

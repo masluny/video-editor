@@ -7,6 +7,7 @@ import {
   clipEnd,
   closeAllGaps,
   cutToBeats,
+  followLinks,
   isUnbounded,
   magneticInsert,
   EPS,
@@ -279,6 +280,11 @@ const HISTORY_LIMIT = 200;
 
 const initial = newProject();
 
+/** A copy's link: to the copy of its video when that was copied too, else none. */
+function relinked(c: Clip, fresh: Map<Id, Id>): Id | undefined {
+  return c.link ? fresh.get(c.link) : undefined;
+}
+
 /** The main (lowest) video track, V1. */
 export function mainTrackId(p: Project): Id | null {
   return p.tracks.find((t) => t.kind === "video")?.id ?? null;
@@ -371,7 +377,7 @@ export const useStore = create<State>()((set, get) => ({
   // ---------------------------------------------------------------- document
   apply: (recipe, opts) => {
     const { project, liveBase, past } = get();
-    const next = produce(project, recipe);
+    const next = followLinks(project, produce(project, recipe));
     if (next === project) return;
     if (opts?.live) {
       set({ project: next, liveBase: liveBase ?? project });
@@ -659,18 +665,19 @@ export const useStore = create<State>()((set, get) => ({
         t.clips = magneticInsert(plain(t.clips) as Clip[], toMain, Math.min(...toMain.map((c) => c.start))) as Draft<Clip>[];
       }
     });
-    set({ project: next, liveBase: liveBase ?? project });
+    set({ project: followLinks(from, next), liveBase: liveBase ?? project });
   },
 
   duplicateInPlaceLive: (ids) => {
     const map = new Map<Id, Id>();
     const want = new Set(ids);
+    const fresh = new Map(ids.map((id) => [id, uid()]));
     get().apply((p) => {
       for (const t of p.tracks) {
         if (t.locked) continue;
         for (const c of plain(t.clips) as Clip[]) {
           if (!want.has(c.id)) continue;
-          const copy = { ...structuredClone(c), id: uid() };
+          const copy = { ...structuredClone(c), id: fresh.get(c.id)!, link: relinked(c, fresh) };
           map.set(c.id, copy.id);
           t.clips.push(copy as Draft<Clip>);
         }
@@ -990,10 +997,11 @@ export const useStore = create<State>()((set, get) => ({
     const hi = Math.max(...picked.map((x) => clipEnd(x.clip)));
     const shift = hi - lo;
     const created: Id[] = [];
+    const fresh = new Map(picked.map(({ clip }) => [clip.id, uid()]));
     get().apply((p) => {
       for (const { track, clip } of picked) {
         const t = p.tracks.find((x) => x.id === track.id)!;
-        const copy = { ...structuredClone(clip), id: uid(), start: clip.start + shift };
+        const copy = { ...structuredClone(clip), id: fresh.get(clip.id)!, start: clip.start + shift, link: relinked(clip, fresh) };
         t.clips = overwrite(plain(t.clips) as Clip[], copy) as Draft<Clip>[];
         created.push(copy.id);
       }
@@ -1048,6 +1056,7 @@ export const useStore = create<State>()((set, get) => ({
     const lo = Math.min(...clipboard.map((e) => e.clip.start));
     const at = snapToEdit(playhead, project.tracks, project.settings.fps);
     const created: Id[] = [];
+    const fresh = new Map(clipboard.map((e) => [e.clip.id, uid()]));
     get().apply((p) => {
       for (const e of clipboard) {
         // Media might have been removed since copying.
@@ -1059,7 +1068,7 @@ export const useStore = create<State>()((set, get) => ({
         }
         const t = lanes[e.laneIndex];
         if (t.locked) continue;
-        const c = { ...structuredClone(e.clip), id: uid(), start: at + (e.clip.start - lo) };
+        const c = { ...structuredClone(e.clip), id: fresh.get(e.clip.id)!, start: at + (e.clip.start - lo), link: relinked(e.clip, fresh) };
         t.clips = overwrite(plain(t.clips) as Clip[], c) as Draft<Clip>[];
         created.push(c.id);
       }
@@ -1086,6 +1095,7 @@ export const useStore = create<State>()((set, get) => ({
       id: uid(),
       opacity: 1,
       label: undefined,
+      link: id,
     };
     get().apply((p) => {
       let track = pickTrack(p, "audio", audio.start, len) as Draft<Track> | null;
