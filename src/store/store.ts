@@ -98,6 +98,8 @@ interface State {
   zoom: number;
   /** The viewer fills the window (F). */
   fullscreen: boolean;
+  /** The frame size was set by hand before any footage: the first clip mustn't override it. */
+  formatChosen: boolean;
   range: { in: number; out: number } | null;
 
   runtime: Record<Id, MediaRuntime>;
@@ -209,6 +211,8 @@ interface State {
   /** Remove the In–Out range from every unlocked track and close it up. */
   extractRange: () => void;
   updateSettings: (patch: Partial<ProjectSettings>) => void;
+  /** Pick the frame size before adding footage (null: match the first clip). */
+  pickFormat: (size: { width: number; height: number } | null) => void;
   renameProject: (name: string) => void;
 
   // --- transport & view -------------------------------------------------------
@@ -243,6 +247,11 @@ export const ZOOM_MAX = 600;
 const HISTORY_LIMIT = 200;
 
 const initial = newProject();
+
+/** Whether any clip shows real footage (video or stills), not just titles. */
+function hasFootage(p: Project): boolean {
+  return p.tracks.some((t) => t.clips.some((c) => c.type === "media" && p.media.find((m) => m.id === c.mediaId)?.hasVideo));
+}
 
 export function findClip(p: Project, id: Id): { track: Track; clip: Clip; index: number } | null {
   for (const track of p.tracks) {
@@ -313,6 +322,7 @@ export const useStore = create<State>()((set, get) => ({
   snapping: true,
   zoom: 60,
   fullscreen: false,
+  formatChosen: false,
   range: null,
 
   runtime: {},
@@ -375,6 +385,7 @@ export const useStore = create<State>()((set, get) => ({
       playhead: 0,
       playing: false,
       range: null,
+      formatChosen: false,
       seekNonce: get().seekNonce + 1,
     }),
 
@@ -440,7 +451,8 @@ export const useStore = create<State>()((set, get) => ({
     const clip = mediaClip(media, at, opts.range);
     const len = clipDuration(clip);
     const kind: TrackKind = media.kind === "audio" ? "audio" : "video";
-    const firstVisual = kind === "video" && !st.project.tracks.some((t) => t.clips.some((c) => c.type === "media" && st.project.media.find((m) => m.id === c.mediaId)?.hasVideo));
+    const firstVisual = kind === "video" && !hasFootage(st.project);
+    let reshaped = false;
 
     let placedOn: Id | null = null;
     st.apply((p) => {
@@ -452,25 +464,35 @@ export const useStore = create<State>()((set, get) => ({
       }
       track.clips = (opts.mode === "insert" ? insert : overwrite)(plain(track.clips) as Clip[], clip) as Draft<Clip>[];
       placedOn = track.id;
-      // First real footage in an empty project: adopt its size & frame rate.
+      // First real footage in an empty project: adopt its frame rate, and its size unless
+      // a format was picked by hand (e.g. vertical for horizontal footage).
       if (firstVisual && media.kind === "video" && media.width > 0 && media.height > 0) {
         const s = p.settings;
-        if (s.width !== media.width || s.height !== media.height || (media.fps > 0 && Math.abs(s.fps - media.fps) > 0.01)) {
-          s.width = media.width % 2 ? media.width + 1 : media.width;
-          s.height = media.height % 2 ? media.height + 1 : media.height;
-          if (media.fps >= 10 && media.fps <= 120) s.fps = Math.round(media.fps * 1000) / 1000;
-          adopted = { w: s.width, h: s.height, fps: s.fps };
-        }
+        const w = media.width % 2 ? media.width + 1 : media.width;
+        const h = media.height % 2 ? media.height + 1 : media.height;
+        const fps = media.fps >= 10 && media.fps <= 120 ? Math.round(media.fps * 1000) / 1000 : s.fps;
+        const size = !st.formatChosen && (s.width !== w || s.height !== h);
+        const rate = Math.abs(s.fps - fps) > 0.01;
+        if (size) Object.assign(s, { width: w, height: h });
+        if (rate) s.fps = fps;
+        if (size || rate) adopted = { w: s.width, h: s.height, fps: s.fps, size };
+        reshaped = st.formatChosen && Math.abs(w / h - s.width / s.height) > 0.01;
       }
     });
+    const name = stripExtension(media.name);
     if (adopted) {
-      const a = adopted as { w: number; h: number; fps: number };
-      get().toast(`Project set to ${a.w}×${a.h} · ${+a.fps.toFixed(3)} fps to match “${stripExtension(media.name)}”.`, "info", {
-        label: "Settings",
-        run: () => get().openDialog({ kind: "settings" }),
-      });
+      const a = adopted as { w: number; h: number; fps: number; size: boolean };
+      const what = a.size ? `Project set to ${a.w}×${a.h} · ${+a.fps.toFixed(3)} fps` : `Project frame rate set to ${+a.fps.toFixed(3)} fps`;
+      get().toast(`${what} to match “${name}”.`, "info", { label: "Settings", run: () => get().openDialog({ kind: "settings" }) });
       adopted = null;
     }
+    if (reshaped)
+      get().toast(
+        `“${name}” has a different shape from the ${st.project.settings.width}×${st.project.settings.height} frame, so it shows bars.`,
+        "info",
+        { label: "Fill frame", run: () => get().fitClips("cover") },
+        { label: "Blur bars", run: () => get().setBackdrop("blur") },
+      );
     if (placedOn) set({ selection: [clip.id] });
     if (placedOn && kind === "audio") {
       const end = videoEnd(get().project.tracks);
@@ -1152,7 +1174,18 @@ export const useStore = create<State>()((set, get) => ({
   liftRange: () => cutRange(false),
   extractRange: () => cutRange(true),
 
-  updateSettings: (patch) => get().apply((p) => void Object.assign(p.settings, patch)),
+  updateSettings: (patch) => {
+    const { project } = get();
+    const resized = (patch.width !== undefined && patch.width !== project.settings.width) || (patch.height !== undefined && patch.height !== project.settings.height);
+    if (resized && !hasFootage(project)) set({ formatChosen: true });
+    get().apply((p) => void Object.assign(p.settings, patch));
+  },
+
+  pickFormat: (size) => {
+    if (!size) return set({ formatChosen: false });
+    get().updateSettings({ width: size.width, height: size.height });
+    set({ formatChosen: true });
+  },
 
   renameProject: (name) => get().apply((p) => void (p.name = name.trim() || "Untitled")),
 
@@ -1188,7 +1221,7 @@ export const useStore = create<State>()((set, get) => ({
 }));
 
 // Set inside placeMedia's recipe, read right after it (immer recipes can't return extra data).
-let adopted: { w: number; h: number; fps: number } | null = null;
+let adopted: { w: number; h: number; fps: number; size: boolean } | null = null;
 
 /** Change picture clips (all, or `ids`) on unlocked video tracks; `fn` says if it changed one. */
 function reframe(ids: Id[] | undefined, fn: (c: Draft<Clip>) => boolean): number {

@@ -32,6 +32,28 @@ describe("placing media", () => {
     expect(st().project.settings).toMatchObject({ width: 1080, height: 1920, fps: 30 });
   });
 
+  it("keeps a frame size picked before any footage, adopting only the frame rate", () => {
+    st().pickFormat({ width: 1080, height: 1920, label: "9:16" } as { width: number; height: number });
+    expect(Object.keys(st().project.settings)).not.toContain("label");
+    st().placeMedia("v", { at: 0 }); // 1080×1920 footage: same shape, no bars
+    expect(st().project.settings).toMatchObject({ width: 1080, height: 1920, fps: 30 });
+    st().newProject();
+    st().addMedia([video, { ...video, id: "w", path: "/wide.mov", width: 1920, height: 1080, fps: 25 }]);
+    st().pickFormat({ width: 1080, height: 1920 });
+    expect(st().formatChosen).toBe(true);
+    st().placeMedia("w", { at: 0 });
+    expect(st().project.settings).toMatchObject({ width: 1080, height: 1920, fps: 25 });
+    const last = st().toasts[st().toasts.length - 1];
+    expect(last.message).toMatch(/different shape/);
+    last.action!.run(); // Fill frame
+    expect(clipsOf("video")[0].transform.fit).toBe("cover");
+    // A new project goes back to matching the first clip.
+    st().newProject();
+    st().addMedia([{ ...video, id: "w", path: "/wide.mov", width: 1920, height: 1080, fps: 25 }]);
+    st().placeMedia("w", { at: 0 });
+    expect(st().project.settings).toMatchObject({ width: 1920, height: 1080 });
+  });
+
   it("puts titles above footage", () => {
     st().placeMedia("v", { at: 0 });
     st().updateTrack(st().project.tracks[1].id, {}); // no-op

@@ -142,9 +142,49 @@ function EmptyState() {
         >
           Import media…
         </button>
+        <FormatPicker />
         <p className="mt-3 text-2xs text-ink-dim">
           Tip: press <span className="kbd">?</span> for keyboard shortcuts
         </p>
+      </div>
+    </div>
+  );
+}
+
+const SHAPES = [
+  { label: "16:9", hint: "YouTube, landscape", width: 1920, height: 1080 },
+  { label: "9:16", hint: "TikTok, Reels, Shorts", width: 1080, height: 1920 },
+  { label: "1:1", hint: "Square", width: 1080, height: 1080 },
+  { label: "4:5", hint: "Instagram feed", width: 1080, height: 1350 },
+];
+
+/** Choose the video's shape up front, or let the first clip decide. */
+function FormatPicker() {
+  const chosen = useStore((s) => s.formatChosen);
+  const { width, height } = useStore((s) => s.project.settings);
+  const btn = (active: boolean) =>
+    cn(
+      "flex h-12 w-12 flex-col items-center justify-center gap-1 rounded-md border text-2xs transition-colors",
+      active ? "border-accent bg-accent/15 text-accent-ink" : "border-line text-ink-muted hover:border-line-strong hover:text-ink",
+    );
+  return (
+    <div className="mt-4 w-full border-t border-line pt-3">
+      <p className="mb-2 text-2xs text-ink-dim">Video shape</p>
+      <div className="flex justify-center gap-1.5">
+        <button className={btn(!chosen)} title="Match the first clip you add" onClick={() => store().pickFormat(null)}>
+          <span className="flex h-4 items-center font-semibold">Auto</span>
+        </button>
+        {SHAPES.map((f) => {
+          const k = 14 / Math.max(f.width, f.height);
+          return (
+            <button key={f.label} className={btn(chosen && width === f.width && height === f.height)} title={`${f.width}×${f.height} · ${f.hint}`} onClick={() => store().pickFormat(f)}>
+              <span className="flex h-4 items-center">
+                <span className="rounded-[2px] border border-current" style={{ width: f.width * k, height: f.height * k }} />
+              </span>
+              {f.label}
+            </button>
+          );
+        })}
       </div>
     </div>
   );
