@@ -3,6 +3,7 @@ import {
   Camera,
   ChevronFirst,
   ChevronLast,
+  Clock,
   Grid2x2,
   Loader2,
   Maximize,
@@ -19,12 +20,13 @@ import { store, useStore, findClip } from "../../store/store";
 import { Engine } from "./engine";
 import { fileUrl } from "../../lib/backend";
 import { clipAt, clipEnd, nextEditPoint, prevEditPoint, projectDuration } from "../../lib/timeline";
-import { timecode } from "../../lib/format";
+import { basename, stripExtension, timecode } from "../../lib/format";
 import { fitBox } from "../../lib/visual";
 import { titleBounds } from "../../lib/title";
 import { isAnimated, posed } from "../../lib/keyframes";
 import { IconButton } from "../ui/controls";
-import { importViaDialog } from "../../lib/actions";
+import { importViaDialog, openProject } from "../../lib/actions";
+import { recentProjects } from "../../lib/recent";
 import { exportFrame } from "../dialogs/ExportDialog";
 import { cn } from "../../lib/cn";
 import type { MediaAsset } from "../../lib/types";
@@ -146,10 +148,33 @@ function EmptyState() {
           Import media…
         </button>
         <FormatPicker />
+        <RecentList />
         <p className="mt-3 text-2xs text-ink-dim">
           Tip: press <span className="kbd">?</span> for keyboard shortcuts
         </p>
       </div>
+    </div>
+  );
+}
+
+/** Projects opened or saved lately, one click away. */
+function RecentList() {
+  const recent = React.useMemo(() => recentProjects().slice(0, 4), []);
+  if (!recent.length) return null;
+  return (
+    <div className="mt-4 w-full border-t border-line pt-3 text-left">
+      <p className="mb-1.5 text-center text-2xs text-ink-dim">Recent projects</p>
+      {recent.map((p) => (
+        <button
+          key={p}
+          onClick={() => void openProject(p)}
+          title={p}
+          className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-xs text-ink-muted transition-colors hover:bg-white/[0.06] hover:text-ink"
+        >
+          <Clock className="h-3 w-3 shrink-0 text-ink-dim" />
+          <span className="truncate">{stripExtension(basename(p))}</span>
+        </button>
+      ))}
     </div>
   );
 }
