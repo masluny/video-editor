@@ -5,6 +5,8 @@ import {
   ChevronLast,
   Grid2x2,
   Loader2,
+  Maximize,
+  Minimize,
   Pause,
   Play,
   SkipBack,
@@ -35,6 +37,21 @@ export function Viewer() {
   const [volume, setVolume] = React.useState(() => Number(localStorage.getItem("revind.volume") ?? 0.9));
   const [muted, setMuted] = React.useState(false);
   const [guides, setGuides] = React.useState(false);
+  const full = useStore((s) => s.fullscreen);
+
+  // Full screen: fill the window, and the screen too where the webview allows it.
+  const panel = React.useRef<HTMLDivElement>(null);
+  React.useEffect(() => {
+    if (full) {
+      panel.current?.requestFullscreen?.().catch(() => {});
+      const onChange = () => !document.fullscreenElement && store().setFullscreen(false);
+      document.addEventListener("fullscreenchange", onChange);
+      return () => {
+        document.removeEventListener("fullscreenchange", onChange);
+        if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+      };
+    }
+  }, [full]);
 
   // Fit the project frame into the viewport.
   React.useLayoutEffect(() => {
@@ -89,8 +106,8 @@ export function Viewer() {
   const empty = useStore((s) => s.project.tracks.every((t) => t.clips.length === 0));
 
   return (
-    <div className="panel flex h-full min-w-0 flex-col">
-      <div ref={viewport} className="relative min-h-0 flex-1 overflow-hidden bg-bg-deep">
+    <div ref={panel} className={cn("panel flex h-full min-w-0 flex-col", full && "fixed inset-0 z-[70] rounded-none border-0 bg-black")}>
+      <div ref={viewport} className={cn("relative min-h-0 flex-1 overflow-hidden", full ? "bg-black" : "bg-bg-deep")}>
         <div className="absolute" style={{ left: (box.w - fw) / 2, top: (box.h - fh) / 2, width: fw, height: fh }}>
           <div className="absolute inset-0 overflow-hidden shadow-[0_0_0_1px_rgba(255,255,255,0.06),0_30px_80px_-30px_rgba(0,0,0,0.9)]">
             <div
@@ -322,6 +339,15 @@ function TransformOverlay({ k }: { k: number }) {
   );
 }
 
+function FullscreenButton() {
+  const full = useStore((s) => s.fullscreen);
+  return (
+    <IconButton title={full ? "Leave full screen (Esc)" : "Full-screen preview (F)"} active={full} onClick={() => store().setFullscreen(!full)}>
+      {full ? <Minimize className="h-4 w-4" /> : <Maximize className="h-4 w-4" />}
+    </IconButton>
+  );
+}
+
 function Transport({
   volume,
   muted,
@@ -376,6 +402,7 @@ function Transport({
         <IconButton title="Safe areas & thirds" active={guides} onClick={onGuides}>
           <Grid2x2 className="h-4 w-4" />
         </IconButton>
+        <FullscreenButton />
         <IconButton title="Save frame as PNG" onClick={() => exportFrame()}>
           <Camera className="h-4 w-4" />
         </IconButton>

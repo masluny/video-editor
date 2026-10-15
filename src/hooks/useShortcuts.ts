@@ -75,6 +75,7 @@ export function useShortcuts() {
         case "Delete":
           return handled(() => s.deleteClips(s.selection, e.shiftKey));
         case "Escape":
+          if (s.fullscreen) return handled(() => s.setFullscreen(false));
           return handled(() => (s.select([]), s.setTool("select")));
         case "Enter":
           if (s.selectedMedia) return handled(() => s.placeMedia(s.selectedMedia!, { mode: e.shiftKey ? "insert" : "overwrite" }));
@@ -96,6 +97,8 @@ export function useShortcuts() {
       switch (k) {
         case "s":
           return handled(() => s.splitAtPlayhead());
+        case "f":
+          return handled(() => s.setFullscreen(!s.fullscreen));
         case "t":
           return handled(() => {
             if (!s.dissolveAtPlayhead()) s.toast("No cut without a transition within a second of the playhead.", "info");

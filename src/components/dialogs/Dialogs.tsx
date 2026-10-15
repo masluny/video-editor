@@ -50,6 +50,7 @@ const SHORTCUTS: [string, [string, string][]][] = [
       ["← / →", "Step one frame (Shift: one second)"],
       ["↑ / ↓", "Previous / next edit point"],
       ["Home / End", "Go to start / end"],
+      ["F", "Full-screen preview (Esc to leave)"],
     ],
   ],
   [

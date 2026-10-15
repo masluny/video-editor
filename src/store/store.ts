@@ -89,6 +89,8 @@ interface State {
   snapping: boolean;
   /** Pixels per second. */
   zoom: number;
+  /** The viewer fills the window (F). */
+  fullscreen: boolean;
   range: { in: number; out: number } | null;
 
   runtime: Record<Id, MediaRuntime>;
@@ -185,6 +187,7 @@ interface State {
   setTool: (t: Tool) => void;
   toggleSnapping: () => void;
   setZoom: (z: number) => void;
+  setFullscreen: (on: boolean) => void;
 
   toast: (message: string, kind?: Toast["kind"], action?: Toast["action"]) => void;
   dismissToast: (id: Id) => void;
@@ -270,6 +273,7 @@ export const useStore = create<State>()((set, get) => ({
   tool: "select",
   snapping: true,
   zoom: 60,
+  fullscreen: false,
   range: null,
 
   runtime: {},
@@ -929,6 +933,7 @@ export const useStore = create<State>()((set, get) => ({
   setTool: (t) => set({ tool: t }),
   toggleSnapping: () => set((s) => ({ snapping: !s.snapping })),
   setZoom: (z) => set({ zoom: Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z)) }),
+  setFullscreen: (on) => set({ fullscreen: on }),
 
   toast: (message, kind = "info", action) => {
     const t: Toast = { id: uid(), kind, message, action };
