@@ -4,18 +4,36 @@ import { store } from "../../store/store";
 import { commands, searchCommands, type Command } from "../../lib/commands";
 import { keyLabel } from "../../lib/format";
 import { cn } from "../../lib/cn";
+import { useLocal } from "../../lib/useLocal";
 
 /** ⌘K: type what you want to do, run it with Enter. */
 export function CommandPalette() {
   const [query, setQuery] = React.useState("");
   const [active, setActive] = React.useState(0);
+  const [recent, setRecent] = useLocal<string[]>("revind.recentCommands", []);
   const all = React.useMemo(commands, []);
-  const list = React.useMemo(() => searchCommands(all, query), [all, query]);
+  // With nothing typed, the actions used lately come first.
+  const list = React.useMemo(() => {
+    let found = searchCommands(all, query);
+    if (!query.trim()) {
+      const rank = (c: Command) => (recent.includes(c.id) ? recent.indexOf(c.id) : recent.length);
+      found = [...found].sort((a, b) => rank(a) - rank(b));
+    }
+    // What can run right now comes before what can't, so Enter does something.
+    return [...found.filter((c) => !c.blocked?.()), ...found.filter((c) => c.blocked?.())];
+  }, [all, query, recent]);
   const listRef = React.useRef<HTMLDivElement>(null);
   const close = () => store().openDialog(null);
 
   const run = (c: Command | undefined) => {
     if (!c || c.blocked?.()) return;
+    const next = [c.id, ...recent.filter((id) => id !== c.id)].slice(0, 5);
+    setRecent(next);
+    try {
+      localStorage.setItem("revind.recentCommands", JSON.stringify(next)); // now: the palette closes before effects run
+    } catch {
+      /* storage unavailable */
+    }
     close(); // first, so commands that open a dialog can
     c.run();
   };
