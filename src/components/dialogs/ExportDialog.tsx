@@ -1,14 +1,15 @@
 import * as React from "react";
-import { CheckCircle2, Clapperboard, FolderOpen, Loader2, Play, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Clapperboard, FolderOpen, Loader2, Play, XCircle } from "lucide-react";
 import { Modal } from "../ui/Modal";
 import { Button, FieldRow, Segmented, Select, Switch } from "../ui/controls";
 import { store, useStore } from "../../store/store";
 import { backend, openPath, pickSavePath, revealInFolder, type ExportCodec, type ExportFormat, type ExportQuality, type ExportSettings } from "../../lib/backend";
-import { projectDuration } from "../../lib/timeline";
+import { projectDuration, videoEnd } from "../../lib/timeline";
 import { basename, duration as fmtDuration, fpsLabel, seconds } from "../../lib/format";
 import { useLocal } from "../../lib/useLocal";
 import { cancelExport, firstLine, startExport, useExportJob } from "./exportJob";
 import { FPS_OPTIONS } from "../../lib/defaults";
+import { cn } from "../../lib/cn";
 
 const FORMATS: { value: ExportFormat; label: string; group: "video" | "audio" | "image" }[] = [
   { value: "mp4", label: "MP4 video", group: "video" },
@@ -35,6 +36,28 @@ const DEFAULT_PREFS: Prefs = { format: "mp4", codec: "h264", quality: "high", he
 
 const even = (n: number) => Math.max(2, Math.round(n / 2) * 2);
 
+/** One-click settings for where the video is going (the platforms' recommended uploads). */
+const PRESETS: { id: string; label: string; hint: string; prefs: (pw: number, ph: number, fps: number) => Partial<Prefs> }[] = [
+  {
+    id: "youtube",
+    label: "YouTube",
+    hint: "Full resolution, H.264 at the best quality, loudness evened out to YouTube's −14 LUFS",
+    prefs: () => ({ format: "mp4", codec: "h264", quality: "high", height: 0, fps: 0, normalizeAudio: true }),
+  },
+  {
+    id: "social",
+    label: "TikTok · Reels · Shorts",
+    hint: "1080 px on the short side, up to 60 fps, H.264, loudness evened out",
+    prefs: (pw, ph, fps) => ({ format: "mp4", codec: "h264", quality: "high", height: Math.min(pw, ph) > 1080 ? even((ph * 1080) / Math.min(pw, ph)) : 0, fps: fps > 60 ? 60 : 0, normalizeAudio: true }),
+  },
+  {
+    id: "small",
+    label: "Small file",
+    hint: "720 px on the short side at a smaller size, for messages and email",
+    prefs: (pw, ph) => ({ format: "mp4", codec: "h264", quality: "low", height: Math.min(pw, ph) > 720 ? even((ph * 720) / Math.min(pw, ph)) : 0, fps: 0, normalizeAudio: false }),
+  },
+];
+
 export function ExportDialog() {
   const close = () => store().openDialog(null);
   const job = useExportJob((s) => s.job);
@@ -59,7 +82,11 @@ function Setup() {
   const [prefs, setPrefs] = useLocal<Prefs>("revind.exportPrefs", DEFAULT_PREFS);
   const p = { ...DEFAULT_PREFS, ...prefs };
   const set = (patch: Partial<Prefs>) => setPrefs({ ...p, ...patch });
-  const [useRange, setUseRange] = React.useState(!!range);
+  const total = projectDuration(project);
+  // Where the picture ends: audio running past it would export as black with sound.
+  const picture = videoEnd(project.tracks);
+  const overhang = picture > 0 && total - picture > 0.5 ? total - picture : 0;
+  const [mode, setMode] = React.useState<"all" | "picture" | "range">(range ? "range" : overhang ? "picture" : "all");
   const [hwAvailable, setHwAvailable] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
 
@@ -76,14 +103,20 @@ function Setup() {
   const isAudio = fmt.group === "audio";
   const canCodec = p.format === "mp4" || p.format === "mov";
   const codec = canCodec ? (p.format === "mp4" && p.codec === "prores" ? "h264" : p.codec) : "h264";
-  const total = projectDuration(project);
-  const span = useRange && range ? range.out - range.in : total;
+  const used = mode === "range" && !range ? "all" : mode === "picture" && (!overhang || isAudio) ? "all" : mode;
+  const span = used === "range" ? range!.out - range!.in : used === "picture" ? picture : total;
 
-  const heights = [0, 2160, 1440, 1080, 720, 480, 360].filter((h) => h === 0 || h < Math.max(pw, ph) * 2);
+  const heights = [...new Set([0, 2160, 1440, 1080, 720, 480, 360, p.height])].filter((h) => h === 0 || h === p.height || h < Math.max(pw, ph) * 2).sort((a, b) => (a === 0 ? -1 : b === 0 ? 1 : b - a));
   const outH = p.height > 0 ? p.height : ph;
   const outW = p.height > 0 ? even((pw * p.height) / ph) : pw;
   const gifH = p.format === "gif" && p.height === 0 ? Math.min(ph, 480) : outH;
   const gifW = p.format === "gif" && p.height === 0 ? even((pw * gifH) / ph) : outW;
+
+  const trimAudio = () => {
+    const ids = project.tracks.filter((t) => t.kind === "audio").flatMap((t) => t.clips.map((c) => c.id));
+    store().matchVideoLength(ids, 1);
+    setMode("all");
+  };
 
   const go = async () => {
     const ext = p.format;
@@ -102,13 +135,35 @@ function Setup() {
       normalizeAudio: p.normalizeAudio,
     };
     setBusy(true);
-    await startExport(output, settings, useRange && range ? [range.in, range.out] : null);
+    await startExport(output, settings, used === "range" ? [range!.in, range!.out] : used === "picture" ? [0, picture] : null);
     setBusy(false);
   };
+
+  const preset = PRESETS.find((x) => {
+    const want = x.prefs(pw, ph, pfps);
+    return (Object.keys(want) as (keyof Prefs)[]).every((k) => p[k] === want[k]);
+  });
 
   return (
     <div className="space-y-4">
       <div className="space-y-1.5">
+        <FieldRow label="Made for">
+          <div className="flex flex-1 flex-wrap gap-1">
+            {PRESETS.map((x) => (
+              <button
+                key={x.id}
+                title={x.hint}
+                onClick={() => set(x.prefs(pw, ph, pfps))}
+                className={cn(
+                  "h-7 rounded-md border px-2.5 text-xs font-medium transition-colors",
+                  preset?.id === x.id ? "border-accent bg-accent/15 text-accent-ink" : "border-line text-ink-muted hover:border-line-strong hover:text-ink",
+                )}
+              >
+                {x.label}
+              </button>
+            ))}
+          </div>
+        </FieldRow>
         <FieldRow label="Format">
           <Select className="flex-1" value={p.format} options={FORMATS.map((f) => ({ value: f.value, label: f.label }))} onChange={(format) => set({ format })} />
         </FieldRow>
@@ -176,15 +231,28 @@ function Setup() {
         <FieldRow label="Range">
           <Segmented
             className="flex-1"
-            value={useRange && range ? "range" : "all"}
-            onChange={(v) => setUseRange(v === "range")}
+            value={used}
+            onChange={setMode}
             options={[
               { value: "all", label: `Whole timeline · ${fmtDuration(total)}` },
+              ...(overhang && !isAudio ? [{ value: "picture" as const, label: `Picture · ${fmtDuration(picture)}`, title: "Stop where the last video clip or title ends" }] : []),
               ...(range ? [{ value: "range" as const, label: `In → Out · ${fmtDuration(range.out - range.in)}` }] : []),
             ]}
           />
         </FieldRow>
-        {!range && <p className="pl-[88px] text-2xs text-ink-dim">Tip: set an in/out range with I and O to export just a part.</p>}
+        {overhang > 0 && !isAudio && used === "all" && (
+          <div className="ml-[88px] flex items-start gap-2 rounded-md border border-warning/30 bg-warning/10 px-2.5 py-2 text-2xs leading-relaxed text-ink-muted">
+            <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0 text-warning" />
+            <span className="flex-1">
+              The audio runs {seconds(overhang)} past the picture, so the video ends on black.{" "}
+              <button className="font-semibold text-accent-ink hover:text-white" onClick={trimAudio}>
+                Trim audio to the picture
+              </button>
+            </span>
+          </div>
+        )}
+        {used === "picture" && <p className="pl-[88px] text-2xs text-ink-dim">Audio after {fmtDuration(picture)} is left out.</p>}
+        {!range && used !== "picture" && !overhang && <p className="pl-[88px] text-2xs text-ink-dim">Tip: set an in/out range with I and O to export just a part.</p>}
       </div>
 
       <div className="flex items-center justify-between rounded-lg border border-line bg-bg px-3 py-2.5">

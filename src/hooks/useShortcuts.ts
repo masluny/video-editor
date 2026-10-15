@@ -1,7 +1,7 @@
 import * as React from "react";
 import { store } from "../store/store";
 import { nextEditPoint, prevEditPoint, projectDuration, snapToFrame } from "../lib/timeline";
-import { importViaDialog, newProject, openProject, saveProject } from "../lib/actions";
+import { importViaDialog, newProject, openProject, pasteLook, saveProject } from "../lib/actions";
 
 function typing(e: KeyboardEvent) {
   const t = e.target as HTMLElement | null;
@@ -27,6 +27,7 @@ export function useShortcuts() {
         if (k === "n") return run(() => newProject());
         if (k === "i") return run(() => importViaDialog());
         if (k === "e") return run(() => s.openDialog({ kind: "export" }));
+        if (k === "k") return run(() => s.openDialog({ kind: "commands" }));
       }
       if (s.dialog || typing(e)) return;
 
@@ -41,6 +42,8 @@ export function useShortcuts() {
         if (k === "y") return handled(() => s.redo());
         if (k === "c") return handled(() => s.copy());
         if (k === "x") return handled(() => s.cut());
+        // ⌥⌘V (by key position: ⌥ changes the character on macOS).
+        if (e.altKey && e.code === "KeyV") return handled(() => pasteLook(s.selection));
         if (k === "v") return handled(() => s.paste());
         if (k === "d") return handled(() => s.duplicateClips(s.selection));
         if (k === "a") return handled(() => s.selectAll());
@@ -50,6 +53,15 @@ export function useShortcuts() {
         return;
       }
       if (e.altKey && (k === "x" || e.code === "KeyX")) return handled(() => s.setRange(null));
+      if (e.altKey && e.code === "KeyF")
+        return handled(() => {
+          if (!s.freezeFrame()) s.toast("Put the playhead over a video clip to freeze its frame.", "info");
+        });
+      if (e.altKey && s.selection.length && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+        const frames = (e.key === "ArrowLeft" ? -1 : 1) * (e.shiftKey ? 10 : 1);
+        return handled(() => s.nudgeClips(s.selection, frames));
+      }
+      const range = (fn: () => void) => handled(() => (s.range ? fn() : s.toast("Set a range first: I marks the in point, O the out point.", "info")));
 
       switch (e.key) {
         case " ":
@@ -70,12 +82,17 @@ export function useShortcuts() {
         case "Delete":
           return handled(() => s.deleteClips(s.selection, e.shiftKey));
         case "Escape":
+          if (s.fullscreen) return handled(() => s.setFullscreen(false));
           return handled(() => (s.select([]), s.setTool("select")));
         case "Enter":
           if (s.selectedMedia) return handled(() => s.placeMedia(s.selectedMedia!, { mode: e.shiftKey ? "insert" : "overwrite" }));
           return;
         case "?":
           return handled(() => s.openDialog({ kind: "shortcuts" }));
+        case ";":
+          return range(() => s.liftRange());
+        case "'":
+          return range(() => s.extractRange());
         case "+":
         case "=":
           return handled(() => s.setZoom(s.zoom * 1.4));
@@ -87,6 +104,16 @@ export function useShortcuts() {
       switch (k) {
         case "s":
           return handled(() => s.splitAtPlayhead());
+        case "f":
+          return handled(() => s.setFullscreen(!s.fullscreen));
+        case "t":
+          return handled(() => {
+            if (!s.dissolveAtPlayhead()) s.toast("No cut without a transition within a second of the playhead.", "info");
+          });
+        case "q":
+          return handled(() => s.rippleTrimToPlayhead("head"));
+        case "w":
+          return handled(() => s.rippleTrimToPlayhead("tail"));
         case "b":
           return handled(() => s.setTool("blade"));
         case "v":
@@ -95,6 +122,10 @@ export function useShortcuts() {
           return handled(() => s.setTool("select"));
         case "n":
           return handled(() => s.toggleSnapping());
+        case "p": {
+          const on = !s.rippleMain;
+          return handled(() => (s.toggleRippleMain(), s.toast(on ? "Magnetic main track on: trims and deletes on V1 close up." : "Magnetic main track off: trims and deletes leave gaps.", "info")));
+        }
         case "m":
           return handled(() => s.addMarker());
         case "i":

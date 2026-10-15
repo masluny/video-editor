@@ -5,6 +5,9 @@ import type { Clip, ColorAdjust, Crop, Marker, MediaAsset, MediaKind, Project, T
 import { defaultColor, defaultCrop, defaultTitleStyle, defaultTransform, newProject, newTrack } from "./defaults";
 import { uid } from "./uid";
 import { basename } from "./format";
+import type { Motion, MotionPreset } from "./motion";
+import type { VolumePoint } from "./envelope";
+import type { Key, KeyProp, Keyframes } from "./keyframes";
 
 type Json = Record<string, any>;
 
@@ -59,6 +62,46 @@ function transform(t: Json | undefined): Transform {
     flipH: bool(t.flipH),
     flipV: bool(t.flipV),
   };
+}
+
+function motion(m: Json | undefined): Motion | undefined {
+  if (!m || typeof m !== "object" || !m.from || !m.to) return undefined;
+  const point = (p: Json) => ({ scale: num(p.scale, 1, 0.05, 20), x: num(p.x, 0), y: num(p.y, 0) });
+  const presets: MotionPreset[] = ["zoom-in", "zoom-out", "pan-left", "pan-right", "pan-up", "pan-down", "pop-in", "rise-in", "slide-in", "wipe-in"];
+  return {
+    preset: presets.includes(m.preset) ? m.preset : undefined,
+    from: point(m.from),
+    to: point(m.to),
+    duration: num(m.duration, 0, 0, 3600) || undefined,
+    easeOut: m.easeOut === true || undefined,
+    reveal: m.reveal === true || undefined,
+  };
+}
+
+function volumePoints(v: Json | undefined): VolumePoint[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  const pts = v
+    .filter((p: Json) => p && Number.isFinite(p.t))
+    .map((p: Json) => ({ t: p.t as number, gain: num(p.gain, 1, 0, 4) }))
+    .sort((a: VolumePoint, b: VolumePoint) => a.t - b.t);
+  return pts.length ? pts : undefined;
+}
+
+const KEY_RANGE: Record<KeyProp, [number, number]> = { x: [-1e5, 1e5], y: [-1e5, 1e5], scale: [0.01, 20], rotation: [-3600, 3600], opacity: [0, 1] };
+
+function keyframes(v: Json | undefined): Keyframes | undefined {
+  if (!v || typeof v !== "object") return undefined;
+  const out: Keyframes = {};
+  for (const p of Object.keys(KEY_RANGE) as KeyProp[]) {
+    if (!Array.isArray(v[p])) continue;
+    const [lo, hi] = KEY_RANGE[p];
+    const keys = v[p]
+      .filter((k: Json) => k && Number.isFinite(k.t) && Number.isFinite(k.v))
+      .map((k: Json) => ({ t: k.t as number, v: num(k.v, 0, lo, hi) }))
+      .sort((a: Key, b: Key) => a.t - b.t);
+    if (keys.length) out[p] = keys;
+  }
+  return Object.keys(out).length ? out : undefined;
 }
 
 function crop(c: Json | undefined): Crop {
@@ -129,8 +172,18 @@ function clip(c: Json, mediaIds: Set<string>): Clip | null {
     color: colorAdjust(c.color),
     fadeIn: num(c.fadeIn, 0, 0),
     fadeOut: num(c.fadeOut, 0, 0),
+    transitionIn: num(c.transitionIn, 0, 0, 10) || undefined,
+    transitionStyle: ["push", "slide", "zoom"].includes(c.transitionStyle) ? c.transitionStyle : undefined,
+    motion: motion(c.motion),
+    volumePoints: volumePoints(c.volumePoints),
+    keyframes: keyframes(c.keyframes),
+    keyEase: c.keyEase === true || undefined,
+    backdrop: c.backdrop === "blur" ? "blur" : undefined,
+    corners: num(c.corners, 0, 0, 0.5) || undefined,
+    freeze: c.freeze === true || undefined,
     title: type === "title" ? titleStyle(c.title) : undefined,
     label: typeof c.label === "string" && c.label ? c.label : undefined,
+    link: typeof c.link === "string" && c.link ? c.link : undefined,
   };
 }
 

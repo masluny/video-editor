@@ -4,14 +4,21 @@ import {
   AlignLeft,
   AlignRight,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  Diamond,
   Film,
   FlipHorizontal2,
   FlipVertical2,
   Image as ImageIcon,
+  ArrowRightToLine,
+  AudioLines,
   Italic,
   Music,
+  Repeat,
   RotateCcw,
   SlidersHorizontal,
+  Sparkles,
   Type,
   Unlink,
   Wand2,
@@ -19,15 +26,21 @@ import {
 import type { Clip, ColorAdjust, MediaAsset, TitleStyle, Track } from "../../lib/types";
 import type { Draft } from "immer";
 import { commitSoon, findClip, store, useStore } from "../../store/store";
-import { clipDuration, clipEnd, EPS, isUnbounded, MIN_CLIP, speedOf } from "../../lib/timeline";
+import { clipDuration, clipEnd, EPS, isUnbounded, MIN_CLIP, speedOf, videoEnd } from "../../lib/timeline";
 import { defaultColor, defaultCrop, defaultTransform, TITLE_FONTS } from "../../lib/defaults";
 import { NumberField, SliderField } from "../ui/NumberField";
 import { Button, ColorInput, FieldRow, IconButton, Segmented, Select, Switch } from "../ui/controls";
 import { ProjectSettingsForm } from "./ProjectSettingsForm";
+import { openMenu } from "../ui/Menu";
 import { bytes, duration as fmtDuration, fpsLabel, seconds, timecode } from "../../lib/format";
 import { projectDuration } from "../../lib/timeline";
+import { clipBefore, DEFAULT_DISSOLVE, dissolveInto, TRANSITION_STYLES } from "../../lib/transitions";
+import { DEFAULT_MOTION_AMOUNT, ENTRANCE_PRESETS, isEntrance, MOTION_PRESETS, motionAmount, motionPreset, type MotionPreset } from "../../lib/motion";
 import { cn } from "../../lib/cn";
+import { cornerLayout, cornerOf, fitBox, squareCrop, type Corner } from "../../lib/visual";
+import { autoColorClips, cleanUpVoice, cutToBeat, duckUnderVoice, evenOutVolume } from "../../lib/actions";
 import { useLocal } from "../../lib/useLocal";
+import { GROUP_PROPS, hasKeyAt, isAnimated, keyClock, keyTimes, keyTolerance, posed, type KeyGroup, type KeyProp } from "../../lib/keyframes";
 
 export function Inspector() {
   const selection = useStore((s) => s.selection);
@@ -77,6 +90,43 @@ function ResetButton({ onClick, title = "Reset" }: { onClick: () => void; title?
     <IconButton size="xs" title={title} onClick={onClick}>
       <RotateCcw className="h-3 w-3" />
     </IconButton>
+  );
+}
+
+/**
+ * The keyframe diamond for a property: hollow when it doesn't change over time; once it
+ * does, filled on a key and with arrows to the previous / next key.
+ */
+function KeyButton({ clip, group, label }: { clip: Clip; group: KeyGroup; label: string }) {
+  const playhead = useStore((s) => (clip.keyframes ? s.playhead : 0));
+  const fps = useStore((s) => s.project.settings.fps);
+  const animated = isAnimated(clip, group);
+  const local = Math.max(0, Math.min(clipDuration(clip), playhead - clip.start));
+  const here = animated && GROUP_PROPS[group].some((p) => hasKeyAt(clip.keyframes?.[p], keyClock(clip, local), keyTolerance(clip, fps)));
+  const times = animated ? keyTimes(clip, group).map((l) => clip.start + l) : [];
+  const prev = [...times].reverse().find((t) => t < playhead - 1e-4);
+  const next = times.find((t) => t > playhead + 1e-4);
+  const nav = "flex h-5 w-3 items-center justify-center text-ink-dim enabled:hover:text-ink disabled:opacity-30";
+  return (
+    <div className="flex shrink-0 items-center" onContextMenu={(e) => animated && openMenu(e, [{ label: `Stop animating ${label.toLowerCase()}`, onSelect: () => store().clearKeyframes(clip.id, group) }])}>
+      {animated && (
+        <button className={nav} disabled={prev === undefined} title="Previous keyframe" onClick={() => prev !== undefined && store().seek(prev)}>
+          <ChevronLeft className="h-3 w-3" />
+        </button>
+      )}
+      <button
+        className={cn("flex h-5 w-5 items-center justify-center rounded transition-colors", animated ? "text-accent-ink hover:text-white" : "text-ink-faint hover:text-ink")}
+        title={!animated ? `Animate ${label.toLowerCase()}: add a keyframe at the playhead` : here ? "Remove this keyframe" : "Add a keyframe at the playhead"}
+        onClick={() => store().toggleKeyframe(clip.id, group)}
+      >
+        <Diamond className={cn("h-3 w-3", here && "fill-current")} />
+      </button>
+      {animated && (
+        <button className={nav} disabled={next === undefined} title="Next keyframe" onClick={() => next !== undefined && store().seek(next)}>
+          <ChevronRight className="h-3 w-3" />
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -169,6 +219,42 @@ function MultiInspector({ ids }: { ids: string[] }) {
     <>
       <div className="px-3 py-3 text-sm text-ink">{clips.length} clips selected</div>
       <Section id="multi" title="Shared">
+        <FieldRow label="Fit">
+          <Segmented
+            className="flex-1"
+            value={first.transform.fit}
+            onChange={(fit) => store().fitClips(fit, ids)}
+            options={[
+              { value: "contain", label: "Fit", title: "Show the whole picture (letterbox)" },
+              { value: "cover", label: "Fill", title: "Fill the frame (crop overflow)" },
+              { value: "stretch", label: "Stretch", title: "Stretch to the frame" },
+            ]}
+          />
+        </FieldRow>
+        <FieldRow label="Bars">
+          <Segmented
+            className="flex-1"
+            value={first.backdrop ?? "none"}
+            onChange={(b) => store().setBackdrop(b === "blur" ? "blur" : undefined, ids)}
+            options={[
+              { value: "none", label: "Colour", title: "The project background colour" },
+              { value: "blur", label: "Blur", title: "A blurred, enlarged copy of each clip" },
+            ]}
+          />
+        </FieldRow>
+        <FieldRow label="Cut to beat" hint="Re-cut these clips so every cut lands on a beat marker (finds the music's beat first if there are none)">
+          <div className="flex flex-1 items-center gap-1">
+            <button className={chip(false)} title="Keep as many beats as fit in each clip" onClick={() => void cutToBeat(ids)}>
+              Fit
+            </button>
+            {[1, 2, 4].map((n) => (
+              <button key={n} className={chip(false)} title={`Every clip lasts exactly ${n} beat${n > 1 ? "s" : ""}`} onClick={() => void cutToBeat(ids, n)}>
+                {n}
+              </button>
+            ))}
+            <span className="pl-0.5 text-2xs text-ink-dim">beats each</span>
+          </div>
+        </FieldRow>
         <SliderField label="Opacity" value={first.opacity} min={0} max={1} step={0.01} displayScale={100} suffix="%" defaultValue={1} onChange={(v, o) => upd((c) => void (c.opacity = v), o.live)} onCommit={commit} />
         <SliderField label="Volume" value={first.volume} min={0} max={2} step={0.01} displayScale={100} suffix="%" defaultValue={1} onChange={(v, o) => upd((c) => void (c.volume = v), o.live)} onCommit={commit} />
         <SliderField label="Fade in" value={first.fadeIn} min={0} max={10} sliderMax={3} step={0.05} suffix="s" defaultValue={0} onChange={(v, o) => upd((c) => void (c.fadeIn = Math.min(v, clipDuration(c as Clip) - c.fadeOut)), o.live)} onCommit={commit} />
@@ -176,6 +262,12 @@ function MultiInspector({ ids }: { ids: string[] }) {
         <div className="flex gap-2 pt-1">
           <Button size="sm" onClick={() => upd((c) => void (c.muted = !first.muted), false)}>
             {first.muted ? "Unmute all" : "Mute all"}
+          </Button>
+          <Button size="sm" onClick={() => evenOutVolume(ids)} title="Set each clip's volume so they sound equally loud">
+            <AudioLines className="h-3.5 w-3.5" /> Even out volume
+          </Button>
+          <Button size="sm" onClick={() => void autoColorClips(ids)} title="Correct exposure and colour of each clip from its own picture. To make clips look alike, right-click the one to match and choose Match colour.">
+            <Wand2 className="h-3.5 w-3.5" /> Auto colour
           </Button>
           <Button size="sm" variant="danger" onClick={() => store().deleteClips(ids, false)}>
             Delete
@@ -194,7 +286,7 @@ function ClipInspector({ clip, track, media }: { clip: Clip; track: Track; media
   const locked = track.locked;
   const isTitle = clip.type === "title";
   const visual = track.kind === "video" && (isTitle || (!!media && media.hasVideo));
-  const hasAudio = !isTitle && !!media?.hasAudio && media.kind !== "image";
+  const hasAudio = !isTitle && !clip.freeze && !!media?.hasAudio && media.kind !== "image";
   const upd = (fn: (c: Draft<Clip>) => void, live = false) => store().updateClip(id, fn, { live });
   const num = (get: (c: Clip) => number, set: (c: Draft<Clip>, v: number) => void) => ({
     value: get(clip),
@@ -203,6 +295,14 @@ function ClipInspector({ clip, track, media }: { clip: Clip; track: Track; media
   });
   const Icon = isTitle ? Type : track.kind === "audio" ? Music : media?.kind === "image" ? ImageIcon : Film;
   const dur = clipDuration(clip);
+  // Keyed properties show (and edit) their value at the playhead.
+  const playhead = useStore((s) => (clip.keyframes ? s.playhead : 0));
+  const pose = posed(clip, Math.max(0, Math.min(dur, playhead - clip.start)));
+  const commit = () => store().commit();
+  const poseField = (p: KeyProp, also: Partial<Record<KeyProp, number>> = {}) => ({
+    onChange: (v: number, o: { live: boolean }) => store().setPose(id, { ...also, [p]: v }, o),
+    onCommit: commit,
+  });
 
   return (
     <div className={cn(locked && "pointer-events-none opacity-60")}>
@@ -257,7 +357,17 @@ function ClipInspector({ clip, track, media }: { clip: Clip; track: Track; media
         <Section
           id="transform"
           title="Transform"
-          actions={<ResetButton title="Reset transform" onClick={() => upd((c) => void (c.transform = defaultTransform()))} />}
+          actions={
+            <ResetButton
+              title="Reset transform"
+              onClick={() =>
+                upd((c) => {
+                  c.transform = defaultTransform();
+                  if (c.keyframes) c.keyframes = c.keyframes.opacity ? { opacity: c.keyframes.opacity } : undefined;
+                })
+              }
+            />
+          }
         >
           {!isTitle && (
             <FieldRow label="Fit">
@@ -273,12 +383,72 @@ function ClipInspector({ clip, track, media }: { clip: Clip; track: Track; media
               />
             </FieldRow>
           )}
+          {!isTitle && (
+            <FieldRow label="Bars" hint="What shows around a clip that doesn't fill the frame">
+              <Segmented
+                className="flex-1"
+                value={clip.backdrop ?? "none"}
+                onChange={(b) => store().setBackdrop(b === "blur" ? "blur" : undefined, [id])}
+                options={[
+                  { value: "none", label: "Colour", title: "The project background colour" },
+                  { value: "blur", label: "Blur", title: "A blurred, enlarged copy of the clip" },
+                ]}
+              />
+            </FieldRow>
+          )}
+          {!isTitle && media && (
+            <FieldRow label="Place" hint="Picture-in-picture corners, or back to full frame">
+              <div className="flex flex-1 gap-1">
+                {(
+                  [
+                    ["top-left", "↖"],
+                    ["top-right", "↗"],
+                    ["bottom-left", "↙"],
+                    ["bottom-right", "↘"],
+                  ] as [Corner, string][]
+                ).map(([corner, arrow]) => (
+                  <button
+                    key={corner}
+                    className={chip(false)}
+                    title={`Small, ${corner.replace("-", " ")}`}
+                    onClick={() => {
+                      const { width: W, height: H } = store().project.settings;
+                      const l = cornerLayout(corner, media.width || W, media.height || H, W, H, 0.35, clip.crop);
+                      upd((c) => void (c.transform.fit = "contain"), true);
+                      store().setPose(id, { scale: l.scale, x: l.x, y: l.y });
+                      commit();
+                    }}
+                  >
+                    {arrow}
+                  </button>
+                ))}
+                <button className={chip(false)} title="Full frame" onClick={() => store().setPose(id, { scale: 1, x: 0, y: 0 })}>
+                  Full
+                </button>
+              </div>
+            </FieldRow>
+          )}
           <FieldRow label="Position">
-            <NumberField label="X" {...num((c) => c.transform.x, (c, v) => void (c.transform.x = v))} suffix="px" className="flex-1" />
-            <NumberField label="Y" {...num((c) => c.transform.y, (c, v) => void (c.transform.y = v))} suffix="px" className="flex-1" />
+            {/* Position keys x and y together, so each edit keys both. */}
+            <NumberField label="X" value={pose.transform.x} {...poseField("x", { y: pose.transform.y })} suffix="px" className="min-w-0 flex-1" />
+            <NumberField label="Y" value={pose.transform.y} {...poseField("y", { x: pose.transform.x })} suffix="px" className="min-w-0 flex-1" />
+            <KeyButton clip={clip} group="position" label="Position" />
           </FieldRow>
-          <SliderField label="Scale" {...num((c) => c.transform.scale, (c, v) => void (c.transform.scale = v))} min={0.05} max={10} sliderMin={0.1} sliderMax={3} step={0.01} displayScale={100} suffix="%" defaultValue={1} />
-          <SliderField label="Rotation" {...num((c) => c.transform.rotation, (c, v) => void (c.transform.rotation = v))} min={-3600} max={3600} sliderMin={-180} sliderMax={180} step={1} suffix="°" defaultValue={0} />
+          <SliderField label="Scale" value={pose.transform.scale} {...poseField("scale")} min={0.05} max={10} sliderMin={0.1} sliderMax={3} step={0.01} displayScale={100} suffix="%" defaultValue={1} trailing={<KeyButton clip={clip} group="scale" label="Scale" />} />
+          <SliderField label="Rotation" value={pose.transform.rotation} {...poseField("rotation")} min={-3600} max={3600} sliderMin={-180} sliderMax={180} step={1} suffix="°" defaultValue={0} trailing={<KeyButton clip={clip} group="rotation" label="Rotation" />} />
+          {clip.keyframes && (
+            <FieldRow label="Keyframes" hint="How keyframed values move between keys">
+              <Segmented
+                className="flex-1"
+                value={clip.keyEase ? "smooth" : "linear"}
+                onChange={(v) => upd((c) => void (c.keyEase = v === "smooth" || undefined))}
+                options={[
+                  { value: "linear", label: "Linear", title: "Constant speed between keys" },
+                  { value: "smooth", label: "Smooth", title: "Ease in and out of every key" },
+                ]}
+              />
+            </FieldRow>
+          )}
           <FieldRow label="Flip">
             <IconButton title="Flip horizontally" active={clip.transform.flipH} onClick={() => upd((c) => void (c.transform.flipH = !c.transform.flipH))}>
               <FlipHorizontal2 className="h-4 w-4" />
@@ -290,8 +460,24 @@ function ClipInspector({ clip, track, media }: { clip: Clip; track: Track; media
         </Section>
       )}
 
+      {visual && <MotionSection clip={clip} />}
+
       {visual && !isTitle && (
-        <Section id="crop" title="Crop" actions={<ResetButton title="Reset crop" onClick={() => upd((c) => void (c.crop = defaultCrop()))} />}>
+        <Section
+          id="crop"
+          title="Crop & corners"
+          actions={
+            <ResetButton
+              title="Reset crop and corners"
+              onClick={() =>
+                upd((c) => {
+                  c.crop = defaultCrop();
+                  c.corners = undefined;
+                })
+              }
+            />
+          }
+        >
           <div className="grid grid-cols-2 gap-1.5">
             {(["top", "bottom", "left", "right"] as const).map((side) => (
               <NumberField
@@ -307,15 +493,59 @@ function ClipInspector({ clip, track, media }: { clip: Clip; track: Track; media
               />
             ))}
           </div>
+          <SliderField
+            label="Corners"
+            value={clip.corners ?? 0}
+            min={0}
+            max={0.5}
+            step={0.01}
+            displayScale={200}
+            suffix="%"
+            defaultValue={0}
+            onChange={(v, o) => upd((c) => void (c.corners = v > 0.001 ? v : undefined), o.live)}
+            onCommit={() => store().commit()}
+          />
+          <FieldRow label="Shape">
+            <div className="flex flex-1 gap-1">
+              <button
+                className={chip(false)}
+                title="Crop to a centred square and round it off: a circle (for a face-cam)"
+                onClick={() => {
+                  const { width: W, height: H } = store().project.settings;
+                  const [mw, mh] = [media?.width || W, media?.height || H];
+                  const box = fitBox(mw, mh, W, H, clip.transform.fit);
+                  const crop = squareCrop(box.width, box.height);
+                  // A picture-in-picture stays tucked into its corner.
+                  const corner = cornerOf(clip.transform.x, clip.transform.y);
+                  const place = corner && clip.transform.fit === "contain" && !clip.keyframes ? cornerLayout(corner, mw, mh, W, H, clip.transform.scale, crop) : null;
+                  upd((c) => {
+                    c.crop = crop;
+                    c.corners = 0.5;
+                    if (place) Object.assign(c.transform, { x: place.x, y: place.y });
+                  });
+                }}
+              >
+                Circle
+              </button>
+              <button className={chip(false)} title="Rounded corners" onClick={() => upd((c) => void (c.corners = 0.08))}>
+                Rounded
+              </button>
+              <button className={chip(false)} title="Square corners, no crop" onClick={() => upd((c) => void ((c.crop = defaultCrop()), (c.corners = undefined)))}>
+                Full
+              </button>
+            </div>
+          </FieldRow>
         </Section>
       )}
 
       {visual && (
         <Section id="compositing" title="Opacity & fades">
-          <SliderField label="Opacity" {...num((c) => c.opacity, (c, v) => void (c.opacity = v))} min={0} max={1} step={0.01} displayScale={100} suffix="%" defaultValue={1} />
+          <SliderField label="Opacity" value={pose.opacity} {...poseField("opacity")} min={0} max={1} step={0.01} displayScale={100} suffix="%" defaultValue={1} trailing={<KeyButton clip={clip} group="opacity" label="Opacity" />} />
           <FadeFields clip={clip} upd={upd} />
         </Section>
       )}
+
+      {clipBefore(track, clip) && <TransitionSection clip={clip} track={track} />}
 
       {visual && !isTitle && <ColorSection clip={clip} upd={upd} />}
 
@@ -326,6 +556,30 @@ function ClipInspector({ clip, track, media }: { clip: Clip; track: Track; media
           <FieldRow label="Mute">
             <Switch checked={clip.muted} onChange={(m) => upd((c) => void (c.muted = m))} />
           </FieldRow>
+          <FieldRow label="Clean up" hint="A processed copy of this clip's sound: less background noise and hum, an even speaking level">
+            {media?.name.endsWith("(clean voice)") ? (
+              <span className="text-xs text-ink-dim">Voice cleaned up</span>
+            ) : (
+              <Button size="sm" onClick={() => void cleanUpVoice(id)}>
+                <Sparkles className="h-3.5 w-3.5" /> Clean up voice
+              </Button>
+            )}
+          </FieldRow>
+          {track.kind === "audio" && <VideoLength clip={clip} />}
+          {track.kind === "audio" && (
+            <FieldRow label="Voice">
+              <div className="flex flex-1 flex-wrap items-center gap-1.5">
+                <Button size="sm" onClick={() => duckUnderVoice([id])} title="Lower this clip wherever other tracks have speech or sound">
+                  <AudioLines className="h-3.5 w-3.5" /> {clip.volumePoints ? "Duck again" : "Duck under voice"}
+                </Button>
+                {clip.volumePoints && (
+                  <Button size="sm" variant="ghost" onClick={() => store().clearVolumeChanges([id])}>
+                    Clear
+                  </Button>
+                )}
+              </div>
+            </FieldRow>
+          )}
           <div className="flex flex-wrap gap-2 pt-1">
             <Button size="sm" onClick={() => store().openDialog({ kind: "silence", clipId: id })} title="Find pauses in the audio and cut them out">
               <Wand2 className="h-3.5 w-3.5 text-accent-ink" /> Remove silences…
@@ -339,10 +593,125 @@ function ClipInspector({ clip, track, media }: { clip: Clip; track: Track; media
         </Section>
       )}
 
-      {!isTitle && media && media.kind !== "image" && <SpeedSection clip={clip} />}
+      {!isTitle && !clip.freeze && media && media.kind !== "image" && <SpeedSection clip={clip} />}
 
       {media && <MediaInfo media={media} />}
     </div>
+  );
+}
+
+/** Fit a music clip to the picture: trim it to end with the video, or loop it until it does. */
+function VideoLength({ clip }: { clip: Clip }) {
+  const end = useStore((s) => videoEnd(s.project.tracks));
+  if (end <= 0 || clip.start >= end - MIN_CLIP) return null;
+  const over = clipEnd(clip) - end;
+  return (
+    <FieldRow label="Video">
+      <div className="flex flex-1 flex-wrap items-center gap-1.5">
+        {over > EPS ? (
+          <Button size="sm" onClick={() => store().matchVideoLength([clip.id])} title={`Trim to end with the video (${seconds(over)} shorter)`}>
+            <ArrowRightToLine className="h-3.5 w-3.5" /> Match length
+          </Button>
+        ) : over < -MIN_CLIP ? (
+          <Button size="sm" onClick={() => store().loopToVideoLength(clip.id)} title={`Repeat until the video ends (${seconds(-over)} to fill)`}>
+            <Repeat className="h-3.5 w-3.5" /> Loop to fill
+          </Button>
+        ) : (
+          <span className="text-xs text-success">Ends with the video</span>
+        )}
+      </div>
+    </FieldRow>
+  );
+}
+
+const chip = (active: boolean) =>
+  cn(
+    "h-6 rounded-md border px-2 text-2xs font-medium transition-colors",
+    active ? "border-accent bg-accent/15 text-accent-ink" : "border-line text-ink-muted hover:border-line-strong hover:text-ink",
+  );
+
+/** Ken Burns glides over the whole clip, or a quick entrance (titles especially). */
+function MotionSection({ clip }: { clip: Clip }) {
+  const settings = useStore((s) => s.project.settings);
+  const m = clip.motion;
+  const amount = m && !isEntrance(m.preset) ? motionAmount(m) : DEFAULT_MOTION_AMOUNT;
+  const set = (preset: MotionPreset | null, a = amount, live = false) =>
+    store().updateClip(clip.id, (c) => void (preset ? (c.motion = motionPreset(preset, a, settings.width, settings.height)) : delete c.motion), { live });
+  return (
+    <Section id="motion" title="Motion" actions={m && <ResetButton title="Remove motion" onClick={() => set(null)} />}>
+      <div className="flex flex-wrap gap-1">
+        <button className={chip(!m)} onClick={() => set(null)}>
+          None
+        </button>
+        {MOTION_PRESETS.map((p) => (
+          <button key={p.id} className={chip(m?.preset === p.id)} onClick={() => set(p.id)}>
+            {p.label}
+          </button>
+        ))}
+      </div>
+      <div className="flex flex-wrap items-center gap-1">
+        <span className="mr-1 text-2xs text-ink-dim">Entrance</span>
+        {ENTRANCE_PRESETS.map((p) => (
+          <button key={p.id} className={chip(m?.preset === p.id)} onClick={() => set(p.id)} title="A quick move in at the start of the clip">
+            {p.label}
+          </button>
+        ))}
+      </div>
+      {m?.preset && !isEntrance(m.preset) && (
+        <SliderField label="Amount" value={amount} min={0.02} max={1} sliderMax={0.5} step={0.01} displayScale={100} suffix="%" defaultValue={DEFAULT_MOTION_AMOUNT} onChange={(v, o) => set(m.preset!, v, o.live)} onCommit={() => store().commit()} />
+      )}
+      {m && !isEntrance(m.preset) && <p className="text-2xs text-ink-dim">Moves across the whole clip. Use Fill so pans never reveal the background.</p>}
+    </Section>
+  );
+}
+
+function TransitionSection({ clip, track }: { clip: Clip; track: Track }) {
+  const d = dissolveInto(track, clip);
+  const len = clip.transitionIn ?? 0;
+  return (
+    <Section id="transition" title="Transition in">
+      {track.kind === "video" && (
+        <FieldRow label="Style">
+          <div className="flex flex-1 flex-wrap gap-1">
+            {TRANSITION_STYLES.map((t) => (
+              <button
+                key={t.id}
+                title={t.hint}
+                className={chip(len > 0 && (clip.transitionStyle ?? "dissolve") === t.id)}
+                onClick={() =>
+                  store().updateClip(clip.id, (c) => {
+                    c.transitionStyle = t.id === "dissolve" ? undefined : t.id;
+                    if (!(c.transitionIn && c.transitionIn > 0)) c.transitionIn = t.id === "dissolve" ? DEFAULT_DISSOLVE : 0.5;
+                  })
+                }
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+        </FieldRow>
+      )}
+      <SliderField
+        label={track.kind === "audio" ? "Crossfade" : "Length"}
+        value={len}
+        min={0}
+        max={10}
+        sliderMax={3}
+        step={0.05}
+        suffix="s"
+        defaultValue={0}
+        onChange={(v, o) => store().updateClip(clip.id, (c) => void (v > 0 ? (c.transitionIn = v) : delete c.transitionIn), { live: o.live })}
+        onCommit={() => store().commit()}
+      />
+      {d && Math.abs(2 * d.half - len) > 0.01 && (
+        <p className="text-2xs text-ink-dim">Limited to {seconds(2 * d.half)}: a dissolve takes at most half of each clip.</p>
+      )}
+      {len === 0 && (
+        <Button size="sm" variant="ghost" onClick={() => store().dipToBlack(clip.id, 1)} title="Fade the previous clip out and this one in">
+          {track.kind === "audio" ? "Fade out and in" : "Dip to black"}
+        </Button>
+      )}
+    </Section>
   );
 }
 
@@ -408,18 +777,14 @@ function ColorSection({ clip, upd }: { clip: Clip; upd: (fn: (c: Draft<Clip>) =>
   return (
     <Section id="color" title="Colour" actions={<ResetButton title="Reset colour" onClick={() => upd((x) => void (x.color = defaultColor()))} />}>
       <div className="mb-1 flex flex-wrap gap-1">
+        <button className={cn(chip(false), "flex items-center gap-1")} title="Correct exposure and colour from the clip's own picture" onClick={() => void autoColorClips([clip.id])}>
+          <Wand2 className="h-3 w-3" /> Auto
+        </button>
         {LOOKS.map((l) => {
           const target = { ...defaultColor(), ...l.color };
           const active = (Object.keys(target) as (keyof ColorAdjust)[]).every((k) => Math.abs(target[k] - c[k]) < 1e-3);
           return (
-            <button
-              key={l.name}
-              onClick={() => upd((x) => void (x.color = { ...target }))}
-              className={cn(
-                "h-6 rounded-md border px-2 text-2xs font-medium transition-colors",
-                active ? "border-accent bg-accent/15 text-accent-ink" : "border-line text-ink-muted hover:border-line-strong hover:text-ink",
-              )}
-            >
+            <button key={l.name} onClick={() => upd((x) => void (x.color = { ...target }))} className={chip(active)}>
               {l.name}
             </button>
           );
@@ -439,6 +804,12 @@ const SPEEDS = [0.25, 0.5, 0.75, 1, 1.5, 2, 4];
 
 function SpeedSection({ clip }: { clip: Clip }) {
   const sp = speedOf(clip);
+  // Empty time after the clip, up to the next clip on its track.
+  const gap = useStore((s) => {
+    const hit = findClip(s.project, clip.id);
+    const next = hit ? Math.min(Infinity, ...hit.track.clips.filter((c) => c.start >= clipEnd(clip) - EPS).map((c) => c.start)) : Infinity;
+    return Number.isFinite(next) ? next - clipEnd(clip) : 0;
+  });
   const setSpeed = (v: number, commit: boolean) => {
     const next = Math.max(0.1, Math.min(16, v));
     store().updateClip(clip.id, (c) => {
@@ -467,6 +838,23 @@ function SpeedSection({ clip }: { clip: Clip }) {
         ))}
       </div>
       <SliderField label="Custom" value={sp} min={0.1} max={16} sliderMin={0.1} sliderMax={4} step={0.05} suffix="×" defaultValue={1} onChange={(v) => setSpeed(v, false)} onCommit={() => store().settleClips([clip.id])} />
+      <FieldRow label="Length" hint="Type a length and the speed follows">
+        <NumberField
+          value={clipDuration(clip)}
+          min={(clip.out - clip.in) / 16}
+          max={(clip.out - clip.in) / 0.1}
+          step={0.1}
+          suffix="s"
+          className="min-w-0 flex-1"
+          onChange={(v) => setSpeed((clip.out - clip.in) / Math.max(MIN_CLIP, v), false)}
+          onCommit={() => store().settleClips([clip.id])}
+        />
+        {gap > 0.01 && (
+          <Button size="sm" title={`Change the speed so the clip runs up to the next one (${seconds(clipDuration(clip) + gap)})`} onClick={() => setSpeed((clip.out - clip.in) / (clipDuration(clip) + gap), true)}>
+            Fill gap
+          </Button>
+        )}
+      </FieldRow>
       <p className="text-2xs text-ink-dim">Audio keeps its pitch. Speeding up shortens the clip; slowing down may cover the next clip.</p>
     </Section>
   );

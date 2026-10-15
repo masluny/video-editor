@@ -1,5 +1,9 @@
 // Project document (v2). Mirrored in src-tauri/src/model.rs — keep in sync.
 
+import type { Motion } from "./motion";
+import type { VolumePoint } from "./envelope";
+import type { Keyframes } from "./keyframes";
+
 export type Id = string;
 
 export type MediaKind = "video" | "audio" | "image";
@@ -148,7 +152,27 @@ export interface Clip {
   color: ColorAdjust;
   fadeIn: number;
   fadeOut: number;
+  /** Cross-dissolve (seconds) from the clip that ends where this one starts. */
+  transitionIn?: number;
+  /** How that transition looks (missing: a dissolve). */
+  transitionStyle?: "push" | "slide" | "zoom";
+  /** Zoom / pan across the clip (see lib/motion.ts). */
+  motion?: Motion;
+  /** Position / scale / rotation / opacity over time, on the clip clock (see lib/keyframes.ts). */
+  keyframes?: Keyframes;
+  /** Keyframed values ease in and out of each key instead of moving linearly. */
+  keyEase?: boolean;
+  /** Volume envelope in source time, e.g. from ducking (see lib/envelope.ts). */
+  volumePoints?: VolumePoint[];
+  /** Rounded corners: radius as a fraction of the visible picture's short side (0.5 with a square crop = a circle). */
+  corners?: number;
+  /** Fill the frame behind the clip with a blurred, enlarged copy of it (bars → blur). */
+  backdrop?: "blur";
+  /** A frame hold: shows the source frame at `in` for the whole clip, silently. */
+  freeze?: boolean;
   title?: TitleStyle;
+  /** Detached audio: the video clip it came from, which it moves with to stay in sync. */
+  link?: Id;
   /** Optional user label shown on the clip. */
   label?: string;
 }

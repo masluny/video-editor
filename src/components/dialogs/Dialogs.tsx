@@ -1,14 +1,16 @@
 import * as React from "react";
-import { Keyboard, Pause, Play, Settings2, Film } from "lucide-react";
+import { AlertTriangle, Check, Copy, Keyboard, ListOrdered, Pause, Play, Settings2, Film } from "lucide-react";
 import { Modal } from "../ui/Modal";
 import { Button, Kbd } from "../ui/controls";
 import { store, useStore } from "../../store/store";
 import { ExportDialog } from "./ExportDialog";
+import { CommandPalette } from "./CommandPalette";
 import { SilenceDialog } from "./SilenceDialog";
 import { ProjectSettingsForm } from "../Inspector/ProjectSettingsForm";
 import { fileUrl } from "../../lib/backend";
-import { timecode, seconds } from "../../lib/format";
-import { MIN_CLIP } from "../../lib/timeline";
+import { keyLabel, timecode, seconds } from "../../lib/format";
+import { MIN_CLIP, projectDuration } from "../../lib/timeline";
+import { youtubeChapters } from "../../lib/chapters";
 import type { Id } from "../../lib/types";
 
 export function DialogHost() {
@@ -25,6 +27,10 @@ export function DialogHost() {
       return <SilenceDialog clipId={dialog.clipId} />;
     case "source":
       return <SourceDialog mediaId={dialog.mediaId} />;
+    case "commands":
+      return <CommandPalette />;
+    case "chapters":
+      return <ChaptersDialog />;
   }
 }
 
@@ -50,20 +56,29 @@ const SHORTCUTS: [string, [string, string][]][] = [
       ["← / →", "Step one frame (Shift: one second)"],
       ["↑ / ↓", "Previous / next edit point"],
       ["Home / End", "Go to start / end"],
+      ["F", "Full-screen preview (Esc to leave)"],
     ],
   ],
   [
     "Editing",
     [
       ["S  or  ⌘B", "Split at playhead"],
+      ["Q / W", "Trim clip start / end to playhead (ripple)"],
+      ["⌘-drag edge", "Ripple trim (on V1: plain trim when magnetic)"],
+      ["⌥-drag cut", "Roll the cut between two clips"],
+      ["⌥← / ⌥→", "Nudge selection one frame (Shift: ten)"],
+      ["T", "Cross dissolve at the nearest cut"],
+      ["⌥F", "Freeze the frame under the playhead (2s)"],
       ["⌫ / Del", "Delete selection"],
       ["⇧⌫", "Ripple delete (close the gap)"],
       ["⌘C / ⌘X / ⌘V", "Copy / cut / paste at playhead"],
+      ["⌥⌘V", "Paste the copied clip's look (colour, framing, motion)"],
       ["⌘D", "Duplicate"],
       ["⌘A", "Select all"],
       ["⏎ / ⇧⏎", "Add / insert selected library item at playhead"],
       ["Alt-drag", "Duplicate while dragging"],
       ["Shift-drag", "Move without snapping"],
+      ["⌘-drag on V1", "Place freely (overwrite) instead of reordering"],
     ],
   ],
   [
@@ -71,12 +86,14 @@ const SHORTCUTS: [string, [string, string][]][] = [
     [
       ["V / B", "Select / blade tool"],
       ["N", "Toggle snapping"],
+      ["P", "Magnetic main track (trims & deletes on V1 close gaps)"],
       ["M", "Add marker"],
       ["I / O", "Set range in / out"],
       ["⌥X", "Clear range"],
+      ["; / '", "Lift / extract the range"],
       ["+ / −", "Zoom timeline"],
       ["⇧Z", "Zoom to fit"],
-      ["⌘ + scroll", "Zoom around the pointer"],
+      ["⌘-scroll", "Zoom around the pointer"],
     ],
   ],
   [
@@ -87,19 +104,19 @@ const SHORTCUTS: [string, [string, string][]][] = [
       ["⌘I", "Import media"],
       ["⌘E", "Export"],
       ["⌘Z / ⇧⌘Z", "Undo / redo"],
+      ["⌘K", "Search every action"],
       ["?", "This list"],
     ],
   ],
 ];
 
 function ShortcutsDialog() {
-  const isMac = /Mac/i.test(navigator.platform);
-  const fix = (k: string) => (isMac ? k : k.replace(/⌘/g, "Ctrl+").replace(/⌥/g, "Alt+").replace(/⇧/g, "Shift+"));
+  const fix = keyLabel;
   return (
     <Modal title="Keyboard shortcuts" icon={<Keyboard className="h-4 w-4" />} onClose={close} width={720}>
-      <div className="grid grid-cols-2 gap-x-8 gap-y-5">
+      <div className="columns-2 gap-x-8">
         {SHORTCUTS.map(([group, items]) => (
-          <div key={group}>
+          <div key={group} className="mb-5 break-inside-avoid">
             <h3 className="panel-title mb-2">{group}</h3>
             <div className="space-y-1">
               {items.map(([k, d]) => (
@@ -112,6 +129,47 @@ function ShortcutsDialog() {
           </div>
         ))}
       </div>
+    </Modal>
+  );
+}
+
+/** Markers as YouTube chapters, ready to paste into the video's description. */
+function ChaptersDialog() {
+  const project = useStore((s) => s.project);
+  const { text, problems } = youtubeChapters(project.markers, projectDuration(project));
+  const [copied, setCopied] = React.useState(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+    } catch {
+      document.querySelector<HTMLTextAreaElement>("[data-chapters]")?.select();
+    }
+  };
+  return (
+    <Modal
+      title="YouTube chapters"
+      subtitle="Paste into the video's description; YouTube turns them into chapters"
+      icon={<ListOrdered className="h-4 w-4" />}
+      onClose={close}
+      width={460}
+      footer={
+        <>
+          <span className="mr-auto text-2xs text-ink-dim">Named markers become chapters. Double-click a marker to name it.</span>
+          <Button variant="primary" onClick={copy}>
+            {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+            {copied ? "Copied" : "Copy"}
+          </Button>
+        </>
+      }
+    >
+      <textarea data-chapters readOnly value={text} rows={Math.min(12, text.split("\n").length + 1)} className="field h-auto w-full resize-none p-2 font-mono text-sm leading-relaxed" />
+      {problems.map((p) => (
+        <p key={p} className="mt-2 flex items-start gap-2 text-xs leading-relaxed text-ink-muted">
+          <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0 text-warning" />
+          {p}
+        </p>
+      ))}
     </Modal>
   );
 }

@@ -3,6 +3,7 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { MediaAsset, Project } from "./types";
+import type { PictureStats } from "./autocolor";
 
 export const isTauri = (): boolean => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
@@ -77,6 +78,12 @@ export const backend = {
   proxy: (path: string, duration: number, hasVideo: boolean) => call<string>("media_proxy", { path, duration, hasVideo }),
   detectSilence: (path: string, from: number, to: number, noiseDb: number, minSilence: number) =>
     call<[number, number][]>("detect_silence", { path, from, to, noiseDb, minSilence }),
+  /** Shot changes (source seconds) inside `from..to`; `threshold` 1..100, ~10 for plain cuts. */
+  detectScenes: (path: string, from: number, to: number, threshold: number) => call<number[]>("detect_scenes", { path, from, to, threshold }),
+  /** A cleaned-up copy (noise, rumble, level) of `from..to` of a file's sound; returns its path. */
+  cleanVoice: (path: string, from: number, to: number) => call<string>("clean_voice", { path, from, to }),
+  /** Tonal range and colourfulness of a stretch of picture (see lib/autocolor.ts). */
+  pictureStats: (path: string, from: number, to: number) => call<PictureStats>("picture_stats", { path, from, to }),
   exportStart: (request: {
     project: Project;
     output: string;

@@ -149,10 +149,12 @@ export interface SliderFieldProps extends Omit<NumberFieldProps, "label" | "clas
   defaultValue?: number;
   sliderMin?: number;
   sliderMax?: number;
+  /** Shown after the number (e.g. a keyframe button). */
+  trailing?: React.ReactNode;
 }
 
 /** Labelled slider + numeric field; double-click the label to reset. */
-export function SliderField({ label, defaultValue, sliderMin, sliderMax, ...num }: SliderFieldProps) {
+export function SliderField({ label, defaultValue, sliderMin, sliderMax, trailing, ...num }: SliderFieldProps) {
   const lo = sliderMin ?? num.min ?? 0;
   const hi = sliderMax ?? num.max ?? 1;
   const fill = `${Math.max(0, Math.min(1, (num.value - lo) / (hi - lo || 1))) * 100}%`;
@@ -185,6 +187,7 @@ export function SliderField({ label, defaultValue, sliderMin, sliderMax, ...num 
         onKeyUp={() => num.onCommit?.()}
       />
       <NumberField {...num} className="w-[68px] shrink-0" />
+      {trailing}
     </div>
   );
 }

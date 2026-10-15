@@ -1,9 +1,12 @@
 import * as React from "react";
-import { ChevronDown, CircleHelp, Clapperboard, Loader2, Redo2, Undo2 } from "lucide-react";
+import { ChevronDown, CircleHelp, Clapperboard, Clock, Loader2, Redo2, Search, Undo2 } from "lucide-react";
 import { isDirty, store, useStore } from "../store/store";
 import { Button, IconButton } from "./ui/controls";
-import { openMenu } from "./ui/Menu";
+import { openMenu, type MenuItem } from "./ui/Menu";
+import { recentProjects } from "../lib/recent";
+import { basename, stripExtension } from "../lib/format";
 import { importViaDialog, newProject, openProject, saveProject } from "../lib/actions";
+import { commands } from "../lib/commands";
 import { useExportJob } from "./dialogs/exportJob";
 import { isTauri } from "../lib/backend";
 import { cn } from "../lib/cn";
@@ -25,14 +28,41 @@ export function TopBar() {
     openMenu({ clientX: r.left, clientY: r.bottom + 4 }, [
       { label: "New project", shortcut: `${cmd}N`, onSelect: () => newProject() },
       { label: "Open…", shortcut: `${cmd}O`, onSelect: () => openProject() },
+      ...recentProjects()
+        .filter((p) => p !== store().filePath)
+        .slice(0, 5)
+        .map((p): MenuItem => ({ label: stripExtension(basename(p)), icon: <Clock className="h-3.5 w-3.5" />, onSelect: () => openProject(p) })),
       { separator: true },
       { label: "Save", shortcut: `${cmd}S`, onSelect: () => saveProject() },
-      { label: "Save as…", shortcut: `⇧${cmd}S`, onSelect: () => saveProject(true) },
+      { label: "Save as…", shortcut: isMac ? "⇧⌘S" : "Ctrl+Shift+S", onSelect: () => saveProject(true) },
       { separator: true },
       { label: "Import media…", shortcut: `${cmd}I`, onSelect: () => importViaDialog() },
       { label: "Project settings…", onSelect: () => store().openDialog({ kind: "settings" }) },
       { separator: true },
       { label: "Export…", shortcut: `${cmd}E`, onSelect: () => store().openDialog({ kind: "export" }) },
+    ]);
+  };
+
+  // The everyday editing actions; the rest are a search away (⌘K).
+  const editMenu = (e: React.MouseEvent) => {
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const byId = new Map(commands().map((c) => [c.id, c]));
+    const groups = [
+      ["undo", "redo"],
+      ["cut", "copy", "paste", "paste-look", "duplicate", "delete", "ripple-delete", "select-all"],
+      ["split", "trim-start", "trim-end", "freeze", "dissolve", "marker"],
+    ];
+    const items: MenuItem[] = groups.flatMap((ids, i) => [
+      ...(i ? [{ separator: true } as MenuItem] : []),
+      ...ids
+        .map((id) => byId.get(id))
+        .filter((c): c is NonNullable<typeof c> => !!c)
+        .map((c): MenuItem => ({ label: c.label, shortcut: c.shortcut, disabled: !!c.blocked?.(), onSelect: () => c.run() })),
+    ]);
+    openMenu({ clientX: r.left, clientY: r.bottom + 4 }, [
+      ...items,
+      { separator: true },
+      { label: "Search all actions…", icon: <Search className="h-3.5 w-3.5" />, shortcut: "⌘K", onSelect: () => store().openDialog({ kind: "commands" }) },
     ]);
   };
 
@@ -43,6 +73,9 @@ export function TopBar() {
     >
       <Button variant="ghost" size="sm" onClick={fileMenu} className="gap-1">
         File <ChevronDown className="h-3 w-3 text-ink-dim" />
+      </Button>
+      <Button variant="ghost" size="sm" onClick={editMenu} className="gap-1">
+        Edit <ChevronDown className="h-3 w-3 text-ink-dim" />
       </Button>
       <div className="mx-1 h-4 w-px bg-line" />
       <IconButton title={`Undo (${cmd}Z)`} disabled={!canUndo} onClick={() => store().undo()}>
@@ -80,6 +113,15 @@ export function TopBar() {
         )}
       </div>
 
+      <button
+        onClick={() => store().openDialog({ kind: "commands" })}
+        className="mr-1 flex h-7 items-center gap-2 rounded-md border border-line px-2 text-xs text-ink-dim transition-colors hover:border-line-strong hover:text-ink"
+        title="Find any action by name"
+      >
+        <Search className="h-3.5 w-3.5" />
+        Search actions
+        <span className="kbd">{cmd}K</span>
+      </button>
       <IconButton title="Keyboard shortcuts (?)" onClick={() => store().openDialog({ kind: "shortcuts" })}>
         <CircleHelp className="h-4 w-4" />
       </IconButton>

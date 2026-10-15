@@ -3,8 +3,11 @@ import {
   Camera,
   ChevronFirst,
   ChevronLast,
+  Clock,
   Grid2x2,
   Loader2,
+  Maximize,
+  Minimize,
   Pause,
   Play,
   SkipBack,
@@ -17,11 +20,13 @@ import { store, useStore, findClip } from "../../store/store";
 import { Engine } from "./engine";
 import { fileUrl } from "../../lib/backend";
 import { clipAt, clipEnd, nextEditPoint, prevEditPoint, projectDuration } from "../../lib/timeline";
-import { timecode } from "../../lib/format";
+import { basename, stripExtension, timecode } from "../../lib/format";
 import { fitBox } from "../../lib/visual";
 import { titleBounds } from "../../lib/title";
+import { isAnimated, posed } from "../../lib/keyframes";
 import { IconButton } from "../ui/controls";
-import { importViaDialog } from "../../lib/actions";
+import { importViaDialog, openProject } from "../../lib/actions";
+import { recentProjects } from "../../lib/recent";
 import { exportFrame } from "../dialogs/ExportDialog";
 import { cn } from "../../lib/cn";
 import type { MediaAsset } from "../../lib/types";
@@ -35,6 +40,21 @@ export function Viewer() {
   const [volume, setVolume] = React.useState(() => Number(localStorage.getItem("revind.volume") ?? 0.9));
   const [muted, setMuted] = React.useState(false);
   const [guides, setGuides] = React.useState(false);
+  const full = useStore((s) => s.fullscreen);
+
+  // Full screen: fill the window, and the screen too where the webview allows it.
+  const panel = React.useRef<HTMLDivElement>(null);
+  React.useEffect(() => {
+    if (full) {
+      panel.current?.requestFullscreen?.().catch(() => {});
+      const onChange = () => !document.fullscreenElement && store().setFullscreen(false);
+      document.addEventListener("fullscreenchange", onChange);
+      return () => {
+        document.removeEventListener("fullscreenchange", onChange);
+        if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+      };
+    }
+  }, [full]);
 
   // Fit the project frame into the viewport.
   React.useLayoutEffect(() => {
@@ -72,7 +92,9 @@ export function Viewer() {
         if (s.playing) engine.play(s.playhead);
         else engine.pause();
       }
-      if (s.seekNonce !== prev.seekNonce) engine.seek(s.playhead);
+      if (s.seekNonce !== prev.seekNonce && s.peek == null) engine.seek(s.playhead);
+      // Trimming shows the frame at the edge being dragged, then goes back to the playhead.
+      if (s.peek !== prev.peek && !s.playing) engine.seek(s.peek ?? s.playhead);
     });
     return () => {
       unsub();
@@ -89,8 +111,8 @@ export function Viewer() {
   const empty = useStore((s) => s.project.tracks.every((t) => t.clips.length === 0));
 
   return (
-    <div className="panel flex h-full min-w-0 flex-col">
-      <div ref={viewport} className="relative min-h-0 flex-1 overflow-hidden bg-bg-deep">
+    <div ref={panel} className={cn("panel flex h-full min-w-0 flex-col", full && "fixed inset-0 z-[70] rounded-none border-0 bg-black")}>
+      <div ref={viewport} className={cn("relative min-h-0 flex-1 overflow-hidden", full ? "bg-black" : "bg-bg-deep")}>
         <div className="absolute" style={{ left: (box.w - fw) / 2, top: (box.h - fh) / 2, width: fw, height: fh }}>
           <div className="absolute inset-0 overflow-hidden shadow-[0_0_0_1px_rgba(255,255,255,0.06),0_30px_80px_-30px_rgba(0,0,0,0.9)]">
             <div
@@ -125,9 +147,72 @@ function EmptyState() {
         >
           Import media…
         </button>
+        <FormatPicker />
+        <RecentList />
         <p className="mt-3 text-2xs text-ink-dim">
           Tip: press <span className="kbd">?</span> for keyboard shortcuts
         </p>
+      </div>
+    </div>
+  );
+}
+
+/** Projects opened or saved lately, one click away. */
+function RecentList() {
+  const recent = React.useMemo(() => recentProjects().slice(0, 4), []);
+  if (!recent.length) return null;
+  return (
+    <div className="mt-4 w-full border-t border-line pt-3 text-left">
+      <p className="mb-1.5 text-center text-2xs text-ink-dim">Recent projects</p>
+      {recent.map((p) => (
+        <button
+          key={p}
+          onClick={() => void openProject(p)}
+          title={p}
+          className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-xs text-ink-muted transition-colors hover:bg-white/[0.06] hover:text-ink"
+        >
+          <Clock className="h-3 w-3 shrink-0 text-ink-dim" />
+          <span className="truncate">{stripExtension(basename(p))}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+const SHAPES = [
+  { label: "16:9", hint: "YouTube, landscape", width: 1920, height: 1080 },
+  { label: "9:16", hint: "TikTok, Reels, Shorts", width: 1080, height: 1920 },
+  { label: "1:1", hint: "Square", width: 1080, height: 1080 },
+  { label: "4:5", hint: "Instagram feed", width: 1080, height: 1350 },
+];
+
+/** Choose the video's shape up front, or let the first clip decide. */
+function FormatPicker() {
+  const chosen = useStore((s) => s.formatChosen);
+  const { width, height } = useStore((s) => s.project.settings);
+  const btn = (active: boolean) =>
+    cn(
+      "flex h-12 w-12 flex-col items-center justify-center gap-1 rounded-md border text-2xs transition-colors",
+      active ? "border-accent bg-accent/15 text-accent-ink" : "border-line text-ink-muted hover:border-line-strong hover:text-ink",
+    );
+  return (
+    <div className="mt-4 w-full border-t border-line pt-3">
+      <p className="mb-2 text-2xs text-ink-dim">Video shape</p>
+      <div className="flex justify-center gap-1.5">
+        <button className={btn(!chosen)} title="Match the first clip you add" onClick={() => store().pickFormat(null)}>
+          <span className="flex h-4 items-center font-semibold">Auto</span>
+        </button>
+        {SHAPES.map((f) => {
+          const k = 14 / Math.max(f.width, f.height);
+          return (
+            <button key={f.label} className={btn(chosen && width === f.width && height === f.height)} title={`${f.width}×${f.height} · ${f.hint}`} onClick={() => store().pickFormat(f)}>
+              <span className="flex h-4 items-center">
+                <span className="rounded-[2px] border border-current" style={{ width: f.width * k, height: f.height * k }} />
+              </span>
+              {f.label}
+            </button>
+          );
+        })}
       </div>
     </div>
   );
@@ -192,13 +277,17 @@ function TransformOverlay({ k }: { k: number }) {
   });
   const settings = useStore((s) => s.project.settings);
   const media = useStore((s) => (target?.mediaId ? s.project.media.find((m) => m.id === target.mediaId) : undefined));
+  const playhead = useStore((s) => (target?.keyframes ? s.playhead : 0));
   const [guide, setGuide] = React.useState<{ x: boolean; y: boolean }>({ x: false, y: false });
   if (!target || k <= 0 || (target.type === "media" && (!media || media.kind === "audio"))) return null;
 
   const W = settings.width;
   const H = settings.height;
-  const tf = target.transform;
+  // Keyed clips show (and drag) their pose at the playhead.
+  const tf = posed(target, playhead - target.start).transform;
+  // Titles move their text block, unless their position is keyed (then they move like clips).
   const isTitle = target.type === "title";
+  const movesText = isTitle && !isAnimated(target, "position");
   const fb = isTitle ? { width: W, height: H } : fitBox(media!.width, media!.height, W, H, tf.fit);
   const tb = isTitle && target.title ? titleBounds(target.title, W, H) : null;
 
@@ -209,14 +298,14 @@ function TransformOverlay({ k }: { k: number }) {
     const id = target.id;
     const sx = e.clientX;
     const sy = e.clientY;
-    const x0 = isTitle ? target.title!.x : tf.x;
-    const y0 = isTitle ? target.title!.y : tf.y;
+    const x0 = movesText ? target.title!.x : tf.x;
+    const y0 = movesText ? target.title!.y : tf.y;
     const el = e.currentTarget as HTMLElement;
     el.setPointerCapture(e.pointerId);
     const move = (ev: PointerEvent) => {
       const dx = (ev.clientX - sx) / k;
       const dy = (ev.clientY - sy) / k;
-      if (isTitle) {
+      if (movesText) {
         const s = tf.scale || 1;
         let nx = x0 + (dx / s / W) * 100;
         let ny = y0 + (dy / s / H) * 100;
@@ -237,10 +326,7 @@ function TransformOverlay({ k }: { k: number }) {
         if (snapX) nx = 0;
         if (snapY) ny = 0;
         setGuide({ x: snapX, y: snapY });
-        store().updateClip(id, (c) => {
-          c.transform.x = Math.round(nx);
-          c.transform.y = Math.round(ny);
-        }, { live: true });
+        store().setPose(id, { x: Math.round(nx), y: Math.round(ny) }, { live: true });
       }
     };
     const up = () => {
@@ -267,7 +353,7 @@ function TransformOverlay({ k }: { k: number }) {
     const move = (ev: PointerEvent) => {
       const d = Math.hypot(ev.clientX - cx, ev.clientY - cy);
       const next = Math.max(0.05, Math.min(10, (s0 * d) / d0));
-      store().updateClip(id, (c) => void (c.transform.scale = Math.round(next * 1000) / 1000), { live: true });
+      store().setPose(id, { scale: Math.round(next * 1000) / 1000 }, { live: true });
     };
     const up = () => {
       el.removeEventListener("pointermove", move);
@@ -322,6 +408,15 @@ function TransformOverlay({ k }: { k: number }) {
   );
 }
 
+function FullscreenButton() {
+  const full = useStore((s) => s.fullscreen);
+  return (
+    <IconButton title={full ? "Leave full screen (Esc)" : "Full-screen preview (F)"} active={full} onClick={() => store().setFullscreen(!full)}>
+      {full ? <Minimize className="h-4 w-4" /> : <Maximize className="h-4 w-4" />}
+    </IconButton>
+  );
+}
+
 function Transport({
   volume,
   muted,
@@ -338,6 +433,7 @@ function Transport({
   onGuides: () => void;
 }) {
   const playhead = useStore((s) => s.playhead);
+  const peek = useStore((s) => s.peek);
   const playing = useStore((s) => s.playing);
   const rate = useStore((s) => s.rate);
   const fps = useStore((s) => s.project.settings.fps);
@@ -347,7 +443,9 @@ function Transport({
   return (
     <div className="flex h-12 shrink-0 items-center gap-3 border-t border-line bg-panel px-3">
       <div className="flex min-w-[180px] items-baseline gap-1.5 font-mono tabular">
-        <span className="text-md text-ink">{timecode(playhead, fps, true)}</span>
+        <span className={cn("text-md", peek != null ? "text-accent-ink" : "text-ink")} title={peek != null ? "The frame at the edge you're trimming" : undefined}>
+          {timecode(peek ?? playhead, fps, true)}
+        </span>
         <span className="text-xs text-ink-dim">/ {timecode(total, fps, true)}</span>
       </div>
       <div className="flex flex-1 items-center justify-center gap-1">
@@ -376,6 +474,7 @@ function Transport({
         <IconButton title="Safe areas & thirds" active={guides} onClick={onGuides}>
           <Grid2x2 className="h-4 w-4" />
         </IconButton>
+        <FullscreenButton />
         <IconButton title="Save frame as PNG" onClick={() => exportFrame()}>
           <Camera className="h-4 w-4" />
         </IconButton>

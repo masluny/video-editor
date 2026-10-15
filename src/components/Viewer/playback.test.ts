@@ -24,6 +24,7 @@ class FakeMedia {
   src = "";
   muted = false;
   readyState = 4;
+  error: { code: number } | null = null;
   playbackRate = 1;
   duration = 60;
   paused = true;
@@ -214,6 +215,21 @@ describe("playback clock", () => {
     expect(b.el.paused).toBe(false);
     expect(rig.tp.time).toBeGreaterThan(t + 0.3);
     expect(Math.abs(b.el.currentTime - mediaTime(b.v.clip, rig.tp.time))).toBeLessThan(0.05);
+    expect(monotonic(rig.times)).toBe(true);
+  });
+
+  it("doesn't wait for media that failed to load, and lets the rest play on", () => {
+    const broken = voice(clip(0, 4));
+    broken.el.readyState = 0;
+    broken.el.error = { code: 4 }; // MEDIA_ERR_SRC_NOT_SUPPORTED
+    const music = voice(clip(0, 4), {}, "audio");
+    const rig = new Rig([broken.v, music.v]);
+    rig.play();
+    rig.run(1000);
+    expect(rig.tp.prerolling).toBe(false);
+    expect(music.el.paused).toBe(false);
+    expect(broken.el.paused).toBe(true); // never told to play
+    expect(rig.tp.time).toBeGreaterThan(0.6); // the music leads; no 2.5 s pre-roll
     expect(monotonic(rig.times)).toBe(true);
   });
 

@@ -170,6 +170,43 @@ pub struct Clip {
     pub color: ColorAdjust,
     pub fade_in: f64,
     pub fade_out: f64,
+    /// Cross-dissolve (seconds) from the clip that ends where this one starts.
+    pub transition_in: f64,
+    /// How that transition looks (None: a dissolve).
+    pub transition_style: Option<TransitionStyle>,
+    /// Zoom / pan across the clip (src/lib/motion.ts).
+    pub motion: Option<Motion>,
+    /// Volume envelope in source time (src/lib/envelope.ts).
+    pub volume_points: Vec<VolumePoint>,
+    /// Position / scale / rotation / opacity over time, on the clip clock (src/lib/keyframes.ts).
+    pub keyframes: Keyframes,
+    /// Keyed values ease in and out of each key (smoothstep) instead of moving linearly.
+    pub key_ease: bool,
+    /// What fills the frame behind the clip.
+    pub backdrop: Option<Backdrop>,
+    /// Rounded corners: radius as a fraction of the visible picture's short side.
+    pub corners: f64,
+    /// Frame hold: the source frame at `in` for the clip's whole length, silent.
+    pub freeze: bool,
+}
+
+/// A moving transition (src/lib/transitions.ts `transitionFx`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TransitionStyle {
+    /// The incoming clip pushes the outgoing one out to the left.
+    Push,
+    /// The incoming clip slides in from the right over the outgoing one.
+    Slide,
+    /// The incoming clip fades in while settling from a close-up.
+    Zoom,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Backdrop {
+    /// A blurred, frame-filling copy of the clip.
+    Blur,
 }
 
 impl Default for Clip {
@@ -190,6 +227,15 @@ impl Default for Clip {
             color: ColorAdjust::default(),
             fade_in: 0.0,
             fade_out: 0.0,
+            transition_in: 0.0,
+            transition_style: None,
+            motion: None,
+            volume_points: vec![],
+            keyframes: Keyframes::default(),
+            key_ease: false,
+            backdrop: None,
+            corners: 0.0,
+            freeze: false,
         }
     }
 }
@@ -216,6 +262,68 @@ pub enum Fit {
     Contain,
     Cover,
     Stretch,
+}
+
+/// A gain at a source (media) time; linear in between, held outside.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VolumePoint {
+    pub t: f64,
+    pub gain: f64,
+}
+
+impl Default for VolumePoint {
+    fn default() -> Self {
+        Self { t: 0.0, gain: 1.0 }
+    }
+}
+
+/// A keyed value on the clip clock (`in + local * speed`); linear in between, held outside.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct Key {
+    pub t: f64,
+    pub v: f64,
+}
+
+/// Keyed properties of a clip; an empty list means the static value applies.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct Keyframes {
+    pub x: Vec<Key>,
+    pub y: Vec<Key>,
+    pub scale: Vec<Key>,
+    pub rotation: Vec<Key>,
+    pub opacity: Vec<Key>,
+}
+
+/// One end of a clip's motion: multiplies its scale and offsets it (project pixels).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MotionPoint {
+    pub scale: f64,
+    pub x: f64,
+    pub y: f64,
+}
+
+impl Default for MotionPoint {
+    fn default() -> Self {
+        Self { scale: 1.0, x: 0.0, y: 0.0 }
+    }
+}
+
+/// Glide from `from` to `to`: over the clip's length, or its first `duration` seconds
+/// (an entrance), linearly or easing out.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Motion {
+    pub from: MotionPoint,
+    pub to: MotionPoint,
+    /// Seconds from the clip's start; 0 = the whole clip.
+    pub duration: f64,
+    pub ease_out: bool,
+    /// Also reveal the clip from left to right over the move (a wipe-on).
+    pub reveal: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

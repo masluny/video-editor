@@ -132,12 +132,12 @@ export interface FormatPreset {
 }
 
 export const FORMAT_PRESETS: FormatPreset[] = [
-  { id: "1080p", name: "Landscape 1080p (16:9)", width: 1920, height: 1080 },
+  { id: "1080p", name: "Landscape 1080p (16:9) · YouTube", width: 1920, height: 1080 },
   { id: "4k", name: "Landscape 4K (16:9)", width: 3840, height: 2160 },
   { id: "720p", name: "Landscape 720p (16:9)", width: 1280, height: 720 },
-  { id: "vertical", name: "Vertical 1080×1920 (9:16)", width: 1080, height: 1920 },
-  { id: "square", name: "Square 1080×1080 (1:1)", width: 1080, height: 1080 },
-  { id: "portrait", name: "Portrait 1080×1350 (4:5)", width: 1080, height: 1350 },
+  { id: "vertical", name: "Vertical 1080×1920 (9:16) · TikTok, Reels, Shorts", width: 1080, height: 1920 },
+  { id: "square", name: "Square 1080×1080 (1:1) · Instagram", width: 1080, height: 1080 },
+  { id: "portrait", name: "Portrait 1080×1350 (4:5) · Instagram feed", width: 1080, height: 1350 },
   { id: "cinema", name: "Cinema 2048×858 (2.39:1)", width: 2048, height: 858 },
 ];
 

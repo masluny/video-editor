@@ -1,12 +1,13 @@
 import * as React from "react";
-import { AlertTriangle, CheckCircle2, Info, X } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Info, Loader2, X } from "lucide-react";
 import { useStore, type Toast } from "../../store/store";
 import { cn } from "../../lib/cn";
 
 export function Toaster() {
   const toasts = useStore((s) => s.toasts);
   return (
-    <div className="pointer-events-none fixed bottom-4 left-1/2 z-[95] flex w-[420px] max-w-[90vw] -translate-x-1/2 flex-col items-center gap-2">
+    // Bottom right: over the empty end of the timeline rather than the clips.
+    <div className="pointer-events-none fixed bottom-4 right-4 z-[95] flex w-[380px] max-w-[calc(100vw-32px)] flex-col items-end gap-2">
       {toasts.map((t) => (
         <ToastView key={t.id} toast={t} />
       ))}
@@ -18,12 +19,12 @@ function ToastView({ toast }: { toast: Toast }) {
   const dismiss = useStore((s) => s.dismissToast);
   const [hover, setHover] = React.useState(false);
   React.useEffect(() => {
-    if (hover) return;
+    if (hover || toast.kind === "busy") return;
     const t = setTimeout(() => dismiss(toast.id), toast.kind === "error" ? 9000 : toast.action ? 7000 : 4000);
     return () => clearTimeout(t);
   }, [toast, dismiss, hover]);
 
-  const Icon = toast.kind === "error" ? AlertTriangle : toast.kind === "success" ? CheckCircle2 : Info;
+  const Icon = toast.kind === "error" ? AlertTriangle : toast.kind === "success" ? CheckCircle2 : toast.kind === "busy" ? Loader2 : Info;
   return (
     <div
       role={toast.kind === "error" ? "alert" : "status"}
@@ -34,8 +35,19 @@ function ToastView({ toast }: { toast: Toast }) {
         toast.kind === "error" ? "border-danger/40" : "border-line-strong",
       )}
     >
-      <Icon className={cn("mt-px h-4 w-4 shrink-0", toast.kind === "error" ? "text-danger" : toast.kind === "success" ? "text-success" : "text-accent-ink")} />
+      <Icon className={cn("mt-px h-4 w-4 shrink-0", toast.kind === "error" ? "text-danger" : toast.kind === "success" ? "text-success" : "text-accent-ink", toast.kind === "busy" && "animate-spin")} />
       <p className="min-w-0 flex-1 whitespace-pre-wrap break-words text-sm leading-[18px] text-ink">{toast.message}</p>
+      {toast.secondary && (
+        <button
+          className="shrink-0 rounded px-1.5 text-sm font-semibold text-accent-ink hover:text-white"
+          onClick={() => {
+            toast.secondary!.run();
+            dismiss(toast.id);
+          }}
+        >
+          {toast.secondary.label}
+        </button>
+      )}
       {toast.action && (
         <button
           className="shrink-0 rounded px-1.5 text-sm font-semibold text-accent-ink hover:text-white"

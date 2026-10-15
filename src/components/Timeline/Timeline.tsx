@@ -1,6 +1,19 @@
 import * as React from "react";
 import {
+  ArrowLeftToLine,
+  ArrowRightToLine,
+  AudioLines,
+  Blend,
   Copy,
+  FoldHorizontal,
+  Repeat,
+  Snowflake,
+  Clapperboard,
+  AlignHorizontalJustifyStart,
+  Music2,
+  Paintbrush,
+  Palette,
+  Sparkles,
   Eye,
   EyeOff,
   Flag,
@@ -19,11 +32,13 @@ import {
   ZoomOut,
   Headphones,
   Unlink,
+  Link2,
   ClipboardPaste,
   Type,
 } from "lucide-react";
 import type { Clip, Id, Track, TrackKind } from "../../lib/types";
-import { findClip, store, useStore, ZOOM_MAX, ZOOM_MIN } from "../../store/store";
+import type { Draft } from "immer";
+import { findClip, mainTrackId, store, useStore, ZOOM_MAX, ZOOM_MIN } from "../../store/store";
 import { useDrag } from "../../store/drag";
 import {
   clipDuration,
@@ -35,6 +50,7 @@ import {
   snapToFrame,
   sourceBounds,
   speedOf,
+  videoEnd,
 } from "../../lib/timeline";
 import { ClipView, type ClipGrab } from "./ClipView";
 import { displayOrder, HEADER_W, RULER_H, snap, trackHeight, type TrackSize } from "./geometry";
@@ -42,14 +58,24 @@ import { dropTarget, payloadKind, payloadLength } from "./drop";
 import { IconButton, Segmented } from "../ui/controls";
 import { openMenu, type MenuItem } from "../ui/Menu";
 import { useLocal } from "../../lib/useLocal";
-import { timecode } from "../../lib/format";
+import { keyLabel, seconds, timecode } from "../../lib/format";
 import { cn } from "../../lib/cn";
 import { MARKER_COLORS } from "../../lib/defaults";
+import { clipAfter, clipBefore, DEFAULT_DISSOLVE, dissolveInto, TRANSITION_STYLES } from "../../lib/transitions";
+import { addBeatMarkers, duckUnderVoice, evenOutVolume, exportCaptions, splitAtShotChanges, cutToBeat, pasteLook, autoColorClips, matchColorTo, cleanUpVoice } from "../../lib/actions";
 
 interface Row {
   track: Track;
   top: number;
   height: number;
+}
+
+/** Live readout next to an edge being dragged; `match` when it sits on the end of the video. */
+interface Hint {
+  time: number;
+  trackId: Id;
+  text: string;
+  match: boolean;
 }
 
 const mod = (e: { metaKey: boolean; ctrlKey: boolean }) => e.metaKey || e.ctrlKey;
@@ -64,6 +90,7 @@ export function Timeline() {
   const scroller = React.useRef<HTMLDivElement>(null);
   const [view, setView] = React.useState({ left: 0, width: 1200 });
   const [guide, setGuide] = React.useState<number | null>(null);
+  const [hint, setHint] = React.useState<Hint | null>(null);
   const [marquee, setMarquee] = React.useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
 
   const rows = React.useMemo(() => {
@@ -168,6 +195,17 @@ export function Timeline() {
     store().setZoom(d > 0 ? (el.clientWidth - HEADER_W - 40) / d : 60);
   }, []);
 
+  // First footage in an empty timeline, or another project opened: show all of it.
+  React.useEffect(
+    () =>
+      useStore.subscribe((s, prev) => {
+        if (s.project === prev.project) return;
+        const d = projectDuration(s.project);
+        if (d > 0 && (s.project.id !== prev.project.id || projectDuration(prev.project) === 0)) requestAnimationFrame(zoomToFit);
+      }),
+    [zoomToFit],
+  );
+
   // --- clip interactions -------------------------------------------------------
   const onClipPointerDown = React.useCallback(
     (e: React.PointerEvent, grab: ClipGrab, clip: Clip, track: Track) => {
@@ -191,7 +229,9 @@ export function Timeline() {
         } else s.splitClipAt(clip.id, t);
         return;
       }
-      if (e.shiftKey || mod(e)) {
+      // Modifier-clicks on a clip's body add to the selection; on its edges they shape the
+      // trim (⌘ ripple, ⌥ roll, Shift no snapping).
+      if ((e.shiftKey || mod(e)) && grab === "move") {
         s.toggleSelect(clip.id);
         return;
       }
@@ -246,10 +286,14 @@ export function Timeline() {
     });
     const grabbed = laneIndex(track.id);
     const minStart = Math.min(...items.map((i) => i.start));
+    // The end of the picture (without the clips being moved) pulls the moving end edge.
+    const magnet = videoEnd(proj.tracks, new Set(ids));
     const sx = e.clientX;
     const sy = e.clientY;
     let moved = false;
     let primary = clip.id;
+    // The project the live preview is rebuilt from on every move (after any Alt-copies).
+    let from = proj;
 
     trackDrag(
       (ev) => {
@@ -263,13 +307,14 @@ export function Timeline() {
             ids = items.map((i) => i.id);
             primary = map.get(primary) ?? primary;
           }
+          from = store().project;
         }
         const zoom = store().zoom;
         let dt = Math.max(-minStart, (ev.clientX - sx) / zoom);
         const g = items.find((i) => i.id === primary)!;
         const exclude = new Set(ids);
         const a = snap(g.start + dt, exclude, { disabled: ev.shiftKey });
-        const b = snap(g.start + g.dur + dt, exclude, { disabled: ev.shiftKey });
+        const b = snap(g.start + g.dur + dt, exclude, { disabled: ev.shiftKey, magnet });
         let shownGuide: number | null = null;
         if (b.guide != null && (a.guide == null || Math.abs(b.time - (g.start + g.dur + dt)) < Math.abs(a.time - (g.start + dt)))) {
           dt = b.time - g.dur - g.start;
@@ -291,11 +336,16 @@ export function Timeline() {
           return dest && !dest.locked;
         });
         if (!ok) shift = 0;
-        store().moveClipsLive(items.map((i) => ({ id: i.id, trackId: lanes[i.kind][i.i + shift].id, start: i.start + dt })));
+        // The magnetic main track reorders instead of overwriting (⌘ to place freely).
+        const magnetic = store().rippleMain && !mod(ev);
+        store().dragLive(from, items.map((i) => ({ id: i.id, trackId: lanes[i.kind][i.i + shift].id, start: i.start + dt })), magnetic);
         setGuide(shownGuide);
+        const onEnd = shownGuide != null && magnet > 0 && Math.abs(shownGuide - magnet) < EPS && Math.abs(g.start + g.dur + dt - magnet) < EPS;
+        setHint(onEnd ? { time: magnet, trackId: lanes[grabbed.kind][grabbed.i + shift].id, text: "Ends with the video", match: true } : null);
       },
       (_ev, cancelled) => {
         setGuide(null);
+        setHint(null);
         if (!moved) {
           store().select([clip.id]);
           return;
@@ -310,51 +360,92 @@ export function Timeline() {
     );
   }
 
+  /**
+   * Drag a clip edge. Plain: trim into empty space, stopping at neighbours. Ripple (the
+   * main track with its magnet on, or ⌘ elsewhere; ⌘ on the main track turns it off):
+   * later clips on the track move with the edge, so no gap opens. ⌥ on a cut between two
+   * clips: roll it, trimming both sides at once.
+   */
   function startTrim(clip: Clip, track: Track, left: boolean) {
     const s0 = store();
     const media = s0.project.media.find((m) => m.id === clip.mediaId);
     const b = sourceBounds(clip, media);
     const sp = speedOf(clip);
     const end = clipEnd(clip);
-    const others = track.clips.filter((c) => c.id !== clip.id);
+    const base = track.clips;
+    const others = base.filter((c) => c.id !== clip.id);
     const prevEnd = Math.max(0, ...others.filter((c) => clipEnd(c) <= clip.start + EPS).map(clipEnd));
     const nextStart = Math.min(Infinity, ...others.filter((c) => c.start >= end - EPS).map((c) => c.start));
+    // The clip across the cut, for a roll.
+    const partner = left ? others.find((c) => Math.abs(clipEnd(c) - clip.start) < EPS) : others.find((c) => Math.abs(c.start - end) < EPS);
+    const isMain = s0.rippleMain && track.id === mainTrackId(s0.project);
+    // Trimming a tail (e.g. music down to the video's length): the end of the picture pulls hardest.
+    const magnet = left ? undefined : videoEnd(s0.project.tracks, new Set([clip.id]));
+    // Fades never outlast the trimmed clip.
+    const fit = (c: Clip): Clip => {
+      const d = clipDuration(c);
+      const fadeIn = Math.min(c.fadeIn, d);
+      return { ...c, fadeIn, fadeOut: Math.min(c.fadeOut, d - fadeIn) };
+    };
+    // Every move restates the track from its state at the start of the drag.
+    const lay = (fn: (c: Clip) => Clip) =>
+      store().apply((p) => void (p.tracks.find((x) => x.id === track.id)!.clips = base.map(fn) as Draft<Clip>[]), { live: true });
     document.body.style.cursor = "ew-resize";
     trackDrag(
       (ev) => {
-        const { time, guide } = snap(timeAt(ev.clientX), new Set([clip.id]), { disabled: ev.shiftKey });
-        if (left) {
-          const lo = Math.max(prevEnd, clip.start - (clip.in - b.min) / sp);
-          const t = Math.min(end - MIN_CLIP, Math.max(lo, time));
-          store().updateClip(
-            clip.id,
-            (c) => {
-              c.start = t;
-              c.in = clip.in + (t - clip.start) * sp;
-              const d = clipDuration(c as Clip);
-              c.fadeIn = Math.min(c.fadeIn, d);
-              c.fadeOut = Math.min(c.fadeOut, d - c.fadeIn);
-            },
-            { live: true },
+        const { time, guide } = snap(timeAt(ev.clientX), new Set([clip.id]), { disabled: ev.shiftKey, magnet });
+        const roll = ev.altKey && partner;
+        const ripple = !roll && isMain !== mod(ev);
+        let edge: number;
+        let label = "";
+        if (roll) {
+          // The outgoing clip's out and the incoming clip's in move together.
+          const [a, z] = left ? [partner, clip] : [clip, partner];
+          const ma = s0.project.media.find((m) => m.id === a.mediaId);
+          const mz = s0.project.media.find((m) => m.id === z.mediaId);
+          const [ba, bz] = [sourceBounds(a, ma), sourceBounds(z, mz)];
+          const lo = Math.max(a.start + MIN_CLIP, z.start - (z.in - bz.min) / speedOf(z));
+          const hi = Math.min(clipEnd(z) - MIN_CLIP, a.start + (ba.max - a.in) / speedOf(a));
+          const t = Math.min(hi, Math.max(lo, time));
+          edge = t;
+          label = "roll · ";
+          lay((c) =>
+            c.id === a.id ? fit({ ...c, out: a.in + (t - a.start) * speedOf(a) }) : c.id === z.id ? fit({ ...c, in: z.in + (t - z.start) * speedOf(z), start: t }) : c,
           );
+        } else if (ripple) {
+          // The clip keeps its start; everything after it on the track follows the change.
+          const t = left
+            ? Math.min(Math.max(time, clip.start - (clip.in - b.min) / sp), end - MIN_CLIP)
+            : Math.max(clip.start + MIN_CLIP, Math.min(clip.start + (b.max - clip.in) / sp, time));
+          const delta = left ? clip.start - t : t - end;
+          edge = left ? clip.start : t;
+          label = "ripple · ";
+          lay((c) => {
+            if (c.id === clip.id) return fit(left ? { ...c, in: clip.in + (t - clip.start) * sp } : { ...c, out: clip.in + (t - clip.start) * sp });
+            return c.start >= end - EPS ? { ...c, start: c.start + delta } : c;
+          });
+        } else if (left) {
+          const t = Math.min(end - MIN_CLIP, Math.max(prevEnd, clip.start - (clip.in - b.min) / sp, time));
+          edge = t;
+          lay((c) => (c.id === clip.id ? fit({ ...c, start: t, in: clip.in + (t - clip.start) * sp }) : c));
         } else {
-          const hi = Math.min(nextStart, clip.start + (b.max - clip.in) / sp);
-          const t = Math.max(clip.start + MIN_CLIP, Math.min(hi, time));
-          store().updateClip(
-            clip.id,
-            (c) => {
-              c.out = clip.in + (t - clip.start) * sp;
-              const d = clipDuration(c as Clip);
-              c.fadeOut = Math.min(c.fadeOut, d);
-              c.fadeIn = Math.min(c.fadeIn, d - c.fadeOut);
-            },
-            { live: true },
-          );
+          const t = Math.max(clip.start + MIN_CLIP, Math.min(nextStart, clip.start + (b.max - clip.in) / sp, time));
+          edge = t;
+          lay((c) => (c.id === clip.id ? fit({ ...c, out: clip.in + (t - clip.start) * sp }) : c));
         }
         setGuide(guide);
+        // Show the frame at the edge: the first frame for a head, the last for a tail.
+        const fps = s0.project.settings.fps || 30;
+        store().setPeek(left ? edge : Math.max(0, edge - 0.5 / fps));
+        const now = findClip(store().project, clip.id)?.clip;
+        const match = !roll && magnet != null && magnet > 0 && Math.abs(edge - magnet) < EPS;
+        const len = seconds(now ? clipDuration(now) : 0);
+        setHint({ time: edge, trackId: track.id, text: match ? `${len} · ends with the video` : label + len, match });
       },
       (_ev, cancelled) => {
         setGuide(null);
+        setHint(null);
+        store().setPeek(null);
         if (cancelled) store().cancelLive();
         else store().commit();
       },
@@ -389,13 +480,61 @@ export function Timeline() {
     const under = s.playhead > clip.start + EPS && s.playhead < clipEnd(clip) - EPS;
     const items: MenuItem[] = [
       { label: "Split at playhead", icon: <Scissors className="h-3.5 w-3.5" />, shortcut: "S", disabled: !under || track.locked, onSelect: () => s.splitClipAt(clip.id, s.playhead) },
+      { label: "Trim start to playhead", icon: <ArrowLeftToLine className="h-3.5 w-3.5" />, shortcut: "Q", disabled: !under || track.locked, onSelect: () => (s.select([clip.id]), s.rippleTrimToPlayhead("head")) },
+      { label: "Trim end to playhead", icon: <ArrowRightToLine className="h-3.5 w-3.5" />, shortcut: "W", disabled: !under || track.locked, onSelect: () => (s.select([clip.id]), s.rippleTrimToPlayhead("tail")) },
+      ...dissolveItems(clip, track),
+      ...(track.kind === "video" && clip.type === "media" && !clip.freeze && media?.kind === "video"
+        ? [
+            { label: "Freeze frame (2s)", icon: <Snowflake className="h-3.5 w-3.5" />, shortcut: "⌥F", disabled: !under || track.locked, onSelect: () => (s.select([clip.id]), s.freezeFrame()) } as MenuItem,
+            { label: "Split at shot changes", icon: <Clapperboard className="h-3.5 w-3.5" />, disabled: track.locked, onSelect: () => void splitAtShotChanges(clip.id) } as MenuItem,
+          ]
+        : []),
+      ...(track.kind === "video" ? [{ label: ids.length > 1 ? `Cut ${ids.length} clips to the beat` : "Cut to the beat", icon: <Music2 className="h-3.5 w-3.5" />, disabled: track.locked, onSelect: () => void cutToBeat(ids) } as MenuItem] : []),
+      ...(() => {
+        // Markers inside the clip (not on its edges): cut it there, e.g. on beat markers.
+        const at = s.project.markers.map((m) => m.time).filter((t) => t > clip.start + MIN_CLIP && t < clipEnd(clip) - MIN_CLIP);
+        return at.length
+          ? [{ label: `Split at ${at.length} marker${at.length > 1 ? "s" : ""}`, icon: <Flag className="h-3.5 w-3.5" />, disabled: track.locked, onSelect: () => void s.splitClipAtTimes(clip.id, at.map((t) => snapToFrame(t, s.project.settings.fps))) } as MenuItem]
+          : [];
+      })(),
+      ...(track.kind === "video" && clip.type === "media" && media?.hasVideo
+        ? [
+            ids.length > 1
+              ? ({ label: `Match colour of the other ${ids.length - 1} to this clip`, icon: <Palette className="h-3.5 w-3.5" />, onSelect: () => void matchColorTo(ids, clip.id) } as MenuItem)
+              : ({ label: "Auto colour", icon: <Wand2 className="h-3.5 w-3.5" />, disabled: track.locked, onSelect: () => void autoColorClips(ids) } as MenuItem),
+          ]
+        : []),
       { label: "Duplicate", icon: <Copy className="h-3.5 w-3.5" />, shortcut: "⌘D", disabled: track.locked, onSelect: () => s.duplicateClips(ids) },
       { label: "Copy", shortcut: "⌘C", onSelect: () => s.copy() },
       { label: "Cut", shortcut: "⌘X", disabled: track.locked, onSelect: () => s.cut() },
+      ...(track.kind === "video" && s.clipboard.length && !s.clipboard.some((e) => e.clip.id === clip.id && ids.length === 1)
+        ? [{ label: `Paste look${ids.length > 1 ? ` onto ${ids.length} clips` : ""}`, icon: <Paintbrush className="h-3.5 w-3.5" />, shortcut: "⌥⌘V", disabled: track.locked, onSelect: () => pasteLook(ids) } as MenuItem]
+        : []),
       { separator: true },
     ];
+    if (clip.link && findClip(s.project, clip.link))
+      items.push(
+        { label: "Select its video", icon: <Link2 className="h-3.5 w-3.5" />, onSelect: () => s.select([clip.link!]) },
+        { label: "Unlink from video", onSelect: () => s.updateClip(clip.id, (c) => void (c.link = undefined)) },
+        { separator: true },
+      );
+    if (track.kind === "audio")
+      items.push(
+        ...videoLengthItems(clip, ids, track),
+        { label: "Duck under voice", icon: <AudioLines className="h-3.5 w-3.5" />, disabled: track.locked, onSelect: () => duckUnderVoice(ids) },
+        ...(clip.volumePoints ? [{ label: "Clear volume changes", disabled: track.locked, onSelect: () => s.clearVolumeChanges(ids) } as MenuItem] : []),
+        { separator: true },
+      );
+    if (hasAudio && ids.length > 1) items.push({ label: `Even out volume (${ids.length} clips)`, icon: <AudioLines className="h-3.5 w-3.5" />, onSelect: () => evenOutVolume(ids) });
+    if (hasAudio)
+      items.push(
+        { label: "Add beat markers", icon: <Flag className="h-3.5 w-3.5" />, onSelect: () => void addBeatMarkers(clip.id) },
+        { label: "Add beat markers (every 4th beat)", onSelect: () => void addBeatMarkers(clip.id, 4) },
+        { separator: true },
+      );
     if (hasAudio) {
       items.push(
+        { label: "Clean up voice", icon: <Sparkles className="h-3.5 w-3.5" />, disabled: track.locked || !!media?.name.endsWith("(clean voice)"), onSelect: () => void cleanUpVoice(clip.id) },
         { label: "Remove silences…", icon: <Wand2 className="h-3.5 w-3.5" />, disabled: track.locked, onSelect: () => s.openDialog({ kind: "silence", clipId: clip.id }) },
         {
           label: clip.muted ? "Unmute clip audio" : "Mute clip audio",
@@ -466,6 +605,9 @@ export function Timeline() {
     openMenu(e, [
       { label: "Paste here", icon: <ClipboardPaste className="h-3.5 w-3.5" />, disabled: !s.clipboard.length, onSelect: () => (s.seek(snapToFrame(t, s.project.settings.fps)), s.paste()) },
       { label: "Close gap", disabled: !gap || track.locked, onSelect: () => s.closeGapAt(track.id, t) },
+      { label: "Close all gaps", icon: <FoldHorizontal className="h-3.5 w-3.5" />, disabled: track.locked || track.clips.length < 2, onSelect: () => s.closeTrackGaps(track.id) },
+      { label: "Select everything after here", onSelect: () => s.select(s.project.tracks.flatMap((x) => (x.locked ? [] : x.clips.filter((c) => c.start >= t - EPS).map((c) => c.id)))) },
+      { label: "Select this track after here", onSelect: () => s.select(track.clips.filter((c) => c.start >= t - EPS).map((c) => c.id)) },
       ...(track.kind === "video"
         ? [{ label: "Add title here", icon: <Type className="h-3.5 w-3.5" />, disabled: track.locked, onSelect: () => s.placeTitle(undefined, { trackId: track.id, at: t }) } as MenuItem]
         : []),
@@ -500,7 +642,7 @@ export function Timeline() {
                 data-lane={row.track.id}
                 data-kind={row.track.kind}
                 className={cn(
-                  "relative border-b border-line-soft",
+                  "group/lane relative border-b border-line-soft",
                   row.track.kind === "audio" ? "bg-[#0f1211]" : "bg-[#0f0f13]",
                   row.track.locked && "bg-[repeating-linear-gradient(135deg,transparent_0_8px,rgba(255,255,255,0.025)_8px_16px)]",
                   row.track.hidden && "opacity-50",
@@ -531,15 +673,24 @@ export function Timeline() {
                     />
                   );
                 })}
+                {!row.track.locked && tool !== "blade" && <Cuts track={row.track} zoom={zoom} viewStart={viewStart} viewEnd={viewEnd} />}
               </div>
             </div>
           ))}
 
+          {duration === 0 && (
+            <div className="pointer-events-none absolute flex items-center justify-center text-center text-xs text-ink-dim" style={{ left: HEADER_W, top: RULER_H, width: view.width - HEADER_W, height: totalH - RULER_H }}>
+              Drag clips here from the media panel, or drop files anywhere in the window.
+              <br />
+              Video goes on V tracks, music and voice-overs on A tracks.
+            </div>
+          )}
           <RangeOverlay height={totalH} />
           <DropGhost rows={rows} />
           {guide != null && (
             <div className="pointer-events-none absolute top-0 z-[15] w-px bg-[#ffd84f]" style={{ left: HEADER_W + guide * zoom, height: totalH }} />
           )}
+          {hint && <EdgeHint hint={hint} rows={rows} zoom={zoom} />}
           {marquee && (
             <div
               className="pointer-events-none absolute z-[16] rounded-sm border border-accent bg-accent/10"
@@ -558,11 +709,140 @@ export function Timeline() {
   );
 }
 
+/** Add / remove the dissolves at either end of a clip. */
+function dissolveItems(clip: Clip, track: Track): MenuItem[] {
+  const s = store();
+  const prev = clipBefore(track, clip);
+  const next = clipAfter(track, clip);
+  if (!prev && !next) return [];
+  const has = (c: Clip) => (c.transitionIn ?? 0) > 0;
+  const name = track.kind === "audio" ? "Crossfade" : "Cross dissolve";
+  const toggle = (c: Clip) => () => s.setDissolve(c.id, has(c) ? 0 : DEFAULT_DISSOLVE);
+  return [
+    ...(prev ? [{ label: has(clip) ? `Remove ${name.toLowerCase()} at start` : `${name} at start`, icon: <Blend className="h-3.5 w-3.5" />, disabled: track.locked, onSelect: toggle(clip) }] : []),
+    ...(next ? [{ label: has(next) ? `Remove ${name.toLowerCase()} at end` : `${name} at end`, icon: <Blend className="h-3.5 w-3.5" />, disabled: track.locked, onSelect: toggle(next) }] : []),
+  ];
+}
+
+const DISSOLVE_LENGTHS = [0.25, 0.5, 1, 1.5, 2];
+
+/** Transition handles on the cuts of a track: a badge per dissolve, a "+" on plain cuts. */
+function Cuts({ track, zoom, viewStart, viewEnd }: { track: Track; zoom: number; viewStart: number; viewEnd: number }) {
+  const s = store;
+  const name = track.kind === "audio" ? "Crossfade" : "Cross dissolve";
+  const menu = (e: React.MouseEvent, to: Clip) => {
+    const len = to.transitionIn ?? 0;
+    openMenu(e, [
+      ...DISSOLVE_LENGTHS.map((d): MenuItem => ({ label: `${name} ${d}s`, checked: Math.abs(len - d) < 1e-3, onSelect: () => s().setDissolve(to.id, d) })),
+      { separator: true },
+      ...(track.kind === "video"
+        ? [
+            ...TRANSITION_STYLES.map(
+              (t): MenuItem => ({
+                label: t.label,
+                checked: len > 0 && (to.transitionStyle ?? "dissolve") === t.id,
+                onSelect: () =>
+                  s().updateClip(to.id, (c) => {
+                    c.transitionStyle = t.id === "dissolve" ? undefined : t.id;
+                    if (!(c.transitionIn && c.transitionIn > 0)) c.transitionIn = t.id === "dissolve" ? DEFAULT_DISSOLVE : 0.5;
+                  }),
+              }),
+            ),
+            { separator: true } as MenuItem,
+          ]
+        : []),
+      { label: track.kind === "audio" ? "Fade out and in instead" : "Dip to black instead", onSelect: () => s().dipToBlack(to.id, len || DEFAULT_DISSOLVE) },
+      { label: "Remove transition", danger: true, disabled: !(len > 0), onSelect: () => s().setDissolve(to.id, 0) },
+    ]);
+  };
+  const stop = (e: React.PointerEvent) => e.stopPropagation();
+  // On the clips' header strip, so the edges below stay free for trimming.
+  const size = 14;
+  const top = 5;
+  return (
+    <>
+      {track.clips.map((to) => {
+        if (to.start < viewStart - 2 || to.start > viewEnd + 2 || !clipBefore(track, to)) return null;
+        const d = dissolveInto(track, to);
+        const x = to.start * zoom;
+        if (d) {
+          const w = Math.max(14, 2 * d.half * zoom);
+          return (
+            <button
+              key={to.id}
+              className="absolute z-[6] flex items-center justify-center rounded-md border border-black/30 bg-white/85 text-black shadow hover:bg-white"
+              style={{ left: x - w / 2, width: w, top, height: size }}
+              title={`${to.transitionStyle ? TRANSITION_STYLES.find((x) => x.id === to.transitionStyle)!.label : name} ${seconds(2 * d.half)} · click to change`}
+              onPointerDown={stop}
+              onClick={(e) => menu(e, to)}
+              onContextMenu={(e) => menu(e, to)}
+            >
+              <Blend className="h-2.5 w-2.5" />
+            </button>
+          );
+        }
+        return (
+          <button
+            key={to.id}
+            className="absolute z-[6] flex items-center justify-center rounded-full border border-black/30 bg-white/90 text-black opacity-0 shadow transition-opacity hover:opacity-100 group-hover/lane:opacity-70"
+            style={{ left: x - size / 2, width: size, top, height: size }}
+            title={`Add a ${name.toLowerCase()} (T) · right-click for options`}
+            onPointerDown={stop}
+            onClick={() => s().setDissolve(to.id, DEFAULT_DISSOLVE)}
+            onContextMenu={(e) => menu(e, to)}
+          >
+            <Plus className="h-2.5 w-2.5" />
+          </button>
+        );
+      })}
+    </>
+  );
+}
+
+/** Menu entries that fit a music clip to the length of the video. */
+function videoLengthItems(clip: Clip, ids: Id[], track: Track): MenuItem[] {
+  const s = store();
+  const end = videoEnd(s.project.tracks);
+  const reaches = end > 0 && clip.start < end - MIN_CLIP && clipEnd(clip) >= end - EPS;
+  const match = (fade: number) => () => {
+    if (!s.matchVideoLength(ids, fade)) s.toast("Nothing to trim: no selected audio runs past the end of the video.", "info");
+  };
+  return [
+    { label: "Match video length", icon: <ArrowRightToLine className="h-3.5 w-3.5" />, disabled: track.locked || !reaches || clipEnd(clip) <= end + EPS, onSelect: match(0) },
+    { label: "Match video length + fade out", disabled: track.locked || !reaches, onSelect: match(Math.min(2, (end - clip.start) / 3)) },
+    {
+      label: "Loop to video length",
+      icon: <Repeat className="h-3.5 w-3.5" />,
+      disabled: track.locked || end <= 0 || clipEnd(clip) >= end - MIN_CLIP,
+      onSelect: () => {
+        if (!s.loopToVideoLength(clip.id)) s.toast("This clip is too short to loop to the end of the video.", "info");
+      },
+    },
+  ];
+}
+
+function EdgeHint({ hint, rows, zoom }: { hint: Hint; rows: Row[]; zoom: number }) {
+  const row = rows.find((r) => r.track.id === hint.trackId);
+  if (!row) return null;
+  return (
+    <div
+      className={cn(
+        "pointer-events-none absolute z-[21] -translate-x-1/2 -translate-y-full whitespace-nowrap rounded px-1.5 py-0.5 font-mono text-2xs shadow-pop",
+        hint.match ? "bg-[#ffd84f] text-black" : "bg-black/85 text-ink",
+      )}
+      style={{ left: HEADER_W + hint.time * zoom, top: Math.max(RULER_H + 16, row.top - 2) }}
+    >
+      {hint.text}
+    </div>
+  );
+}
+
 // ------------------------------------------------------------------- toolbar
 
 function Toolbar({ size, onSize, onFit }: { size: TrackSize; onSize: (s: TrackSize) => void; onFit: () => void }) {
   const tool = useStore((s) => s.tool);
   const snapping = useStore((s) => s.snapping);
+  const ripple = useStore((s) => s.rippleMain);
   const zoom = useStore((s) => s.zoom);
   const hasSel = useStore((s) => s.selection.length > 0);
   const s = store;
@@ -581,6 +861,14 @@ function Toolbar({ size, onSize, onFit }: { size: TrackSize; onSize: (s: TrackSi
       <div className="mx-1 h-4 w-px bg-line" />
       <IconButton size="sm" title="Snapping (N)" active={snapping} onClick={() => s().toggleSnapping()}>
         <Magnet className="h-3.5 w-3.5" />
+      </IconButton>
+      <IconButton
+        size="sm"
+        title={`Magnetic main track (P): ${ripple ? "on" : "off"}. On V1, dragging reorders clips, and trims and deletes close up instead of leaving gaps. ⌘ while dragging flips it; ⌥ on a cut rolls it.`}
+        active={ripple}
+        onClick={() => s().toggleRippleMain()}
+      >
+        <AlignHorizontalJustifyStart className="h-3.5 w-3.5" />
       </IconButton>
       <IconButton size="sm" title="Split at playhead (S)" onClick={() => s().splitAtPlayhead()}>
         <Scissors className="h-3.5 w-3.5" />
@@ -615,7 +903,7 @@ function Toolbar({ size, onSize, onFit }: { size: TrackSize; onSize: (s: TrackSi
         value={lz(zoom)}
         style={{ ["--fill" as string]: `${((lz(zoom) - lz(ZOOM_MIN)) / (lz(ZOOM_MAX) - lz(ZOOM_MIN))) * 100}%` }}
         onChange={(e) => s().setZoom(Math.exp(parseFloat(e.target.value)))}
-        title="Zoom (⌘ + scroll)"
+        title={keyLabel("Zoom (⌘-scroll)")}
       />
       <IconButton size="sm" title="Zoom in (+)" onClick={() => s().setZoom(zoom * 1.4)}>
         <ZoomIn className="h-3.5 w-3.5" />
@@ -653,6 +941,7 @@ function trackMenu(track: Track): MenuItem[] {
     { label: "Add audio track", onSelect: () => s.addTrack("audio") },
     { separator: true },
     { label: track.locked ? "Unlock track" : "Lock track", onSelect: () => s.updateTrack(track.id, { locked: !track.locked }) },
+    ...(track.clips.some((c) => c.type === "title") ? [{ label: "Export titles as captions (.srt)…", onSelect: () => void exportCaptions(track.id) } as MenuItem] : []),
     { label: `Delete ${track.name}`, danger: true, onSelect: () => s.removeTrack(track.id) },
   ];
 }
@@ -685,11 +974,11 @@ const TrackHeader = React.memo(function TrackHeader({ track, height }: { track: 
             }}
           />
         ) : (
-          <span className="w-10 truncate text-xs font-semibold text-ink" onDoubleClick={() => setEditing(true)} title="Double-click to rename">
+          <span className="min-w-0 flex-1 truncate text-xs font-semibold text-ink" onDoubleClick={() => setEditing(true)} title={`${track.name} · double-click to rename`}>
             {track.name}
           </span>
         )}
-        <div className="ml-auto flex items-center">
+        <div className="ml-auto flex shrink-0 items-center">
           {isVideo && (
             <IconButton size="xs" title={track.hidden ? "Show track" : "Hide track"} active={track.hidden} tone="danger" onClick={() => s().updateTrack(track.id, { hidden: !track.hidden })}>
               {track.hidden ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
@@ -803,6 +1092,11 @@ function Ruler({ width, viewLeft, viewWidth, timeAt }: { width: number; viewLeft
       { label: "Set range in here", shortcut: "I", onSelect: () => s.setRangeIn(t) },
       { label: "Set range out here", shortcut: "O", onSelect: () => s.setRangeOut(t) },
       { label: "Clear range", shortcut: "⌥X", disabled: !s.range, onSelect: () => s.setRange(null) },
+      { label: "Clear all markers", disabled: !s.project.markers.length, onSelect: () => s.clearMarkers() },
+      { label: "YouTube chapters from markers…", disabled: !s.project.markers.length, onSelect: () => s.openDialog({ kind: "chapters" }) },
+      { separator: true },
+      { label: "Lift range", shortcut: ";", disabled: !s.range, onSelect: () => s.liftRange() },
+      { label: "Extract range (close the gap)", shortcut: "'", disabled: !s.range, onSelect: () => s.extractRange() },
     ]);
   };
 
@@ -815,9 +1109,11 @@ function Ruler({ width, viewLeft, viewWidth, timeAt }: { width: number; viewLeft
     >
       <canvas ref={canvas} className="pointer-events-none absolute top-0" style={{ left: viewLeft, width: w, height: RULER_H }} />
       <RangeBand />
-      {markers.map((m) => (
-        <MarkerFlag key={m.id} id={m.id} time={m.time} label={m.label} color={m.color} zoom={zoom} timeAt={timeAt} />
-      ))}
+      {markers.map((m, i) => {
+        // Crowded unnamed markers (e.g. beats) shrink to ticks so the time labels stay readable.
+        const gap = Math.min(i > 0 ? m.time - markers[i - 1].time : Infinity, i < markers.length - 1 ? markers[i + 1].time - m.time : Infinity);
+        return <MarkerFlag key={m.id} id={m.id} time={m.time} label={m.label} color={m.color} zoom={zoom} timeAt={timeAt} tick={!m.label && gap * zoom < 40} />;
+      })}
     </div>
   );
 }
@@ -847,7 +1143,7 @@ function RangeOverlay({ height }: { height: number }) {
   );
 }
 
-function MarkerFlag({ id, time, label, color, zoom, timeAt }: { id: Id; time: number; label: string; color: string; zoom: number; timeAt: (x: number) => number }) {
+function MarkerFlag({ id, time, label, color, zoom, timeAt, tick }: { id: Id; time: number; label: string; color: string; zoom: number; timeAt: (x: number) => number; tick: boolean }) {
   const [editing, setEditing] = React.useState(false);
   const onPointerDown = (e: React.PointerEvent) => {
     if (e.button !== 0) return;
@@ -905,9 +1201,13 @@ function MarkerFlag({ id, time, label, color, zoom, timeAt }: { id: Id; time: nu
         className="flex cursor-pointer items-start"
         title={label ? `${label} · drag to move, double-click to rename` : "Marker · drag to move, double-click to name"}
       >
-        <svg width="10" height="14" viewBox="0 0 10 14" className="shrink-0">
-          <path d="M0 0h10v9l-5 5-5-5z" fill={color} />
-        </svg>
+        {tick ? (
+          <span className="mx-[3px] mt-[18px] block h-3 w-1 rounded-sm" style={{ background: color }} />
+        ) : (
+          <svg width="10" height="14" viewBox="0 0 10 14" className="shrink-0">
+            <path d="M0 0h10v9l-5 5-5-5z" fill={color} />
+          </svg>
+        )}
         {label && !editing && <span className="ml-0.5 max-w-[120px] truncate rounded-sm bg-black/50 px-1 text-2xs leading-[14px] text-ink">{label}</span>}
       </div>
       {editing && (
@@ -970,9 +1270,10 @@ function DropGhost({ rows }: { rows: Row[] }) {
   const payload = useDrag((s) => s.payload);
   const x = useDrag((s) => s.x);
   const y = useDrag((s) => s.y);
+  const flip = useDrag((s) => s.insert);
   const zoom = useStore((s) => s.zoom);
   if (!payload || payload.kind === "files") return null;
-  const target = dropTarget(payload, x, y);
+  const target = dropTarget(payload, x, y, flip);
   if (!target) return null;
   const kind = payloadKind(payload);
   const row =

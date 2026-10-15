@@ -1,5 +1,6 @@
 import * as React from "react";
 import { cn } from "../../lib/cn";
+import { keyLabel } from "../../lib/format";
 
 type ButtonVariant = "primary" | "secondary" | "ghost" | "danger";
 
@@ -18,13 +19,14 @@ const VARIANTS: Record<ButtonVariant, string> = {
 const SIZES = { sm: "h-7 px-2.5 text-sm gap-1.5", md: "h-8 px-3 text-sm gap-2", lg: "h-9 px-4 text-md gap-2" };
 
 export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(function Button(
-  { variant = "secondary", size = "md", className, type = "button", ...props },
+  { variant = "secondary", size = "md", className, type = "button", title, ...props },
   ref,
 ) {
   return (
     <button
       ref={ref}
       type={type}
+      title={title && keyLabel(title)}
       className={cn(
         "inline-flex shrink-0 select-none items-center justify-center whitespace-nowrap rounded-md font-medium transition-[background,color,border,transform] duration-100 active:scale-[0.98] disabled:pointer-events-none disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50",
         VARIANTS[variant],
@@ -43,7 +45,7 @@ export interface IconButtonProps extends React.ButtonHTMLAttributes<HTMLButtonEl
 }
 
 export const IconButton = React.forwardRef<HTMLButtonElement, IconButtonProps>(function IconButton(
-  { active, size = "md", tone = "default", className, type = "button", ...props },
+  { active, size = "md", tone = "default", className, type = "button", title, ...props },
   ref,
 ) {
   const dims = size === "xs" ? "h-5 w-5" : size === "sm" ? "h-6 w-6" : "h-7 w-7";
@@ -51,6 +53,7 @@ export const IconButton = React.forwardRef<HTMLButtonElement, IconButtonProps>(f
     <button
       ref={ref}
       type={type}
+      title={title && keyLabel(title)}
       aria-pressed={active}
       className={cn(
         "inline-flex shrink-0 items-center justify-center rounded-md transition-colors duration-100 disabled:pointer-events-none disabled:opacity-35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50",
@@ -151,7 +154,7 @@ export function Segmented<T extends string>({
           type="button"
           role="radio"
           aria-checked={value === o.value}
-          title={o.title}
+          title={o.title && keyLabel(o.title)}
           onClick={() => onChange(o.value)}
           className={cn(
             "flex flex-1 items-center justify-center gap-1 rounded-[5px] px-2 font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50",

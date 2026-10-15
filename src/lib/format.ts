@@ -52,3 +52,12 @@ export function basename(path: string): string {
 export function stripExtension(name: string): string {
   return name.replace(/\.[^.]+$/, "");
 }
+
+const isMac = typeof navigator !== "undefined" && /Mac/i.test(navigator.platform || navigator.userAgent);
+
+/** A shortcut written with Mac symbols, spelled out on other platforms (⌘ → Ctrl+). */
+export function keyLabel(keys: string): string {
+  if (isMac) return keys;
+  // "⌘-drag" reads "Ctrl-drag", "⌘K" reads "Ctrl+K".
+  return keys.replace(/([⌘⌥⇧])(-?)/g, (_, k: string, dash: string) => ({ "⌘": "Ctrl", "⌥": "Alt", "⇧": "Shift" })[k] + (dash || "+"));
+}

@@ -2,6 +2,7 @@
 
 import type { Clip, MediaAsset, Project, Track } from "./types";
 import { uid } from "./uid";
+import { splitMotion } from "./motion";
 
 export const EPS = 1e-6;
 /** Shortest clip the editor will create (seconds). */
@@ -42,9 +43,9 @@ export function snapToEdit(t: number, tracks: Track[], fps: number): number {
   return edit ?? snapToFrame(t, fps);
 }
 
-/** Titles and stills have no source bounds; they can be stretched freely. */
+/** Titles, stills and frame holds have no source bounds; they can be stretched freely. */
 export function isUnbounded(c: Clip, media?: MediaAsset): boolean {
-  return c.type === "title" || media?.kind === "image" || !media || !(media.duration > 0);
+  return c.type === "title" || !!c.freeze || media?.kind === "image" || !media || !(media.duration > 0);
 }
 
 /** Source-time limits for a clip's in/out points. */
@@ -52,14 +53,18 @@ export function sourceBounds(c: Clip, media?: MediaAsset): { min: number; max: n
   return isUnbounded(c, media) ? { min: -Infinity, max: Infinity } : { min: 0, max: media!.duration };
 }
 
-/** Copy of `c` cut so it ends at timeline time `t`. */
+/** Copy of `c` cut so it ends at timeline time `t` (its motion stops where it was at `t`). */
 export function cutTail(c: Clip, t: number): Clip {
-  return { ...c, out: c.in + (t - c.start) * speedOf(c) };
+  const out = { ...c, out: c.in + (t - c.start) * speedOf(c) };
+  if (c.motion) out.motion = splitMotion(c.motion, t - c.start, clipDuration(c))[0];
+  return out;
 }
 
-/** Copy of `c` cut so it starts at timeline time `t`. */
+/** Copy of `c` cut so it starts at timeline time `t` (its motion carries on from `t`). */
 export function cutHead(c: Clip, t: number): Clip {
-  return { ...c, in: c.in + (t - c.start) * speedOf(c), start: t };
+  const out = { ...c, in: c.in + (t - c.start) * speedOf(c), start: t };
+  if (c.motion) out.motion = splitMotion(c.motion, t - c.start, clipDuration(c))[1];
+  return out;
 }
 
 const hasLength = (c: Clip) => clipDuration(c) > EPS;
@@ -80,7 +85,7 @@ export function overwrite(clips: Clip[], incoming: Clip): Clip[] {
     else if (xs >= s - EPS && xe <= e + EPS) continue; // fully covered
     else if (xs < s && xe > e) {
       const head = cutTail(x, s);
-      const tail = { ...cutHead(x, e), id: uid(), fadeIn: 0 };
+      const tail = { ...cutHead(x, e), id: uid(), fadeIn: 0, transitionIn: undefined };
       if (hasLength(head)) out.push({ ...head, fadeOut: 0 });
       if (hasLength(tail)) out.push(tail);
     } else if (xs < s) {
@@ -111,13 +116,102 @@ export function insert(clips: Clip[], incoming: Clip): Clip[] {
     else if (xs >= s - EPS) out.push({ ...x, start: xs + d });
     else {
       const head = cutTail(x, s);
-      const tail = { ...cutHead(x, s), id: uid(), start: s + d, fadeIn: 0 };
+      const tail = { ...cutHead(x, s), id: uid(), start: s + d, fadeIn: 0, transitionIn: undefined };
       if (hasLength(head)) out.push({ ...head, fadeOut: 0 });
       if (hasLength(tail)) out.push(tail);
     }
   }
   out.push(incoming);
   return sortClips(out);
+}
+
+/**
+ * Lay `clips` end to end from the first one's start so that every cut lands on a beat.
+ * Without `every`, each clip keeps as many beats as fit in its current length (it only
+ * grows when it's shorter than the next beat, and its source has room). With `every`,
+ * each clip runs exactly that many beats when its source allows. `room` gives a clip's
+ * longest possible timeline length from its in point. Returns the clips in order.
+ */
+export function cutToBeats(clips: Clip[], beats: number[], room: (c: Clip) => number, every?: number): Clip[] {
+  const marks = [...beats].sort((a, b) => a - b);
+  const out: Clip[] = [];
+  let cursor = clips.length ? Math.min(...clips.map((c) => c.start)) : 0;
+  for (const c of [...clips].sort((a, b) => a.start - b.start)) {
+    const dur = clipDuration(c);
+    const max = Math.max(dur, room(c));
+    const ahead = marks.filter((b) => b > cursor + MIN_CLIP);
+    const fits = ahead.filter((b) => b <= cursor + max + EPS);
+    let end: number | undefined;
+    if (every) end = ahead[every - 1] !== undefined && ahead[every - 1] <= cursor + max + EPS ? ahead[every - 1] : fits[fits.length - 1];
+    else end = ahead.filter((b) => b <= cursor + dur + EPS).pop() ?? fits[0];
+    const length = end !== undefined ? end - cursor : dur;
+    const moved = { ...c, start: cursor };
+    const next = length < dur - EPS ? cutTail(moved, cursor + length) : { ...moved, out: c.in + length * speedOf(c) };
+    next.fadeIn = Math.min(next.fadeIn, length);
+    next.fadeOut = Math.min(next.fadeOut, length - next.fadeIn);
+    out.push(next);
+    cursor += length;
+  }
+  return out;
+}
+
+/**
+ * A magnetic drop: `movers` go end to end (in their order) at the edit point of `clips`
+ * nearest `at` (a clip's start or end; after the last clip at most), and everything from
+ * that point on moves right to make room. Into an empty track they land at `at`.
+ */
+export function magneticInsert(clips: Clip[], movers: Clip[], at: number): Clip[] {
+  const sorted = sortClips(clips);
+  const edges = [...new Set(sorted.flatMap((c) => [c.start, clipEnd(c)]))];
+  const point = edges.length ? edges.reduce((best, e) => (Math.abs(e - at) < Math.abs(best - at) ? e : best)) : Math.max(0, at);
+  const block = movers.reduce((d, c) => d + clipDuration(c), 0);
+  const out = sorted.map((c) => (c.start >= point - EPS ? { ...c, start: c.start + block } : c));
+  let t = point;
+  for (const m of movers) {
+    out.push({ ...m, start: t });
+    t += clipDuration(m);
+  }
+  return sortClips(out);
+}
+
+/** Where a clip's source time 0 falls on the timeline: what keeps two clips in sync. */
+export function sourceOrigin(c: Clip): number {
+  return c.start - c.in / speedOf(c);
+}
+
+/**
+ * How far an edit moved a clip's picture in time (`was` → `now`): its source origin, unless
+ * its speed changed (that rescales the clip in place), when it's how far its start moved.
+ */
+export function pictureShift(was: Clip, now: Clip): number {
+  return speedOf(was) === speedOf(now) ? sourceOrigin(now) - sourceOrigin(was) : now.start - was.start;
+}
+
+/**
+ * Detached audio follows its video: in `next`, every linked clip whose video's source
+ * origin moved since `prev` (a move, a reorder, a ripple), but which didn't move itself,
+ * shifts by the same amount. Returns `next` untouched when nothing has to follow.
+ */
+export function followLinks(prev: Project, next: Project): Project {
+  if (prev === next || !next.tracks.some((t) => t.clips.some((c) => c.link))) return next;
+  const clips = (p: Project) => new Map(p.tracks.flatMap((t) => t.clips.map((c) => [c.id, c] as const)));
+  const [before, after] = [clips(prev), clips(next)];
+  const shifts = new Map<string, number>();
+  for (const t of next.tracks)
+    for (const c of t.clips) {
+      if (!c.link) continue;
+      const [v0, v1, a0] = [before.get(c.link), after.get(c.link), before.get(c.id)];
+      if (!v0 || !v1 || !a0 || Math.abs(pictureShift(a0, c)) > EPS) continue;
+      const d = pictureShift(v0, v1);
+      if (Math.abs(d) > EPS) shifts.set(c.id, d);
+    }
+  if (!shifts.size) return next;
+  return {
+    ...next,
+    tracks: next.tracks.map((t) =>
+      t.clips.some((c) => shifts.has(c.id)) ? { ...t, clips: sortClips(t.clips.map((c) => (shifts.has(c.id) ? { ...c, start: Math.max(0, c.start + shifts.get(c.id)!) } : c))) } : t,
+    ),
+  };
 }
 
 /** Remove clips and close the gaps they leave. */
@@ -138,10 +232,74 @@ export function rippleDelete(clips: Clip[], ids: Set<string>): Clip[] {
 export function split(c: Clip, t: number): [Clip, Clip] | null {
   if (t <= c.start + EPS || t >= clipEnd(c) - EPS) return null;
   const left = { ...cutTail(c, t), fadeOut: 0 };
-  const right = { ...cutHead(c, t), id: uid(), fadeIn: 0 };
+  const right = { ...cutHead(c, t), id: uid(), fadeIn: 0, transitionIn: undefined };
   left.fadeIn = Math.min(left.fadeIn, clipDuration(left));
   right.fadeOut = Math.min(right.fadeOut, clipDuration(right));
   return [left, right];
+}
+
+/**
+ * Cut the span [a, b) out of a track. Clips straddling an edge are split (as by `split`);
+ * with `ripple` everything after the span moves left to close it (extract), otherwise
+ * a gap is left (lift).
+ */
+export function removeRange(clips: Clip[], a: number, b: number, ripple: boolean): Clip[] {
+  if (b - a <= EPS) return clips;
+  const shift = ripple ? b - a : 0;
+  const out: Clip[] = [];
+  for (const x of clips) {
+    const xs = x.start;
+    const xe = clipEnd(x);
+    if (xe <= a + EPS) out.push(x);
+    else if (xs >= b - EPS) out.push(shift ? { ...x, start: xs - shift } : x);
+    else {
+      if (xs < a - EPS) {
+        const head = { ...cutTail(x, a), fadeOut: 0 };
+        out.push({ ...head, fadeIn: Math.min(head.fadeIn, clipDuration(head)) });
+      }
+      if (xe > b + EPS) {
+        const tail = { ...cutHead(x, b), id: xs < a - EPS ? uid() : x.id, start: b - shift, fadeIn: 0, transitionIn: undefined };
+        out.push({ ...tail, fadeOut: Math.min(tail.fadeOut, clipDuration(tail)) });
+      }
+    }
+  }
+  return sortClips(out);
+}
+
+/**
+ * Ripple-trim one clip to time `t`: drop its head (start stays put) or its tail, and pull
+ * the rest of the track left by the removed length. No-op unless `t` is inside the clip.
+ */
+export function rippleTrim(clips: Clip[], id: string, t: number, side: "head" | "tail"): Clip[] {
+  const c = clips.find((x) => x.id === id);
+  if (!c || t <= c.start + EPS || t >= clipEnd(c) - EPS) return clips;
+  const end = clipEnd(c);
+  const removed = side === "head" ? t - c.start : end - t;
+  const trimmed = side === "head" ? { ...cutHead(c, t), start: c.start } : cutTail(c, t);
+  const d = clipDuration(trimmed);
+  trimmed.fadeIn = Math.min(trimmed.fadeIn, d);
+  trimmed.fadeOut = Math.min(trimmed.fadeOut, d - trimmed.fadeIn);
+  return sortClips(clips.map((x) => (x === c ? trimmed : x.start >= end - EPS ? { ...x, start: x.start - removed } : x)));
+}
+
+/** Butt every clip against the one before it, keeping the first clip where it is. */
+export function closeAllGaps(clips: Clip[]): Clip[] {
+  let at = -Infinity;
+  return sortClips(clips).map((c) => {
+    const start = at === -Infinity ? c.start : at;
+    at = start + clipDuration(c);
+    return Math.abs(start - c.start) > EPS ? { ...c, start } : c;
+  });
+}
+
+/** End of the picture: the last clip on a visible video track (0 when there is none). */
+export function videoEnd(tracks: Track[], exclude?: Set<string>): number {
+  let end = 0;
+  for (const t of tracks) {
+    if (t.kind !== "video" || t.hidden) continue;
+    for (const c of t.clips) if (!exclude?.has(c.id)) end = Math.max(end, clipEnd(c));
+  }
+  return end;
 }
 
 /** The gap (empty span) on a track that contains time `t`, if any. */
@@ -172,7 +330,7 @@ export function keepSourceRanges(c: Clip, ranges: [number, number][]): Clip[] {
     const lo = Math.max(a, c.in);
     const hi = Math.min(b, c.out);
     if (hi - lo <= MIN_CLIP * sp) continue;
-    const piece: Clip = { ...c, id: out.length === 0 ? c.id : uid(), in: lo, out: hi, start: at, fadeIn: 0, fadeOut: 0 };
+    const piece: Clip = { ...c, id: out.length === 0 ? c.id : uid(), in: lo, out: hi, start: at, fadeIn: 0, fadeOut: 0, transitionIn: out.length === 0 ? c.transitionIn : undefined };
     out.push(piece);
     at += (hi - lo) / sp;
   }

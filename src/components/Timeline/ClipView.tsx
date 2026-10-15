@@ -1,10 +1,12 @@
 import * as React from "react";
-import { AlertTriangle, Gauge, Type, VolumeX } from "lucide-react";
+import { AlertTriangle, Gauge, Link2, Move, Snowflake, Type, VolumeX } from "lucide-react";
 import type { Clip, MediaAsset, Track } from "../../lib/types";
 import type { MediaRuntime } from "../../store/store";
 import { clipDuration, speedOf } from "../../lib/timeline";
+import { gainAt } from "../../lib/envelope";
 import { fileUrl, type Waveform } from "../../lib/backend";
 import { isDefaultColor } from "../../lib/visual";
+import { keyTimes } from "../../lib/keyframes";
 import { cn } from "../../lib/cn";
 
 export type ClipGrab = "move" | "trim-left" | "trim-right" | "fade-in" | "fade-out";
@@ -96,6 +98,14 @@ export const ClipView = React.memo(function ClipView({
           dim={clip.muted || track.muted}
         />
       )}
+      {clip.volumePoints && <VolumeLine clip={clip} zoom={zoom} width={width} height={height} />}
+      {clip.keyframes && (
+        <div className="pointer-events-none absolute inset-x-0 bottom-[3px] h-2">
+          {keyTimes(clip).map((l) => (
+            <span key={l} className="absolute h-[7px] w-[7px] -translate-x-1/2 rotate-45 rounded-[1px] border border-black/50 bg-white/90" style={{ left: Math.min(width - 4, Math.max(4, l * zoom)) }} />
+          ))}
+        </div>
+      )}
       {missing && <div className="absolute inset-0 bg-[repeating-linear-gradient(45deg,rgba(239,91,91,0.25)_0_6px,transparent_6px_12px)]" />}
 
       {/* Fades */}
@@ -124,6 +134,8 @@ export const ClipView = React.memo(function ClipView({
             {name}
           </span>
           <span className="ml-auto flex shrink-0 items-center gap-1">
+            {clip.freeze && <Snowflake className="h-3 w-3 opacity-90" aria-label="Frame hold" />}
+            {clip.link && <Link2 className="h-3 w-3 opacity-90" aria-label="Moves with its video" />}
             {speedOf(clip) !== 1 && (
               <span className="flex items-center gap-0.5 rounded bg-black/30 px-1">
                 <Gauge className="h-2.5 w-2.5" />
@@ -131,6 +143,7 @@ export const ClipView = React.memo(function ClipView({
               </span>
             )}
             {hasAudio && clip.muted && <VolumeX className="h-3 w-3 opacity-90" />}
+            {clip.motion && <Move className="h-3 w-3 opacity-90" aria-label="Motion" />}
             {!isDefaultColor(clip.color) && <span className="rounded bg-black/30 px-1">fx</span>}
           </span>
         </div>
@@ -287,5 +300,25 @@ function WaveformView({
       className={cn("pointer-events-none absolute", className, dim && "opacity-40")}
       style={{ left, width, height }}
     />
+  );
+}
+
+/** The clip's volume envelope (e.g. ducking) as a line: top = full volume, bottom = silent. */
+function VolumeLine({ clip, zoom, width, height }: { clip: Clip; zoom: number; width: number; height: number }) {
+  const pts = clip.volumePoints!;
+  const sp = speedOf(clip);
+  const [top, bottom] = [18, height - 8];
+  const y = (g: number) => top + (1 - Math.min(1, Math.max(0, g))) * (bottom - top);
+  const x = (s: number) => ((s - clip.in) / sp) * zoom;
+  const inside = pts.filter((p) => p.t > clip.in && p.t < clip.out);
+  const line = [
+    [0, y(gainAt(pts, clip.in))],
+    ...inside.map((p) => [x(p.t), y(p.gain)]),
+    [width, y(gainAt(pts, clip.out))],
+  ];
+  return (
+    <svg className="pointer-events-none absolute left-0 top-0" width={width} height={height}>
+      <polyline points={line.map(([a, b]) => `${a.toFixed(1)},${b.toFixed(1)}`).join(" ")} fill="none" stroke="#ffd84f" strokeWidth={1.5} strokeLinejoin="round" />
+    </svg>
   );
 }

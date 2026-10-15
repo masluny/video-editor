@@ -3,6 +3,8 @@ export default {
   content: ["./index.html", "./src/**/*.{ts,tsx}"],
   theme: {
     extend: {
+      // Steps between Tailwind's 5% ones that the UI uses (bg-accent/14, bg-panel-2/98, …).
+      opacity: { 12: "0.12", 14: "0.14", 18: "0.18", 98: "0.98" },
       colors: {
         bg: { DEFAULT: "#0c0c0e", deep: "#08080a" },
         panel: { DEFAULT: "#141417", 2: "#18181c", 3: "#1e1e23" },
@@ -14,6 +16,7 @@ export default {
         title: "#e8a23d",
         danger: { DEFAULT: "#ef5b5b", hover: "#ff7676" },
         success: "#3ccf91",
+        warning: "#f0b24a",
         playhead: "#ff4f6d",
       },
       fontFamily: {

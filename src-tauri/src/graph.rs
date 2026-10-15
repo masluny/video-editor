@@ -7,12 +7,27 @@
 //!   adjusted, scaled, rotated, faded (alpha) and offset to its timeline position,
 //!   then `overlay`ed onto the canvas;
 //! * every audible clip contributes an audio stream that is time-stretched,
-//!   gain-adjusted, faded and delayed to its timeline position, then mixed.
+//!   gain-adjusted, faded and delayed to its timeline position, then mixed;
+//! * a cross-dissolve (`transition_in`) is centred on a cut: the incoming layer starts
+//!   half the dissolve early holding its first frame and fades in, the outgoing layer
+//!   runs on holding its last frame underneath, and the sound dips across the cut.
+//!   Mirrors `src/lib/transitions.ts`;
+//! * motion (Ken Burns) rescales the finished layer every frame and moves it in the
+//!   overlay, both linear in the progress through the clip (`src/lib/motion.ts`);
+//! * a volume envelope (source-time gain points, e.g. from ducking) becomes a
+//!   piecewise-linear `volume` expression (`src/lib/envelope.ts`);
+//! * keyframes (position / scale / rotation / opacity on the clip clock) become
+//!   piecewise-linear expressions of time: in the overlay for position, a per-frame
+//!   `scale` (from the layer laid out at its largest keyed size) and `rotate`, and
+//!   per-frame alpha updates through `sendcmd` for opacity (`src/lib/keyframes.ts`);
+//! * a "blur" backdrop is a second branch of the same input, scaled to cover the frame,
+//!   blurred (`backdropBlur` in `src/lib/visual.ts`) and laid under the clip with its
+//!   timing and fades.
 //!
 //! No user-provided strings ever end up inside the filtergraph: media is passed
 //! with `-i`, titles arrive as pre-rendered PNGs, and numbers are formatted here.
 
-use crate::model::{Clip, ClipKind, Fit, MediaKind, Project, TrackKind};
+use crate::model::{Backdrop, Clip, ClipKind, Fit, Key, MediaKind, Project, TrackKind, TransitionStyle, VolumePoint};
 use crate::util::f;
 use anyhow::{anyhow, Result};
 use serde::Deserialize;
@@ -126,6 +141,173 @@ fn span(clip: &Clip, r0: f64, r1: f64) -> Option<Span> {
     }
     let speed = clip.speed();
     Some(Span { at: cs + head - r0, dur, src_in: clip.source_in + head * speed, src_len: dur * speed, head, tail })
+}
+
+/// Clips closer than this count as butted together (transitions.ts: CUT_EPS).
+const CUT_EPS: f64 = 1e-3;
+
+/// Half the effective length of the dissolve into `clip` from the clip that ends where it
+/// starts on the same track; 0 when there is none.
+fn dissolve_half(track: &[Clip], clip: &Clip) -> f64 {
+    if clip.transition_in.is_nan() || clip.transition_in <= 0.0 {
+        return 0.0;
+    }
+    let Some(from) = track.iter().find(|c| !std::ptr::eq(*c, clip) && (c.end() - clip.start).abs() < CUT_EPS) else {
+        return 0.0;
+    };
+    let half = (clip.transition_in / 2.0).min(from.duration() / 2.0).min(clip.duration() / 2.0);
+    if half > EPS { half } else { 0.0 }
+}
+
+/// (into, out of) dissolve halves at the two ends of `clip`.
+fn dissolves(track: &[Clip], clip: &Clip) -> (f64, f64) {
+    let next = track.iter().find(|c| !std::ptr::eq(*c, clip) && (c.start - clip.end()).abs() < CUT_EPS);
+    (dissolve_half(track, clip), next.map_or(0.0, |n| dissolve_half(track, n)))
+}
+
+/// `volume` expression for a clip's envelope over its rendered span: `t` runs from 0 at
+/// the span start, which is source time `src_in`. None when it leaves the gain at 1.
+fn envelope(points: &[VolumePoint], src_in: f64, speed: f64, dur: f64) -> Option<String> {
+    let mut pts: Vec<(f64, f64)> = points.iter().filter(|p| p.t.is_finite()).map(|p| ((p.t - src_in) / speed, p.gain.clamp(0.0, 4.0))).collect();
+    pts.sort_by(|a, b| a.0.total_cmp(&b.0));
+    // Only the points that shape [0, dur]: the last one before it, those inside, the first after.
+    let first = pts.iter().rposition(|p| p.0 <= 0.0).unwrap_or(0);
+    let last = pts.iter().position(|p| p.0 >= dur).unwrap_or(pts.len().saturating_sub(1));
+    let pts = pts.get(first..=last)?;
+    if pts.iter().all(|p| (p.1 - 1.0).abs() < 1e-4) {
+        return None;
+    }
+    let mut terms = vec![format!("{}*lt(t,{})", f(pts[0].1), f(pts[0].0))];
+    for w in pts.windows(2) {
+        let ((a, ga), (b, gb)) = (w[0], w[1]);
+        if b - a > 1e-6 {
+            terms.push(format!("gte(t,{})*lt(t,{})*({}{}*(t{})/{})", f(a), f(b), f(ga), signed(gb - ga), signed(-a), f(b - a)));
+        }
+    }
+    let end = pts[pts.len() - 1];
+    terms.push(format!("{}*gte(t,{})", f(end.1), f(end.0)));
+    Some(terms.join("+"))
+}
+
+/// Value of keys at clip-clock time `t`: linear between keys (smoothstep with `ease`),
+/// held outside.
+fn key_value(keys: &[Key], t: f64, ease: bool) -> f64 {
+    let Some(first) = keys.first() else { return 0.0 };
+    if t <= first.t {
+        return first.v;
+    }
+    for w in keys.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        if t <= b.t {
+            if b.t - a.t <= 1e-9 {
+                return b.v;
+            }
+            let u = (t - a.t) / (b.t - a.t);
+            return a.v + (b.v - a.v) * if ease { u * u * (3.0 - 2.0 * u) } else { u };
+        }
+    }
+    keys[keys.len() - 1].v
+}
+
+/// Keys as an expression of time `t`, for a clip whose local time 0 falls at t = `t0`,
+/// times `k`: the first value plus, per segment, its change times how far into it `t` is
+/// (clamped; through smoothstep when the clip eases), so it needs no conditionals.
+fn key_expr(keys: &[Key], clip: &Clip, t0: f64, k: f64) -> String {
+    let at: Vec<(f64, f64)> = keys.iter().map(|key| (t0 + (key.t - clip.source_in) / clip.speed(), key.v * k)).collect();
+    let mut e = f(at[0].1);
+    for w in at.windows(2) {
+        let ((ta, va), (tb, vb)) = (w[0], w[1]);
+        if tb - ta > 1e-9 && (vb - va).abs() > 1e-9 {
+            if clip.key_ease {
+                let u = format!("clip((t{})/{},0,1)", signed(-ta), f(tb - ta));
+                e += &format!("{}*{u}*{u}*(3-2*{u})", signed(vb - va));
+            } else {
+                e += &format!("{}*(clip(t,{},{}){})", signed((vb - va) / (tb - ta)), f(ta), f(tb), signed(-ta));
+            }
+        }
+    }
+    e
+}
+
+/// Keyed opacity on a layer's own clock (clip time 0 at `t0`, `len` long): an alpha gain
+/// named `name`, updated through `sendcmd` on every frame where the value changes.
+fn opacity_keys(keys: &[Key], clip: &Clip, t0: f64, len: f64, fps: f64, name: &str) -> Vec<String> {
+    let at = |tau: f64| (key_value(keys, clip.source_in + (tau - t0) * clip.speed(), clip.key_ease).clamp(0.0, 1.0) * 1000.0).round() / 1000.0;
+    let mut cmds = vec![];
+    let mut last = at(0.0);
+    for i in 1..=(len * fps).ceil() as usize {
+        let tau = i as f64 / fps;
+        let v = at(tau);
+        if v != last {
+            cmds.push(format!("{} colorchannelmixer@{name} aa {}", f(tau), f(v)));
+            last = v;
+        }
+    }
+    let mixer = format!("colorchannelmixer@{name}=aa={}", f(at(0.0)));
+    if cmds.is_empty() { vec![mixer] } else { vec![format!("sendcmd=c='{}'", cmds.join(";")), mixer] }
+}
+
+/// One overlay coordinate: `centre` ("(W-w)/2"), plus the clip's position (static `base`,
+/// or the keyed expression), plus its motion (from, to, progress), times `k`.
+fn place_expr(centre: &str, keyed: Option<String>, base: f64, motion: Option<(f64, f64, &str)>, k: f64) -> String {
+    match (keyed, motion) {
+        (None, None) => format!("{centre}{}", signed(base * k)),
+        (None, Some((from, to, p))) => format!("'{centre}{}{}*{p}'", signed((base + from) * k), signed((to - from) * k)),
+        (Some(e), None) => format!("'{centre}+({e})'"),
+        (Some(e), Some((from, to, p))) => format!("'{centre}+({e}){}{}*{p}'", signed(from * k), signed((to - from) * k)),
+    }
+}
+
+/// Alpha of rounded corners for a `lw`×`lh` layer (after its crop), as a geq expression of
+/// X/Y with a one-pixel soft edge; None without corners. Mirrors `cornerRadius` in visual.ts.
+fn corner_mask(clip: &Clip, lw: u32, lh: u32) -> Option<String> {
+    let c = &clip.crop;
+    let (w, h) = (lw as f64, lh as f64);
+    let (x0, x1) = (w * c.left.clamp(0.0, 1.0), w * (1.0 - c.right.clamp(0.0, 1.0)));
+    let (y0, y1) = (h * c.top.clamp(0.0, 1.0), h * (1.0 - c.bottom.clamp(0.0, 1.0)));
+    let r = clip.corners.clamp(0.0, 0.5) * (x1 - x0).min(y1 - y0);
+    if r.is_nan() || r < 0.5 || clip.kind != ClipKind::Media {
+        return None;
+    }
+    // Distance outside the inner rectangle the corners are drawn around, per axis.
+    let dx = format!("max(max({}-X,X-{}),0)", f(x0 + r), f(x1 - r));
+    let dy = format!("max(max({}-Y,Y-{}),0)", f(y0 + r), f(y1 - r));
+    Some(format!("clip({}-hypot({dx},{dy})+0.5,0,1)", f(r)))
+}
+
+/// How much larger a zoom transition starts (src/lib/transitions.ts `TRANSITION_ZOOM`).
+const TRANSITION_ZOOM: f64 = 0.2;
+
+/// Progress 0 → 1 through a window starting at `a`, `len` long, as an expression of `t`.
+fn window(a: f64, len: f64) -> String {
+    format!("clip((t{})/{},0,1)", signed(-a), f(len.max(EPS)))
+}
+
+fn smoothstep(p: &str) -> String {
+    format!("({p}*{p}*(3-2*{p}))")
+}
+
+/// An overlay coordinate expression with `term` added (quoting it if it wasn't).
+fn with_term(expr: &str, term: &str) -> String {
+    match expr.strip_prefix('\'').and_then(|e| e.strip_suffix('\'')) {
+        Some(inner) => format!("'{inner}{term}'"),
+        None => format!("'{expr}{term}'"),
+    }
+}
+
+/// Working pixel format of a layer: RGB when colour maths runs, alpha when it's needed.
+fn pix_fmt(rgb: bool, alpha: bool) -> &'static str {
+    match (rgb, alpha) {
+        (true, true) => "gbrap",
+        (true, false) => "gbrp",
+        (false, true) => "yuva420p",
+        (false, false) => "yuv420p",
+    }
+}
+
+/// Blur (std. deviation, project pixels) of a "blur" backdrop; visual.ts: backdropBlur.
+fn backdrop_sigma(w: f64, h: f64) -> f64 {
+    0.03 * w.min(h)
 }
 
 fn even(v: f64) -> u32 {
@@ -299,10 +481,15 @@ pub fn build(
             clips.sort_by(|a, b| a.start.total_cmp(&b.start));
             for clip in clips {
                 let Some(sp) = span(clip, r0, r1) else { continue };
+                // Dissolves extend the layer: `pre` before the clip holding its first frame,
+                // `post` after it holding its last (only the parts inside the range).
+                let (x_in, x_out) = dissolves(&track.clips, clip);
+                let pre = if sp.head > 0.0 { 0.0 } else { x_in.min(clip.start - r0).max(0.0) };
+                let post = if sp.tail > 0.0 { 0.0 } else { x_out.min(r1 - clip.end()).max(0.0) };
                 let (input, mw, mh, is_video, has_alpha) = match clip.kind {
                     ClipKind::Title => {
                         let Some(png) = titles.get(&clip.id) else { continue };
-                        (still_input(png.to_string_lossy().as_ref(), fps, sp.dur), pw, ph, false, true)
+                        (still_input(png.to_string_lossy().as_ref(), fps, sp.dur + pre + post), pw, ph, false, true)
                     }
                     ClipKind::Media => {
                         let Some(m) = clip.media_id.as_deref().and_then(|id| project.media(id)) else { continue };
@@ -311,7 +498,10 @@ pub fn build(
                         }
                         let (mw, mh) = if m.width > 0 && m.height > 0 { (m.width as f64, m.height as f64) } else { (pw, ph) };
                         if m.kind == MediaKind::Image {
-                            (still_input(&m.path, fps, sp.dur), mw, mh, false, true)
+                            (still_input(&m.path, fps, sp.dur + pre + post), mw, mh, false, true)
+                        } else if clip.freeze {
+                            // A frame hold reads just the frame at `in`.
+                            (seek_input(&m.path, clip.source_in, 2.0 / fps), mw, mh, true, false)
                         } else {
                             (seek_input(&m.path, sp.src_in, sp.src_len), mw, mh, true, false)
                         }
@@ -322,31 +512,122 @@ pub fn build(
                 clip_input.insert(clip.id.as_str(), idx);
 
                 let t = &clip.transform;
-                let scale = if t.scale.is_finite() && t.scale > 0.0 { t.scale } else { 1.0 };
+                let kf = &clip.keyframes;
+                // Keyed scale lays the layer out at its largest and shrinks it per frame,
+                // so it is never upscaled.
+                let scale = if !kf.scale.is_empty() {
+                    kf.scale.iter().map(|k| k.v).fold(0.01, f64::max)
+                } else if t.scale.is_finite() && t.scale > 0.0 {
+                    t.scale
+                } else {
+                    1.0
+                };
                 let (fw, fh) = fit_box(mw, mh, pw, ph, t.fit);
                 let (lw, lh) = (even(fw * scale * kx), even(fh * scale * ky));
                 if lw > 16384 || lh > 16384 {
                     continue; // absurdly zoomed layer; ffmpeg would refuse it
                 }
 
-                let opacity = clip.opacity.clamp(0.0, 1.0);
-                if opacity <= 1e-3 {
+                // Keyed opacity replaces the static one.
+                let keyed_opacity = !kf.opacity.is_empty();
+                let opacity = if keyed_opacity { 1.0 } else { clip.opacity.clamp(0.0, 1.0) };
+                if opacity <= 1e-3 || (keyed_opacity && kf.opacity.iter().all(|k| k.v <= 1e-3)) {
                     continue;
                 }
                 let fade_in = (clip.fade_in - sp.head).max(0.0).min(sp.dur);
                 let fade_out = (clip.fade_out - sp.tail).max(0.0).min(sp.dur);
                 let rotation = t.rotation % 360.0;
+                let keyed_rotation = !kf.rotation.is_empty();
                 let colors = color_filters(&clip.color);
-                let rgb = !colors.is_empty() || opacity < 0.999;
-                let alpha = has_alpha || opacity < 0.999 || fade_in > 0.0 || fade_out > 0.0 || rotation.abs() > 1e-3 || clip.crop.is_active();
+                let rgb = !colors.is_empty() || opacity < 0.999 || keyed_opacity;
+                // The incoming side of a dissolve ramps 0 → 1 over [start - x_in, start + x_in].
+                // A wipe-on entrance: (layer-clock start, length) of the reveal, if any of it is rendered.
+                let reveal = clip.motion.filter(|m| m.reveal).and_then(|m| {
+                    let d = if m.duration > 0.0 { m.duration.min(clip.duration()) } else { clip.duration() };
+                    (sp.head < d).then_some((pre - sp.head, d))
+                });
+                // Transition styles: the incoming clip's own, and the next clip's (which may push
+                // this one out).
+                let next = track.clips.iter().find(|c| !std::ptr::eq(*c, clip) && (c.start - clip.end()).abs() < CUT_EPS);
+                let style_in = if x_in > 0.0 { clip.transition_style } else { None };
+                let style_out = if x_out > 0.0 { next.and_then(|c| c.transition_style) } else { None };
+                let layer_start = clip.start + sp.head - pre;
+                let ramp = (x_in > 0.0).then(|| {
+                    let (a, b) = (clip.start - x_in - layer_start, clip.start + x_in - layer_start);
+                    (a.max(0.0), b - a.max(0.0))
+                });
+                // Push and slide move the clip in opaque; dissolve and zoom fade it in.
+                let ramp = ramp.filter(|&(_, d)| d > EPS && matches!(style_in, None | Some(TransitionStyle::Zoom)));
+                let alpha = has_alpha
+                    || opacity < 0.999
+                    || keyed_opacity
+                    || fade_in > 0.0
+                    || fade_out > 0.0
+                    || rotation.abs() > 1e-3
+                    || keyed_rotation
+                    || clip.crop.is_active()
+                    || clip.corners > 1e-3
+                    || reveal.is_some()
+                    || ramp.is_some();
 
-                let mut chain: Vec<String> = vec![];
-                chain.push(if is_video {
+                // Timing and fading, shared by the clip and its backdrop.
+                let mut timing: Vec<String> = vec![if is_video && !clip.freeze {
                     format!("setpts=(PTS-STARTPTS)/{}", f(clip.speed()))
                 } else {
                     "setpts=PTS-STARTPTS".into()
-                });
-                chain.push(format!("trim=duration={}", f(sp.dur)));
+                }];
+                if clip.freeze {
+                    timing.push("trim=end_frame=1".into());
+                    timing.push(format!("tpad=start_mode=clone:start_duration={}:stop_mode=clone:stop_duration={}", f(pre), f(sp.dur + post)));
+                } else {
+                    timing.push(format!("trim=duration={}", f(sp.dur)));
+                    if pre > 0.0 || post > 0.0 {
+                        timing.push(format!("tpad=start_mode=clone:start_duration={}:stop_mode=clone:stop_duration={}", f(pre), f(post)));
+                    }
+                }
+                // `tag` names the keyed-opacity mixer apart in the clip and its backdrop.
+                let fades = |tag: &str| {
+                    let mut out: Vec<String> = vec![];
+                    if keyed_opacity {
+                        out.extend(opacity_keys(&kf.opacity, clip, pre - sp.head, pre + sp.dur + post, fps, &format!("{tag}{n}")));
+                    } else if opacity < 0.999 {
+                        out.push(format!("colorchannelmixer=aa={}", f(opacity)));
+                    }
+                    if fade_in > 0.0 {
+                        out.push(format!("fade=t=in:st={}:d={}:alpha=1", f(pre), f(fade_in)));
+                    }
+                    if fade_out > 0.0 {
+                        out.push(format!("fade=t=out:st={}:d={}:alpha=1", f(pre + sp.dur - fade_out), f(fade_out)));
+                    }
+                    if let Some((st, d)) = ramp {
+                        out.push(format!("fade=t=in:st={}:d={}:alpha=1", f(st), f(d)));
+                    }
+                    out
+                };
+                let offset = (sp.at - pre > 0.0).then(|| format!("setpts=PTS+{}/TB", f(sp.at - pre)));
+                let backdrop = clip.kind == ClipKind::Media && clip.backdrop == Some(Backdrop::Blur);
+                let source = if backdrop {
+                    graph.push(format!("[{idx}:v]split=2[c{n}][b{n}]"));
+                    // Blur at a quarter of the size, then scale up: same look, far cheaper.
+                    let (bw, bh) = (even(ow as f64 / 4.0), even(oh as f64 / 4.0));
+                    let mut b = timing.clone();
+                    b.push(format!("scale={bw}:{bh}:force_original_aspect_ratio=increase:flags=bilinear"));
+                    b.push(format!("crop={bw}:{bh}"));
+                    b.push(format!("format={}", pix_fmt(rgb, alpha)));
+                    b.extend(colors.iter().cloned());
+                    b.push(format!("gblur=sigma={}", f(backdrop_sigma(pw, ph) * kx / 4.0)));
+                    b.push(format!("scale={ow}:{oh}:flags=bilinear"));
+                    b.extend(fades("ob"));
+                    b.extend(offset.clone());
+                    graph.push(format!("[b{n}]{}[bl{n}]", b.join(",")));
+                    graph.push(format!("[{prev}][bl{n}]overlay=x=0:y=0:eof_action=pass:format=auto[bv{n}]"));
+                    prev = format!("bv{n}");
+                    format!("c{n}")
+                } else {
+                    format!("{idx}:v")
+                };
+
+                let mut chain = timing;
                 chain.push(format!("scale={lw}:{lh}:flags=bicubic"));
                 if t.flip_h {
                     chain.push("hflip".into());
@@ -354,16 +635,8 @@ pub fn build(
                 if t.flip_v {
                     chain.push("vflip".into());
                 }
-                chain.push(format!(
-                    "format={}",
-                    match (rgb, alpha) {
-                        (true, true) => "gbrap",
-                        (true, false) => "gbrp",
-                        (false, true) => "yuva420p",
-                        (false, false) => "yuv420p",
-                    }
-                ));
-                chain.extend(colors);
+                chain.push(format!("format={}", pix_fmt(rgb, alpha)));
+                chain.extend(colors.iter().cloned());
                 if clip.crop.is_active() {
                     let c = &clip.crop;
                     let (l, r, tp, b) = (c.left.clamp(0.0, 1.0), c.right.clamp(0.0, 1.0), c.top.clamp(0.0, 1.0), c.bottom.clamp(0.0, 1.0));
@@ -377,28 +650,69 @@ pub fn build(
                 if clip.color.blur > 0.01 {
                     chain.push(format!("gblur=sigma={}", f(clip.color.blur * scale * kx)));
                 }
-                if opacity < 0.999 {
-                    chain.push(format!("colorchannelmixer=aa={}", f(opacity)));
+                // Rounded corners: one frame of mask, multiplied into the alpha of every frame.
+                let mut source = source;
+                if let Some(mask) = corner_mask(clip, lw, lh) {
+                    graph.push(format!("[{source}]{},split[rc{n}][ra{n}]", chain.join(",")));
+                    graph.push(format!("color=c=black:s={lw}x{lh}:d=0.04,format=gray,geq=lum='255*{mask}'[rm{n}]"));
+                    graph.push(format!("[ra{n}]alphaextract[re{n}];[re{n}][rm{n}]blend=all_mode=multiply[rn{n}];[rc{n}][rn{n}]alphamerge[rr{n}]"));
+                    source = format!("rr{n}");
+                    chain = vec![];
                 }
-                if fade_in > 0.0 {
-                    chain.push(format!("fade=t=in:st=0:d={}:alpha=1", f(fade_in)));
+                if let (Some((a, d)), Some(m)) = (reveal, clip.motion) {
+                    // Everything right of the wipe's edge is transparent while it crosses the layer.
+                    let p = format!("clip((T{})/{},0,1)", signed(-a), f(d.max(EPS)));
+                    let p = if m.ease_out { format!("(1-pow(1-{p},3))") } else { p };
+                    let keep = if rgb { "r='r(X,Y)':g='g(X,Y)':b='b(X,Y)'" } else { "lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)'" };
+                    chain.push(format!("geq={keep}:a='alpha(X,Y)*clip({p}*W-X+0.5,0,1)':enable='between(t,{},{})'", f(a), f(a + d)));
                 }
-                if fade_out > 0.0 {
-                    chain.push(format!("fade=t=out:st={}:d={}:alpha=1", f(sp.dur - fade_out), f(fade_out)));
-                }
-                if rotation.abs() > 1e-3 {
+                chain.extend(fades("o"));
+                if keyed_rotation {
+                    // A canvas that fits every angle; the overlay centres it.
+                    let a = format!("({})*PI/180", key_expr(&kf.rotation, clip, pre - sp.head, 1.0));
+                    chain.push(format!("rotate=a='{a}':ow='2*ceil(hypot(iw,ih)/2)':oh='2*ceil(hypot(iw,ih)/2)':c=black@0"));
+                } else if rotation.abs() > 1e-3 {
                     let a = f(rotation.to_radians());
                     chain.push(format!("rotate=a={a}:ow=rotw({a}):oh=roth({a}):c=black@0"));
                 }
-                if sp.at > 0.0 {
-                    chain.push(format!("setpts=PTS+{}/TB", f(sp.at)));
+                // Progress through the whole clip as an expression of time `t`, where the
+                // clip starts at `t0` (the layer's own clock here, the export's in the overlay).
+                let still = crate::model::MotionPoint::default();
+                let motion = clip.motion.filter(|m| m.from != still || m.to != still);
+                let progress = |t0: f64| {
+                    let m = motion.unwrap_or_default();
+                    let d = if m.duration > 0.0 { m.duration.min(clip.duration()) } else { clip.duration() };
+                    let p = format!("clip((t{})/{},0,1)", signed(-t0), f(d.max(EPS)));
+                    if m.ease_out { format!("(1-pow(1-{p},3))") } else { p }
+                };
+                let zoom = motion.map(|m| format!("({}{}*{})", f(m.from.scale), signed(m.to.scale - m.from.scale), progress(pre - sp.head)));
+                let keyed_zoom = (!kf.scale.is_empty()).then(|| format!("({})/{}", key_expr(&kf.scale, clip, pre - sp.head, 1.0), f(scale)));
+                // A zoom transition settles from a close-up across its window (layer clock).
+                let transition_zoom = (style_in == Some(TransitionStyle::Zoom)).then(|| {
+                    let p = window(clip.start - x_in - layer_start, 2.0 * x_in);
+                    format!("(1+{}*pow(1-{p},2))", f(TRANSITION_ZOOM))
+                });
+                let z = [zoom, keyed_zoom, transition_zoom].into_iter().flatten().reduce(|a, b| format!("{a}*{b}"));
+                if let Some(z) = z {
+                    chain.push(format!("scale=w='max(2,trunc(iw*{z}/2)*2)':h='max(2,trunc(ih*{z}/2)*2)':eval=frame:flags=bicubic"));
                 }
-                graph.push(format!("[{idx}:v]{}[l{n}]", chain.join(",")));
-                graph.push(format!(
-                    "[{prev}][l{n}]overlay=x=(W-w)/2{}:y=(H-h)/2{}:eof_action=pass:format=auto[v{n}]",
-                    signed(t.x * kx),
-                    signed(t.y * ky)
-                ));
+                chain.extend(offset);
+                if chain.is_empty() {
+                    chain.push("null".into());
+                }
+                graph.push(format!("[{source}]{}[l{n}]", chain.join(",")));
+                let p = progress(clip.start - r0);
+                let keyed = |keys: &[Key], k: f64| (!keys.is_empty()).then(|| key_expr(keys, clip, clip.start - r0, k));
+                let mut ox = place_expr("(W-w)/2", keyed(&kf.x, kx), t.x, motion.map(|m| (m.from.x, m.to.x, p.as_str())), kx);
+                // Push / slide: in from the right across the incoming window; push: out to the left.
+                if matches!(style_in, Some(TransitionStyle::Push | TransitionStyle::Slide)) {
+                    ox = with_term(&ox, &format!("+W*(1-{})", smoothstep(&window(clip.start - x_in - r0, 2.0 * x_in))));
+                }
+                if style_out == Some(TransitionStyle::Push) {
+                    ox = with_term(&ox, &format!("-W*{}", smoothstep(&window(clip.end() - x_out - r0, 2.0 * x_out))));
+                }
+                let oy = place_expr("(H-h)/2", keyed(&kf.y, ky), t.y, motion.map(|m| (m.from.y, m.to.y, p.as_str())), ky);
+                graph.push(format!("[{prev}][l{n}]overlay=x={ox}:y={oy}:eof_action=pass:format=auto[v{n}]"));
                 prev = format!("v{n}");
                 n += 1;
             }
@@ -424,7 +738,7 @@ pub fn build(
             }
             let track_gain = if track.volume.is_finite() { track.volume.max(0.0) } else { 1.0 };
             for clip in &track.clips {
-                if clip.kind != ClipKind::Media || clip.muted {
+                if clip.kind != ClipKind::Media || clip.muted || clip.freeze {
                     continue;
                 }
                 let Some(m) = clip.media_id.as_deref().and_then(|id| project.media(id)) else { continue };
@@ -453,6 +767,11 @@ pub fn build(
                 if (gain - 1.0).abs() > 1e-4 {
                     chain.push(format!("volume={}", f(gain)));
                 }
+                if let Some(expr) = envelope(&clip.volume_points, sp.src_in, clip.speed(), sp.dur) {
+                    // Small frames so the gain moves in 5 ms steps, not 20 ms ones.
+                    chain.push("asetnsamples=n=256:p=0".into());
+                    chain.push(format!("volume='{expr}':eval=frame"));
+                }
                 let fade_in = (clip.fade_in - sp.head).max(0.0).min(sp.dur);
                 let fade_out = (clip.fade_out - sp.tail).max(0.0).min(sp.dur);
                 if fade_in > 0.0 {
@@ -460,6 +779,15 @@ pub fn build(
                 }
                 if fade_out > 0.0 {
                     chain.push(format!("afade=t=out:st={}:d={}", f(sp.dur - fade_out), f(fade_out)));
+                }
+                // Sound dips across a dissolved cut: out over the half before it, in over the half after.
+                let (x_in, x_out) = dissolves(&track.clips, clip);
+                let (dip_in, dip_out) = ((x_in - sp.head).max(0.0).min(sp.dur), (x_out - sp.tail).max(0.0).min(sp.dur));
+                if dip_in > 0.0 {
+                    chain.push(format!("afade=t=in:st=0:d={}", f(dip_in)));
+                }
+                if dip_out > 0.0 {
+                    chain.push(format!("afade=t=out:st={}:d={}", f(sp.dur - dip_out), f(dip_out)));
                 }
                 let delay = (sp.at * sr as f64).round() as u64;
                 if delay > 0 {
@@ -878,6 +1206,411 @@ mod tests {
             run(&p, &s, None, &out);
             assert!(std::fs::metadata(&out).map(|m| m.len() > 0).unwrap_or(false), "{name} not written");
         }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Two solid colours back to back (first for `a` seconds, then the second for `b`).
+    fn two_colors(path: &PathBuf, c1: &str, a: f64, c2: &str, b: f64, tone: u32) {
+        ff(&["-f", "lavfi", "-i", &format!("color=c={c1}:s=160x90:r=30:d={a}"), "-f", "lavfi", "-i", &format!("color=c={c2}:s=160x90:r=30:d={b}"),
+             "-f", "lavfi", "-i", &format!("sine=frequency={tone}:duration={}", a + b),
+             "-filter_complex", "[0:v][1:v]concat=n=2:v=1:a=0[v]", "-map", "[v]", "-map", "2:a",
+             "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", path.to_str().unwrap()]);
+    }
+
+    #[test]
+    fn dissolve_blends_held_frames_across_the_cut() {
+        if !ffmpeg_ok() { return; }
+        let d = tmpdir();
+        // A is red, but its source turns green right after the out point; B is blue, but its
+        // source is yellow right before the in point: a dissolve must never show either.
+        let (src_a, src_b) = (d.join("a.mp4"), d.join("b.mp4"));
+        two_colors(&src_a, "red", 2.0, "green", 2.0, 440);
+        two_colors(&src_b, "yellow", 1.0, "blue", 3.0, 660);
+        let mut p = project(160, 90);
+        p.media = vec![media("a", &src_a, 160, 90, 4.0, true), media("b", &src_b, 160, 90, 4.0, true)];
+        p.tracks[0].clips.push(clip("ca", "a", 0.0, 0.0, 2.0));
+        let mut b = clip("cb", "b", 2.0, 1.0, 2.0);
+        b.transition_in = 1.0; // 1.5s .. 2.5s
+        p.tracks[0].clips.push(b);
+        let out = d.join("dissolve.mp4");
+        let plan = run(&p, &ExportSettings::default(), None, &out);
+        assert!((plan.duration - 4.0).abs() < 1e-6, "a dissolve doesn't change the length");
+
+        let (red, blue) = ([254, 0, 0], [0, 0, 254]);
+        let mix = |k: f64| [(254.0 * (1.0 - k)) as u8, 0, (254.0 * k) as u8];
+        assert!(near(pixel(&out, 1.2, 80, 45), red, 24), "before: {:?}", pixel(&out, 1.2, 80, 45));
+        // First half: B held on its first (blue) frame, fading in over A.
+        let early = pixel(&out, 1.8, 80, 45);
+        assert!(near(early, mix(0.3), 40) && early[1] < 40, "30% in: {early:?}");
+        // Second half: A held on its last (red) frame under B.
+        let late = pixel(&out, 2.2, 80, 45);
+        assert!(near(late, mix(0.7), 40) && late[1] < 40, "70% in: {late:?}");
+        assert!(near(pixel(&out, 2.8, 80, 45), blue, 24), "after: {:?}", pixel(&out, 2.8, 80, 45));
+        // The sound dips across the cut.
+        assert!(mean_volume(&out, 1.97, 0.06) < mean_volume(&out, 1.0, 0.3) - 12.0, "audio dip at the cut");
+        assert!(mean_volume(&out, 3.0, 0.3) > -40.0, "B audible after the dissolve");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn motion_zooms_and_pans_across_the_clip() {
+        if !ffmpeg_ok() { return; }
+        let d = tmpdir();
+        // A white 20x20 square in the middle of a black frame.
+        let src = d.join("square.mp4");
+        ff(&["-f", "lavfi", "-i", "color=c=black:s=160x90:r=30:d=4,drawbox=x=70:y=35:w=20:h=20:color=white:t=fill",
+             "-c:v", "libx264", "-pix_fmt", "yuv420p", src.to_str().unwrap()]);
+        let mut p = project(160, 90);
+        p.media = vec![media("sq", &src, 160, 90, 4.0, false)];
+        let mut zoom = clip("z", "sq", 0.0, 0.0, 2.0);
+        zoom.motion = Some(Motion { from: MotionPoint::default(), to: MotionPoint { scale: 2.0, ..Default::default() }, ..Default::default() });
+        let mut pan = clip("p", "sq", 2.0, 0.0, 2.0);
+        pan.motion = Some(Motion { from: MotionPoint { x: -40.0, ..Default::default() }, to: MotionPoint { x: 40.0, ..Default::default() }, ..Default::default() });
+        p.tracks[0].clips.extend([zoom, pan]);
+        let out = d.join("motion.mp4");
+        run(&p, &ExportSettings::default(), None, &out);
+        let white = |t: f64, x: u32| pixel(&out, t, x, 45)[0] > 200;
+        // Zoom 1x -> 2x: the square (x 70..90) grows to x 60..100.
+        assert!(!white(0.05, 95), "square still small at the start");
+        assert!(white(1.95, 95), "square doubled by the end");
+        assert!(white(1.0, 70) && !white(1.0, 97), "1.5x half way: x 65..95");
+        // Pan -40 -> +40: the square slides from x 30..50 to x 110..130.
+        assert!(white(2.05, 40) && !white(2.05, 120), "starts left");
+        assert!(white(3.95, 120) && !white(3.95, 40), "ends right");
+        assert!(white(3.0, 80), "centred half way");
+        // Range export starting mid-clip keeps the motion on the clip's own clock.
+        let half = d.join("motion_range.mp4");
+        run(&p, &ExportSettings::default(), Some((3.0, 4.0)), &half);
+        assert!(pixel(&half, 0.02, 80, 45)[0] > 200, "range starts with the square centred");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn keyframes_move_fade_scale_and_rotate_on_the_clip_clock() {
+        if !ffmpeg_ok() { return; }
+        let d = tmpdir();
+        let keys = |v: &[(f64, f64)]| v.iter().map(|&(t, v)| Key { t, v }).collect::<Vec<_>>();
+        // A white 20x20 square, a white frame, and a white 60x10 bar, all on black.
+        let square = d.join("square.mp4");
+        ff(&["-f", "lavfi", "-i", "color=c=black:s=160x90:r=30:d=8,drawbox=x=70:y=35:w=20:h=20:color=white:t=fill",
+             "-c:v", "libx264", "-pix_fmt", "yuv420p", square.to_str().unwrap()]);
+        let white = d.join("white.mp4");
+        solid(&white, "white", 160, 90, 4.0, None);
+        let bar = d.join("bar.mp4");
+        ff(&["-f", "lavfi", "-i", "color=c=black:s=160x90:r=30:d=4,drawbox=x=50:y=40:w=60:h=10:color=white:t=fill",
+             "-c:v", "libx264", "-pix_fmt", "yuv420p", bar.to_str().unwrap()]);
+        let mut p = project(160, 90);
+        p.media = vec![media("sq", &square, 160, 90, 8.0, false), media("w", &white, 160, 90, 4.0, false), media("bar", &bar, 160, 90, 4.0, false)];
+        // 0-2s: x from -40 to +40 over source 1s..2s (the clip uses source 1s..3s), then holds.
+        let mut slide = clip("s", "sq", 0.0, 1.0, 2.0);
+        slide.keyframes.x = keys(&[(1.0, -40.0), (2.0, 40.0)]);
+        slide.keyframes.y = keys(&[(1.0, 0.0)]);
+        // 2-4s: fades in from transparent over its first 2s (2x speed: source 0..4).
+        let mut fade = clip("f", "w", 2.0, 0.0, 4.0);
+        fade.speed = 2.0;
+        fade.keyframes.opacity = keys(&[(0.0, 0.0), (4.0, 1.0)]);
+        // 4-6s: scale 1 -> 2.
+        let mut grow = clip("g", "sq", 4.0, 0.0, 2.0);
+        grow.keyframes.scale = keys(&[(0.0, 1.0), (2.0, 2.0)]);
+        // 6-8s: rotate 0 -> 90 degrees.
+        let mut turn = clip("r", "bar", 6.0, 0.0, 2.0);
+        turn.keyframes.rotation = keys(&[(0.0, 0.0), (2.0, 90.0)]);
+        p.tracks[0].clips.extend([slide, fade, grow, turn]);
+        let out = d.join("keys.mp4");
+        run(&p, &ExportSettings::default(), None, &out);
+        let lum = |t: f64, x: u32, y: u32| pixel(&out, t, x, y)[0];
+        // Position: x 30..50 at the start, 70..90 half way (source 1.5s), 110..130 from 1s on.
+        assert!(lum(0.05, 40, 45) > 200 && lum(0.05, 80, 45) < 60, "starts left");
+        assert!(lum(0.5, 80, 45) > 200, "centred half way");
+        assert!(lum(1.5, 120, 45) > 200 && lum(1.5, 80, 45) < 60, "holds at the right after its last key");
+        // Opacity 0 -> 1 across the clip (keys are on the 2x clip clock).
+        let (a, b, c) = (lum(2.05, 80, 45), lum(3.0, 80, 45), lum(3.95, 80, 45));
+        assert!(a < 30 && (100..160).contains(&b) && c > 225, "fades in: {a} {b} {c}");
+        // Scale: the square grows to x 60..100.
+        assert!(lum(4.05, 95, 45) < 60 && lum(5.95, 95, 45) > 200, "grows");
+        // Rotation: the horizontal bar ends up vertical.
+        assert!(lum(6.05, 105, 45) > 200 && lum(6.05, 80, 20) < 60, "starts horizontal");
+        assert!(lum(7.95, 80, 20) > 200 && lum(7.95, 105, 45) < 60, "ends vertical");
+        // A range starting mid-clip keeps the keys on the clip's clock.
+        let part = d.join("keys_range.mp4");
+        run(&p, &ExportSettings::default(), Some((0.5, 4.0)), &part);
+        assert!(pixel(&part, 0.02, 80, 45)[0] > 200, "range starts with the square centred");
+        assert!((100..160).contains(&pixel(&part, 2.5, 80, 45)[0]), "and the fade half way at 3s");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn eased_keyframes_start_slow() {
+        if !ffmpeg_ok() { return; }
+        let d = tmpdir();
+        let keys = |v: &[(f64, f64)]| v.iter().map(|&(t, v)| Key { t, v }).collect::<Vec<_>>();
+        let square = d.join("square.mp4");
+        ff(&["-f", "lavfi", "-i", "color=c=black:s=160x90:r=30:d=2,drawbox=x=70:y=35:w=20:h=20:color=white:t=fill",
+             "-c:v", "libx264", "-pix_fmt", "yuv420p", square.to_str().unwrap()]);
+        let white = d.join("white.mp4");
+        solid(&white, "white", 160, 90, 2.0, None);
+        let mut p = project(160, 90);
+        p.media = vec![media("sq", &square, 160, 90, 2.0, false), media("w", &white, 160, 90, 2.0, false)];
+        let mut slide = clip("s", "sq", 0.0, 0.0, 2.0);
+        slide.key_ease = true;
+        slide.keyframes.x = keys(&[(0.0, -40.0), (2.0, 40.0)]);
+        let mut fade = clip("f", "w", 2.0, 0.0, 2.0);
+        fade.key_ease = true;
+        fade.keyframes.opacity = keys(&[(0.0, 0.0), (2.0, 1.0)]);
+        p.tracks[0].clips.extend([slide, fade]);
+        let out = d.join("eased.mp4");
+        run(&p, &ExportSettings::default(), None, &out);
+        // A quarter of the way in, smoothstep has covered 15.6% (linear: 25%): the square's
+        // centre is at x ≈ 52.5 (linear: 60), and the white is at ≈ 40 (linear: 64).
+        assert!(pixel(&out, 0.5, 45, 45)[0] > 200 && pixel(&out, 0.5, 66, 45)[0] < 60, "eased position");
+        assert!(pixel(&out, 1.0, 80, 45)[0] > 200, "half way is still the middle");
+        let w = pixel(&out, 2.5, 80, 45)[0];
+        assert!((28..52).contains(&w), "eased opacity: {w}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn colour_adjustments_move_picture_stats_as_autocolor_models() {
+        if !ffmpeg_ok() { return; }
+        let d = tmpdir();
+        // A washed-out test pattern; src/lib/autocolor.test.ts holds its measured stats, and
+        // matchColor() to the original picks brightness 0.8, contrast 2.28, saturation 1.24.
+        let dull = d.join("dull.mp4");
+        ff(&["-f", "lavfi", "-i", "testsrc2=s=640x360:r=25:d=2,eq=contrast=0.55:brightness=0.12:saturation=0.45",
+             "-c:v", "libx264", "-pix_fmt", "yuv420p", dull.to_str().unwrap()]);
+        let mut p = project(640, 360);
+        p.media = vec![media("d", &dull, 640, 360, 2.0, false)];
+        let mut c = clip("c", "d", 0.0, 0.0, 2.0);
+        c.color = ColorAdjust { brightness: 0.8, contrast: 2.28, saturation: 1.24, ..Default::default() };
+        p.tracks[0].clips.push(c);
+        let out = d.join("matched.mp4");
+        run(&p, &ExportSettings::default(), None, &out);
+        let stats = |file: &PathBuf| {
+            let o = Command::new("ffmpeg").args(crate::analysis::stats_args(file.to_str().unwrap(), 0.0, 2.0)).output().unwrap();
+            crate::analysis::parse_stats(&String::from_utf8_lossy(&o.stderr)).unwrap()
+        };
+        let s = stats(&out);
+        // The model's prediction (and, near enough, the original's own stats).
+        assert!((s.low - 0.118).abs() < 0.05 && (s.high - 0.892).abs() < 0.05, "{s:?}");
+        assert!((s.sat - 0.862).abs() < 0.12, "{s:?}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn clean_voice_lowers_the_noise_between_words() {
+        if !ffmpeg_ok() { return; }
+        let d = tmpdir();
+        // "Speech": a 220 Hz buzz with harmonics, 1 s on / 1 s off, over steady hiss and hum.
+        let noisy = d.join("noisy.mp4");
+        ff(&["-f", "lavfi", "-i", "aevalsrc='(0.5*sin(2*PI*220*t)+0.25*sin(2*PI*440*t)+0.12*sin(2*PI*660*t))*lt(mod(t,2),1)':s=48000:d=8",
+             "-f", "lavfi", "-i", "anoisesrc=c=pink:a=0.03:d=8:r=48000", "-f", "lavfi", "-i", "sine=frequency=50:duration=8:sample_rate=48000",
+             "-filter_complex", "[0][1][2]amix=inputs=3:normalize=0[a]", "-map", "[a]", "-c:a", "aac", "-b:a", "192k", noisy.to_str().unwrap()]);
+        let clean = d.join("clean.m4a");
+        let o = Command::new("ffmpeg").args(crate::analysis::clean_voice_args(noisy.to_str().unwrap(), 2.0, 6.0, clean.to_str().unwrap())).output().unwrap();
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        assert!((duration(&clean) - 6.0).abs() < 0.1);
+        // Speech vs the gap after it, before and after (the clean copy starts 2 s in).
+        let snr = |file: &PathBuf, t: f64| mean_volume(file, t + 0.2, 0.6) - mean_volume(file, t + 1.3, 0.5);
+        let (before, after) = (snr(&noisy, 4.0), snr(&clean, 2.0));
+        assert!(after > before + 8.0, "speech-to-noise {before:.1} dB -> {after:.1} dB");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn rounded_corners_and_circles() {
+        if !ffmpeg_ok() { return; }
+        let d = tmpdir();
+        let white = d.join("white.mp4");
+        solid(&white, "white", 160, 90, 2.0, None);
+        let mut p = project(160, 90);
+        p.media = vec![media("w", &white, 160, 90, 2.0, false)];
+        // 0-1s: a circle (square crop, corners 0.5): radius 45 around the centre.
+        let mut circle = clip("c", "w", 0.0, 0.0, 1.0);
+        let side = (1.0 - 90.0 / 160.0) / 2.0;
+        circle.crop = Crop { left: side, right: side, ..Default::default() };
+        circle.corners = 0.5;
+        // 1-2s: half size (80x45 in the middle) with corners of 0.2 × 45 = 9 px, faded to half.
+        let mut card = clip("r", "w", 1.0, 0.0, 1.0);
+        card.transform.scale = 0.5;
+        card.corners = 0.2;
+        card.opacity = 0.5;
+        p.tracks[0].clips.extend([circle, card]);
+        let out = d.join("corners.mp4");
+        run(&p, &ExportSettings::default(), None, &out);
+        let lum = |t: f64, x: u32, y: u32| pixel(&out, t, x, y)[0];
+        assert!(lum(0.5, 80, 45) > 230 && lum(0.5, 80, 3) > 200 && lum(0.5, 38, 45) > 200, "inside the circle");
+        assert!(lum(0.5, 38, 4) < 30 && lum(0.5, 120, 86) < 30, "the square's corners are cut away");
+        assert!((100..160).contains(&lum(1.5, 80, 45)), "card at half opacity: {}", lum(1.5, 80, 45));
+        assert!(lum(1.5, 41, 24) < 30, "card corner rounded off");
+        assert!(lum(1.5, 50, 45) > 100, "card edge straight");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn push_slide_and_zoom_transitions() {
+        if !ffmpeg_ok() { return; }
+        let d = tmpdir();
+        // Red with a white stripe on its right edge, then blue; a 1 s transition at 2 s.
+        let red = d.join("red.mp4");
+        ff(&["-f", "lavfi", "-i", "color=c=red:s=160x90:r=30:d=3,drawbox=x=120:y=0:w=40:h=90:color=white:t=fill",
+             "-c:v", "libx264", "-pix_fmt", "yuv420p", red.to_str().unwrap()]);
+        let blue = d.join("blue.mp4");
+        solid(&blue, "blue", 160, 90, 3.0, None);
+        let render = |style: Option<TransitionStyle>| {
+            let mut p = project(160, 90);
+            p.media = vec![media("r", &red, 160, 90, 3.0, false), media("b", &blue, 160, 90, 3.0, false)];
+            let mut b = clip("b", "b", 2.0, 0.0, 2.0);
+            b.transition_in = 1.0;
+            b.transition_style = style;
+            p.tracks[0].clips.extend([clip("r", "r", 0.0, 0.0, 2.0), b]);
+            let out = d.join(format!("{style:?}.mp4"));
+            run(&p, &ExportSettings::default(), None, &out);
+            out
+        };
+        let red_px = |px: [u8; 3]| px[0] > 180 && px[1] < 70 && px[2] < 70;
+        let white_px = |px: [u8; 3]| px[0] > 200 && px[1] > 200 && px[2] > 200;
+        let blue_px = |px: [u8; 3]| px[2] > 180 && px[0] < 70;
+        // Push, half way: red has moved left by half the frame (its stripe now at x 40-80), blue fills the right half.
+        let push = render(Some(TransitionStyle::Push));
+        assert!(white_px(pixel(&push, 2.0, 60, 45)) && blue_px(pixel(&push, 2.0, 130, 45)), "push half way");
+        assert!(red_px(pixel(&push, 1.55, 60, 45)) && blue_px(pixel(&push, 2.48, 20, 45)), "push before / after");
+        // Slide: red stays put (stripe hidden under blue), blue covers the right half.
+        let slide = render(Some(TransitionStyle::Slide));
+        assert!(red_px(pixel(&slide, 2.0, 60, 45)) && blue_px(pixel(&slide, 2.0, 130, 45)), "slide half way");
+        // Zoom: a cross-fade (half red, half blue) while blue settles.
+        let zoom = render(Some(TransitionStyle::Zoom));
+        let m = pixel(&zoom, 2.0, 60, 45);
+        assert!(m[0] > 80 && m[0] < 180 && m[2] > 80 && m[2] < 180, "zoom mixes: {m:?}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn wipe_on_entrance_reveals_left_to_right() {
+        if !ffmpeg_ok() { return; }
+        let d = tmpdir();
+        let white = d.join("white.mp4");
+        solid(&white, "white", 160, 90, 2.0, None);
+        let mut p = project(160, 90);
+        p.media = vec![media("w", &white, 160, 90, 2.0, false)];
+        let mut c = clip("c", "w", 0.0, 0.0, 2.0);
+        c.motion = Some(Motion { duration: 0.6, ease_out: true, reveal: true, ..Default::default() });
+        p.tracks[0].clips.push(c);
+        let out = d.join("wipe.mp4");
+        run(&p, &ExportSettings::default(), None, &out);
+        let lum = |t: f64, x: u32| pixel(&out, t, x, 45)[0];
+        // 0.1 s in: 1-(1-1/6)^3 ≈ 42 % of the width shows.
+        assert!(lum(0.1, 20) > 200 && lum(0.1, 120) < 40, "part way: {} {}", lum(0.1, 20), lum(0.1, 120));
+        assert!(lum(1.0, 150) > 200 && lum(1.0, 10) > 200, "fully shown after the wipe");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn volume_envelope_ducks_music_on_its_own_clock() {
+        if !ffmpeg_ok() { return; }
+        let d = tmpdir();
+        let music = d.join("music.mp4");
+        solid(&music, "black", 160, 90, 12.0, Some(440));
+        let mut p = project(160, 90);
+        p.media = vec![media("m", &music, 160, 90, 12.0, true)];
+        // Ducked to 1/4 between source 4s and 6s (ramps 3.5-4 and 6-6.5), and the clip
+        // uses source 2s.. from timeline 1s, so the dip lands at timeline 3s-5s.
+        let mut c = clip("c", "m", 1.0, 2.0, 8.0);
+        c.volume_points = vec![
+            VolumePoint { t: 3.5, gain: 1.0 },
+            VolumePoint { t: 4.0, gain: 0.25 },
+            VolumePoint { t: 6.0, gain: 0.25 },
+            VolumePoint { t: 6.5, gain: 1.0 },
+        ];
+        p.tracks[2].clips.push(c);
+        let out = d.join("duck.mp4");
+        run(&p, &ExportSettings::default(), None, &out);
+        let (full, ducked, after) = (mean_volume(&out, 1.5, 0.5), mean_volume(&out, 3.5, 1.0), mean_volume(&out, 6.0, 0.5));
+        assert!((full - ducked - 12.0).abs() < 1.5, "ducked by ~12 dB: {full} -> {ducked}");
+        assert!((full - after).abs() < 1.0, "back up after: {full} vs {after}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn envelope_expression_keeps_only_what_shapes_the_span() {
+        let pts = |v: &[(f64, f64)]| v.iter().map(|&(t, gain)| VolumePoint { t, gain }).collect::<Vec<_>>();
+        assert_eq!(envelope(&pts(&[(0.0, 1.0), (9.0, 1.0)]), 0.0, 1.0, 5.0), None);
+        assert_eq!(envelope(&[], 0.0, 1.0, 5.0), None);
+        // Only (4, 0.5) and (20, 1) matter for source 5..10 at 2x speed (t = 0..2.5).
+        let e = envelope(&pts(&[(1.0, 1.0), (4.0, 0.5), (20.0, 1.0), (30.0, 0.0)]), 5.0, 2.0, 2.5).unwrap();
+        assert_eq!(e, "0.5*lt(t,-0.5)+gte(t,-0.5)*lt(t,7.5)*(0.5+0.5*(t+0.5)/8)+1*gte(t,7.5)");
+    }
+
+    #[test]
+    fn timed_motion_eases_in_then_holds() {
+        if !ffmpeg_ok() { return; }
+        let d = tmpdir();
+        let src = d.join("square.mp4");
+        ff(&["-f", "lavfi", "-i", "color=c=black:s=160x90:r=30:d=3,drawbox=x=70:y=35:w=20:h=20:color=white:t=fill",
+             "-c:v", "libx264", "-pix_fmt", "yuv420p", src.to_str().unwrap()]);
+        let mut p = project(160, 90);
+        p.media = vec![media("sq", &src, 160, 90, 3.0, false)];
+        // A "pop": 0.5x -> 1x over the first second, easing out, then held.
+        let mut c = clip("c", "sq", 0.0, 0.0, 3.0);
+        c.motion = Some(Motion { from: MotionPoint { scale: 0.5, ..Default::default() }, to: MotionPoint::default(), duration: 1.0, ease_out: true, ..Default::default() });
+        p.tracks[0].clips.push(c);
+        let out = d.join("pop.mp4");
+        run(&p, &ExportSettings::default(), None, &out);
+        let white = |t: f64, x: u32| pixel(&out, t, x, 45)[0] > 200;
+        assert!(!white(0.02, 87), "starts at half size (x 75..85)");
+        // Eased: 1-(1-0.4)^3 = 0.78 of the way at 0.4s -> scale 0.89 (x ~71..89).
+        assert!(white(0.4, 87), "well on its way after 0.4s thanks to the ease");
+        assert!(white(2.0, 88) && !white(2.0, 92), "held at full size (x 70..90)");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn blur_backdrop_fills_the_bars() {
+        if !ffmpeg_ok() { return; }
+        let d = tmpdir();
+        let src = d.join("wide.mp4");
+        solid(&src, "green", 160, 90, 2.0, None);
+        // Landscape footage in a portrait frame: bars above and below.
+        let mut p = project(90, 160);
+        p.media = vec![media("w", &src, 160, 90, 2.0, false)];
+        p.tracks[0].clips.push(clip("c", "w", 0.0, 0.0, 2.0));
+        let plain = d.join("bars.mp4");
+        run(&p, &ExportSettings::default(), None, &plain);
+        assert!(pixel(&plain, 1.0, 45, 10)[1] < 30, "bars are the black background");
+        p.tracks[0].clips[0].backdrop = Some(Backdrop::Blur);
+        p.tracks[0].clips[0].fade_in = 0.5;
+        let filled = d.join("filled.mp4");
+        run(&p, &ExportSettings::default(), None, &filled);
+        let top = pixel(&filled, 1.0, 45, 10);
+        assert!(top[1] > 90 && top[0] < 60, "bars show the blurred clip: {top:?}");
+        assert!(pixel(&filled, 1.0, 45, 80)[1] > 90, "clip itself in the middle");
+        assert!(pixel(&filled, 0.05, 45, 10)[1] < 30, "the backdrop fades in with the clip");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn frame_hold_shows_one_frame_silently() {
+        if !ffmpeg_ok() { return; }
+        let d = tmpdir();
+        // Red for 2s then blue for 2s, with a tone throughout.
+        let src = d.join("rb.mp4");
+        two_colors(&src, "red", 2.0, "blue", 2.0, 440);
+        let mut p = project(160, 90);
+        p.media = vec![media("rb", &src, 160, 90, 4.0, true)];
+        // Hold the frame at source 1.5s (red) for 2s on the timeline, then play on from 1.5s.
+        let mut hold = clip("h", "rb", 1.0, 1.5, 2.0);
+        hold.freeze = true;
+        hold.muted = true;
+        p.tracks[0].clips.extend([clip("a", "rb", 0.0, 0.5, 1.0), hold, clip("b", "rb", 3.0, 1.5, 2.0)]);
+        let out = d.join("hold.mp4");
+        run(&p, &ExportSettings::default(), None, &out);
+        // Through the hold it stays red although the source has turned blue by then.
+        for t in [1.2, 2.5, 2.9] {
+            let c = pixel(&out, t, 80, 45);
+            assert!(c[0] > 200 && c[2] < 60, "held red at {t}: {c:?}");
+        }
+        assert!(pixel(&out, 3.8, 80, 45)[2] > 200, "plays on into the blue part");
+        assert!(mean_volume(&out, 1.2, 1.6) < -60.0, "the hold is silent");
+        assert!(mean_volume(&out, 0.2, 0.6) > -40.0, "sound around it");
         let _ = std::fs::remove_dir_all(&d);
     }
 
