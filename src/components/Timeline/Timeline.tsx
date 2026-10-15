@@ -182,6 +182,17 @@ export function Timeline() {
     store().setZoom(d > 0 ? (el.clientWidth - HEADER_W - 40) / d : 60);
   }, []);
 
+  // First footage in an empty timeline, or another project opened: show all of it.
+  React.useEffect(
+    () =>
+      useStore.subscribe((s, prev) => {
+        if (s.project === prev.project) return;
+        const d = projectDuration(s.project);
+        if (d > 0 && (s.project.id !== prev.project.id || projectDuration(prev.project) === 0)) requestAnimationFrame(zoomToFit);
+      }),
+    [zoomToFit],
+  );
+
   // --- clip interactions -------------------------------------------------------
   const onClipPointerDown = React.useCallback(
     (e: React.PointerEvent, grab: ClipGrab, clip: Clip, track: Track) => {
@@ -567,6 +578,13 @@ export function Timeline() {
             </div>
           ))}
 
+          {duration === 0 && (
+            <div className="pointer-events-none absolute flex items-center justify-center text-center text-xs text-ink-dim" style={{ left: HEADER_W, top: RULER_H, width: view.width - HEADER_W, height: totalH - RULER_H }}>
+              Drag clips here from the media panel, or drop files anywhere in the window.
+              <br />
+              Video goes on V tracks, music and voice-overs on A tracks.
+            </div>
+          )}
           <RangeOverlay height={totalH} />
           <DropGhost rows={rows} />
           {guide != null && (

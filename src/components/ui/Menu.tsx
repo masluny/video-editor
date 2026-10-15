@@ -98,7 +98,7 @@ export function MenuHost() {
               {item.checked !== undefined ? (item.checked ? "✓" : "") : item.icon}
             </span>
             <span className="flex-1 truncate">{item.label}</span>
-            {item.shortcut && <span className="pl-4 font-mono text-2xs text-ink-dim">{item.shortcut}</span>}
+            {item.shortcut && <span className="shrink-0 whitespace-nowrap pl-4 font-mono text-2xs text-ink-dim">{item.shortcut}</span>}
           </button>
         ),
       )}

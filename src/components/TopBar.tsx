@@ -27,7 +27,7 @@ export function TopBar() {
       { label: "Open…", shortcut: `${cmd}O`, onSelect: () => openProject() },
       { separator: true },
       { label: "Save", shortcut: `${cmd}S`, onSelect: () => saveProject() },
-      { label: "Save as…", shortcut: `⇧${cmd}S`, onSelect: () => saveProject(true) },
+      { label: "Save as…", shortcut: isMac ? "⇧⌘S" : "Ctrl+Shift+S", onSelect: () => saveProject(true) },
       { separator: true },
       { label: "Import media…", shortcut: `${cmd}I`, onSelect: () => importViaDialog() },
       { label: "Project settings…", onSelect: () => store().openDialog({ kind: "settings" }) },
