@@ -137,6 +137,8 @@ interface State {
   deleteClips: (ids: Id[], ripple: boolean) => void;
   splitAtPlayhead: () => void;
   splitClipAt: (id: Id, time: number) => void;
+  /** Split one clip at several timeline times (one undo step). Returns how many cuts were made. */
+  splitClipAtTimes: (id: Id, times: number[]) => number;
   /** Hold the frame under the playhead for `seconds`, pushing the rest of that track along. */
   freezeFrame: (seconds?: number) => Id | null;
   /** Q / W: ripple-trim the clips under the playhead so they start / end there. */
@@ -639,6 +641,29 @@ export const useStore = create<State>()((set, get) => ({
         if (parts) t.clips.splice(i, 1, ...(parts as Draft<Clip>[]));
       }
     });
+  },
+
+  splitClipAtTimes: (id, times) => {
+    const hit = findClip(get().project, id);
+    if (!hit || hit.track.locked) return 0;
+    const pieces: Clip[] = [];
+    let rest: Clip = hit.clip;
+    for (const t of [...times].sort((a, b) => a - b)) {
+      // Keep every piece at least a frame-ish long.
+      if (t - rest.start < MIN_CLIP || clipEnd(rest) - t < MIN_CLIP) continue;
+      const parts = split(rest, t);
+      if (!parts) continue;
+      pieces.push(parts[0]);
+      rest = parts[1];
+    }
+    if (!pieces.length) return 0;
+    pieces.push(rest);
+    get().apply((p) => {
+      const t = p.tracks.find((x) => x.id === hit.track.id)!;
+      const i = t.clips.findIndex((c) => c.id === id);
+      if (i >= 0) t.clips.splice(i, 1, ...(pieces as Draft<Clip>[]));
+    });
+    return pieces.length - 1;
   },
 
   freezeFrame: (seconds = 2) => {

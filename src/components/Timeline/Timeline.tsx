@@ -8,6 +8,7 @@ import {
   FoldHorizontal,
   Repeat,
   Snowflake,
+  Clapperboard,
   Eye,
   EyeOff,
   Flag,
@@ -54,7 +55,7 @@ import { seconds, timecode } from "../../lib/format";
 import { cn } from "../../lib/cn";
 import { MARKER_COLORS } from "../../lib/defaults";
 import { clipAfter, clipBefore, DEFAULT_DISSOLVE, dissolveInto } from "../../lib/transitions";
-import { addBeatMarkers, duckUnderVoice, evenOutVolume, exportCaptions } from "../../lib/actions";
+import { addBeatMarkers, duckUnderVoice, evenOutVolume, exportCaptions, splitAtShotChanges } from "../../lib/actions";
 
 interface Row {
   track: Track;
@@ -437,7 +438,10 @@ export function Timeline() {
       { label: "Trim end to playhead", icon: <ArrowRightToLine className="h-3.5 w-3.5" />, shortcut: "W", disabled: !under || track.locked, onSelect: () => (s.select([clip.id]), s.rippleTrimToPlayhead("tail")) },
       ...dissolveItems(clip, track),
       ...(track.kind === "video" && clip.type === "media" && !clip.freeze && media?.kind === "video"
-        ? [{ label: "Freeze frame (2s)", icon: <Snowflake className="h-3.5 w-3.5" />, shortcut: "⌥F", disabled: !under || track.locked, onSelect: () => (s.select([clip.id]), s.freezeFrame()) } as MenuItem]
+        ? [
+            { label: "Freeze frame (2s)", icon: <Snowflake className="h-3.5 w-3.5" />, shortcut: "⌥F", disabled: !under || track.locked, onSelect: () => (s.select([clip.id]), s.freezeFrame()) } as MenuItem,
+            { label: "Split at shot changes", icon: <Clapperboard className="h-3.5 w-3.5" />, disabled: track.locked, onSelect: () => void splitAtShotChanges(clip.id) } as MenuItem,
+          ]
         : []),
       { label: "Duplicate", icon: <Copy className="h-3.5 w-3.5" />, shortcut: "⌘D", disabled: track.locked, onSelect: () => s.duplicateClips(ids) },
       { label: "Copy", shortcut: "⌘C", onSelect: () => s.copy() },

@@ -4,7 +4,7 @@
 import { findClip, store } from "../store/store";
 import { clipEnd, EPS, videoEnd } from "./timeline";
 import { clipBefore } from "./transitions";
-import { addBeatMarkers, duckUnderVoice, evenOutVolume, exportCaptions, importViaDialog, newProject, openProject, saveProject } from "./actions";
+import { addBeatMarkers, duckUnderVoice, evenOutVolume, exportCaptions, importViaDialog, splitAtShotChanges, newProject, openProject, saveProject } from "./actions";
 
 export interface Command {
   id: string;
@@ -25,6 +25,10 @@ const selected = () => {
 const underPlayhead = () => {
   const { project, playhead } = store();
   return project.tracks.some((t) => !t.locked && t.clips.some((c) => playhead > c.start + EPS && playhead < clipEnd(c) - EPS));
+};
+const shotClip = () => {
+  const { project } = store();
+  return selected().find((h) => h.track.kind === "video" && !h.clip.freeze && project.media.find((m) => m.id === h.clip.mediaId)?.kind === "video");
 };
 const need = (ok: boolean, why: string) => (ok ? false : why);
 const audioClips = () => selected().filter((h) => h.track.kind === "audio");
@@ -62,6 +66,14 @@ export function commands(): Command[] {
       },
     },
     { id: "freeze", label: "Freeze frame (2s)", group: "Timeline", shortcut: "⌥F", keywords: "hold still pause frame", run: () => void (s().freezeFrame() || s().toast("Put the playhead over a video clip to freeze its frame.", "info")) },
+    {
+      id: "shots",
+      label: "Split at shot changes",
+      group: "Timeline",
+      keywords: "scene detect cut detection edit shots auto",
+      blocked: () => need(!!shotClip(), "Select a video clip"),
+      run: () => void splitAtShotChanges(shotClip()!.clip.id),
+    },
     { id: "lift", label: "Lift the In–Out range", group: "Timeline", shortcut: ";", keywords: "remove range gap", blocked: () => need(!!s().range, "Set a range with I and O first"), run: () => s().liftRange() },
     { id: "extract", label: "Extract the In–Out range", group: "Timeline", shortcut: "'", keywords: "remove range ripple close", blocked: () => need(!!s().range, "Set a range with I and O first"), run: () => s().extractRange() },
     {

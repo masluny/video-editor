@@ -77,6 +77,8 @@ export const backend = {
   proxy: (path: string, duration: number, hasVideo: boolean) => call<string>("media_proxy", { path, duration, hasVideo }),
   detectSilence: (path: string, from: number, to: number, noiseDb: number, minSilence: number) =>
     call<[number, number][]>("detect_silence", { path, from, to, noiseDb, minSilence }),
+  /** Shot changes (source seconds) inside `from..to`; `threshold` 1..100, ~10 for plain cuts. */
+  detectScenes: (path: string, from: number, to: number, threshold: number) => call<number[]>("detect_scenes", { path, from, to, threshold }),
   exportStart: (request: {
     project: Project;
     output: string;

@@ -85,6 +85,11 @@ pub async fn detect_silence(path: String, from: f64, to: f64, noise_db: f64, min
 }
 
 #[tauri::command]
+pub async fn detect_scenes(path: String, from: f64, to: f64, threshold: f64) -> CmdResult<Vec<f64>> {
+    analysis::detect_scenes(&path, from, to, threshold).await.map_err(err)
+}
+
+#[tauri::command]
 pub async fn export_start(app: AppHandle, request: export::ExportRequest) -> CmdResult<String> {
     export::start(&app, request).await.map_err(err)
 }

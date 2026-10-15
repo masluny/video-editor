@@ -5,7 +5,7 @@ import { backend, confirmDialog, fileUrl, pickMedia, pickProjectToOpen, pickSave
 import { migrateProject } from "./migrate";
 import { uid } from "./uid";
 import { basename, stripExtension } from "./format";
-import { clipDuration, speedOf } from "./timeline";
+import { clipDuration, snapToFrame, speedOf } from "./timeline";
 import { isDirty, store, findClip, useStore } from "../store/store";
 import { captionsOf, isSubtitlePath, parseSubtitles, toSrt } from "./subtitles";
 import { BEAT_RATE, beatsFromPeaks, detectBeats, mono, toBeatRate, type Beats } from "./beats";
@@ -144,6 +144,40 @@ export async function addBeatMarkers(clipId: Id, every = 1) {
   } catch (e) {
     s.dismissToast(busy);
     s.toast(`Couldn't analyse the sound: ${e instanceof Error ? e.message : String(e)}`, "error");
+  }
+}
+
+/** Scene-detection sensitivities (ffmpeg scdet scores): lower finds softer changes. */
+export const SHOT_THRESHOLD = { normal: 10, more: 5 } as const;
+
+/** Cut a video clip wherever its picture changes shot (one undo step). */
+export async function splitAtShotChanges(clipId: Id, threshold: number = SHOT_THRESHOLD.normal) {
+  const s = store();
+  const hit = findClip(s.project, clipId);
+  const media = hit?.clip.mediaId ? s.project.media.find((m) => m.id === hit.clip.mediaId) : undefined;
+  if (!hit || !media?.hasVideo || media.kind !== "video" || hit.clip.freeze) return;
+  if (s.runtime[media.id]?.missing) {
+    s.toast(`“${media.name}” is offline. Relink it to find its shots.`, "info");
+    return;
+  }
+  const busy = s.toast("Looking for shot changes…", "info");
+  try {
+    const c = hit.clip;
+    const found = await backend.detectScenes(media.path, c.in, c.out, threshold);
+    store().dismissToast(busy);
+    // The clip may have been trimmed or moved meanwhile: map with its current timing.
+    const now = findClip(store().project, clipId)?.clip;
+    if (!now) return;
+    const fps = store().project.settings.fps;
+    const times = found.filter((t) => t > now.in && t < now.out).map((t) => snapToFrame(now.start + (t - now.in) / speedOf(now), fps));
+    const n = store().splitClipAtTimes(clipId, times);
+    if (n) store().toast(`Split into ${n + 1} shots.`, "success", { label: "Undo", run: () => store().undo() });
+    else if (threshold > SHOT_THRESHOLD.more)
+      store().toast("No clear shot changes in this clip.", "info", { label: "Look harder", run: () => void splitAtShotChanges(clipId, SHOT_THRESHOLD.more) });
+    else store().toast("Still no shot changes: this looks like one continuous shot.", "info");
+  } catch (e) {
+    store().dismissToast(busy);
+    store().toast(`Couldn't analyse the picture: ${e instanceof Error ? e.message : String(e)}`, "error");
   }
 }
 
