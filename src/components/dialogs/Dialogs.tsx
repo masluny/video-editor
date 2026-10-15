@@ -60,6 +60,7 @@ const SHORTCUTS: [string, [string, string][]][] = [
       ["Q / W", "Trim clip start / end to playhead (ripple)"],
       ["⌥← / ⌥→", "Nudge selection one frame (Shift: ten)"],
       ["T", "Cross dissolve at the nearest cut"],
+      ["⌥F", "Freeze the frame under the playhead (2s)"],
       ["⌫ / Del", "Delete selection"],
       ["⇧⌫", "Ripple delete (close the gap)"],
       ["⌘C / ⌘X / ⌘V", "Copy / cut / paste at playhead"],

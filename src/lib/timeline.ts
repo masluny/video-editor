@@ -43,9 +43,9 @@ export function snapToEdit(t: number, tracks: Track[], fps: number): number {
   return edit ?? snapToFrame(t, fps);
 }
 
-/** Titles and stills have no source bounds; they can be stretched freely. */
+/** Titles, stills and frame holds have no source bounds; they can be stretched freely. */
 export function isUnbounded(c: Clip, media?: MediaAsset): boolean {
-  return c.type === "title" || media?.kind === "image" || !media || !(media.duration > 0);
+  return c.type === "title" || !!c.freeze || media?.kind === "image" || !media || !(media.duration > 0);
 }
 
 /** Source-time limits for a clip's in/out points. */

@@ -269,6 +269,30 @@ describe("ducking", () => {
   });
 });
 
+describe("freeze frame", () => {
+  it("holds the frame under the playhead and pushes the rest of the track along", () => {
+    const a = st().placeMedia("v", { at: 0 })!; // 10s, 30 fps project
+    st().updateClip(a, (c) => void (c.speed = 2)); // 5s long at 2x
+    st().placeMedia("v", { at: 5, range: { in: 0, out: 1 } });
+    st().placeMedia("s", { at: 0 }); // music on another track stays put
+    st().select([]);
+    st().seek(2);
+    const hold = st().freezeFrame(1.5)!;
+    const clips = clipsOf("video").map((c) => [c.start, +clipEnd(c).toFixed(6), c.in, !!c.freeze]);
+    expect(clips).toEqual([
+      [0, 2, 0, false],
+      [2, 3.5, 4, true], // source 4s = 2s into a 2x clip
+      [3.5, 6.5, 4, false],
+      [6.5, 7.5, 0, false],
+    ]);
+    expect(findClip(st().project, hold)!.clip).toMatchObject({ muted: true, speed: 1, fadeIn: 0 });
+    expect(st().selection).toEqual([hold]);
+    expect(clipsOf("audio")[0].start).toBe(0);
+    st().seek(100);
+    expect(st().freezeFrame()).toBeNull();
+  });
+});
+
 describe("pro edits", () => {
   it("ripple-trims the clip under the playhead (Q / W)", () => {
     const a = st().placeMedia("v", { at: 0 })!;

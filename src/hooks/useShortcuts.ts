@@ -50,6 +50,10 @@ export function useShortcuts() {
         return;
       }
       if (e.altKey && (k === "x" || e.code === "KeyX")) return handled(() => s.setRange(null));
+      if (e.altKey && e.code === "KeyF")
+        return handled(() => {
+          if (!s.freezeFrame()) s.toast("Put the playhead over a video clip to freeze its frame.", "info");
+        });
       if (e.altKey && s.selection.length && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
         const frames = (e.key === "ArrowLeft" ? -1 : 1) * (e.shiftKey ? 10 : 1);
         return handled(() => s.nudgeClips(s.selection, frames));

@@ -136,6 +136,8 @@ interface State {
   deleteClips: (ids: Id[], ripple: boolean) => void;
   splitAtPlayhead: () => void;
   splitClipAt: (id: Id, time: number) => void;
+  /** Hold the frame under the playhead for `seconds`, pushing the rest of that track along. */
+  freezeFrame: (seconds?: number) => Id | null;
   /** Q / W: ripple-trim the clips under the playhead so they start / end there. */
   rippleTrimToPlayhead: (side: "head" | "tail") => void;
   /** Move clips by whole frames, overwriting whatever they land on. */
@@ -631,6 +633,38 @@ export const useStore = create<State>()((set, get) => ({
         if (parts) t.clips.splice(i, 1, ...(parts as Draft<Clip>[]));
       }
     });
+  },
+
+  freezeFrame: (seconds = 2) => {
+    const { playhead, selection, project } = get();
+    // The selected picture clip under the playhead, else the topmost one.
+    const picture = (c: Clip) => c.type === "media" && !c.freeze && project.media.find((m) => m.id === c.mediaId)?.kind === "video";
+    const under = clipsUnder(project, playhead, selection).filter(picture);
+    const pick = under.find((c) => selection.includes(c.id)) ?? under[under.length - 1];
+    if (!pick) return null;
+    const hit = findClip(project, pick.id)!;
+    const at = snapToFrame(playhead, project.settings.fps);
+    const hold: Clip = {
+      ...structuredClone(pick),
+      id: uid(),
+      start: at,
+      in: pick.in + (at - pick.start) * speedOf(pick),
+      out: pick.in + (at - pick.start) * speedOf(pick) + seconds,
+      speed: 1,
+      freeze: true,
+      muted: true,
+      fadeIn: 0,
+      fadeOut: 0,
+      transitionIn: undefined,
+      volumePoints: undefined,
+      motion: undefined,
+    };
+    get().apply((p) => {
+      const t = p.tracks.find((x) => x.id === hit.track.id)!;
+      t.clips = insert(plain(t.clips) as Clip[], hold) as Draft<Clip>[];
+    });
+    set({ selection: [hold.id] });
+    return hold.id;
   },
 
   rippleTrimToPlayhead: (side) => {

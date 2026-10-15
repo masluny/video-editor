@@ -178,6 +178,8 @@ pub struct Clip {
     pub volume_points: Vec<VolumePoint>,
     /// What fills the frame behind the clip.
     pub backdrop: Option<Backdrop>,
+    /// Frame hold: the source frame at `in` for the clip's whole length, silent.
+    pub freeze: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -209,6 +211,7 @@ impl Default for Clip {
             motion: None,
             volume_points: vec![],
             backdrop: None,
+            freeze: false,
         }
     }
 }

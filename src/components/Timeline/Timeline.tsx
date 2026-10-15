@@ -7,6 +7,7 @@ import {
   Copy,
   FoldHorizontal,
   Repeat,
+  Snowflake,
   Eye,
   EyeOff,
   Flag,
@@ -435,6 +436,9 @@ export function Timeline() {
       { label: "Trim start to playhead", icon: <ArrowLeftToLine className="h-3.5 w-3.5" />, shortcut: "Q", disabled: !under || track.locked, onSelect: () => (s.select([clip.id]), s.rippleTrimToPlayhead("head")) },
       { label: "Trim end to playhead", icon: <ArrowRightToLine className="h-3.5 w-3.5" />, shortcut: "W", disabled: !under || track.locked, onSelect: () => (s.select([clip.id]), s.rippleTrimToPlayhead("tail")) },
       ...dissolveItems(clip, track),
+      ...(track.kind === "video" && clip.type === "media" && !clip.freeze && media?.kind === "video"
+        ? [{ label: "Freeze frame (2s)", icon: <Snowflake className="h-3.5 w-3.5" />, shortcut: "⌥F", disabled: !under || track.locked, onSelect: () => (s.select([clip.id]), s.freezeFrame()) } as MenuItem]
+        : []),
       { label: "Duplicate", icon: <Copy className="h-3.5 w-3.5" />, shortcut: "⌘D", disabled: track.locked, onSelect: () => s.duplicateClips(ids) },
       { label: "Copy", shortcut: "⌘C", onSelect: () => s.copy() },
       { label: "Cut", shortcut: "⌘X", disabled: track.locked, onSelect: () => s.cut() },

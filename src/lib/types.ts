@@ -159,6 +159,8 @@ export interface Clip {
   volumePoints?: VolumePoint[];
   /** Fill the frame behind the clip with a blurred, enlarged copy of it (bars → blur). */
   backdrop?: "blur";
+  /** A frame hold: shows the source frame at `in` for the whole clip, silently. */
+  freeze?: boolean;
   title?: TitleStyle;
   /** Optional user label shown on the clip. */
   label?: string;

@@ -1,5 +1,5 @@
 import * as React from "react";
-import { AlertTriangle, Gauge, Move, Type, VolumeX } from "lucide-react";
+import { AlertTriangle, Gauge, Move, Snowflake, Type, VolumeX } from "lucide-react";
 import type { Clip, MediaAsset, Track } from "../../lib/types";
 import type { MediaRuntime } from "../../store/store";
 import { clipDuration, speedOf } from "../../lib/timeline";
@@ -126,6 +126,7 @@ export const ClipView = React.memo(function ClipView({
             {name}
           </span>
           <span className="ml-auto flex shrink-0 items-center gap-1">
+            {clip.freeze && <Snowflake className="h-3 w-3 opacity-90" aria-label="Frame hold" />}
             {speedOf(clip) !== 1 && (
               <span className="flex items-center gap-0.5 rounded bg-black/30 px-1">
                 <Gauge className="h-2.5 w-2.5" />

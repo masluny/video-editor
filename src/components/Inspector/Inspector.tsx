@@ -223,7 +223,7 @@ function ClipInspector({ clip, track, media }: { clip: Clip; track: Track; media
   const locked = track.locked;
   const isTitle = clip.type === "title";
   const visual = track.kind === "video" && (isTitle || (!!media && media.hasVideo));
-  const hasAudio = !isTitle && !!media?.hasAudio && media.kind !== "image";
+  const hasAudio = !isTitle && !clip.freeze && !!media?.hasAudio && media.kind !== "image";
   const upd = (fn: (c: Draft<Clip>) => void, live = false) => store().updateClip(id, fn, { live });
   const num = (get: (c: Clip) => number, set: (c: Draft<Clip>, v: number) => void) => ({
     value: get(clip),
@@ -400,7 +400,7 @@ function ClipInspector({ clip, track, media }: { clip: Clip; track: Track; media
         </Section>
       )}
 
-      {!isTitle && media && media.kind !== "image" && <SpeedSection clip={clip} />}
+      {!isTitle && !clip.freeze && media && media.kind !== "image" && <SpeedSection clip={clip} />}
 
       {media && <MediaInfo media={media} />}
     </div>

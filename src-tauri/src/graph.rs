@@ -389,6 +389,9 @@ pub fn build(
                         let (mw, mh) = if m.width > 0 && m.height > 0 { (m.width as f64, m.height as f64) } else { (pw, ph) };
                         if m.kind == MediaKind::Image {
                             (still_input(&m.path, fps, sp.dur + pre + post), mw, mh, false, true)
+                        } else if clip.freeze {
+                            // A frame hold reads just the frame at `in`.
+                            (seek_input(&m.path, clip.source_in, 2.0 / fps), mw, mh, true, false)
                         } else {
                             (seek_input(&m.path, sp.src_in, sp.src_len), mw, mh, true, false)
                         }
@@ -425,14 +428,19 @@ pub fn build(
                 let alpha = has_alpha || opacity < 0.999 || fade_in > 0.0 || fade_out > 0.0 || rotation.abs() > 1e-3 || clip.crop.is_active() || ramp.is_some();
 
                 // Timing and fading, shared by the clip and its backdrop.
-                let mut timing: Vec<String> = vec![if is_video {
+                let mut timing: Vec<String> = vec![if is_video && !clip.freeze {
                     format!("setpts=(PTS-STARTPTS)/{}", f(clip.speed()))
                 } else {
                     "setpts=PTS-STARTPTS".into()
                 }];
-                timing.push(format!("trim=duration={}", f(sp.dur)));
-                if pre > 0.0 || post > 0.0 {
-                    timing.push(format!("tpad=start_mode=clone:start_duration={}:stop_mode=clone:stop_duration={}", f(pre), f(post)));
+                if clip.freeze {
+                    timing.push("trim=end_frame=1".into());
+                    timing.push(format!("tpad=start_mode=clone:start_duration={}:stop_mode=clone:stop_duration={}", f(pre), f(sp.dur + post)));
+                } else {
+                    timing.push(format!("trim=duration={}", f(sp.dur)));
+                    if pre > 0.0 || post > 0.0 {
+                        timing.push(format!("tpad=start_mode=clone:start_duration={}:stop_mode=clone:stop_duration={}", f(pre), f(post)));
+                    }
                 }
                 let mut fades: Vec<String> = vec![];
                 if opacity < 0.999 {
@@ -550,7 +558,7 @@ pub fn build(
             }
             let track_gain = if track.volume.is_finite() { track.volume.max(0.0) } else { 1.0 };
             for clip in &track.clips {
-                if clip.kind != ClipKind::Media || clip.muted {
+                if clip.kind != ClipKind::Media || clip.muted || clip.freeze {
                     continue;
                 }
                 let Some(m) = clip.media_id.as_deref().and_then(|id| project.media(id)) else { continue };
@@ -1177,6 +1185,33 @@ mod tests {
         assert!(top[1] > 90 && top[0] < 60, "bars show the blurred clip: {top:?}");
         assert!(pixel(&filled, 1.0, 45, 80)[1] > 90, "clip itself in the middle");
         assert!(pixel(&filled, 0.05, 45, 10)[1] < 30, "the backdrop fades in with the clip");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn frame_hold_shows_one_frame_silently() {
+        if !ffmpeg_ok() { return; }
+        let d = tmpdir();
+        // Red for 2s then blue for 2s, with a tone throughout.
+        let src = d.join("rb.mp4");
+        two_colors(&src, "red", 2.0, "blue", 2.0, 440);
+        let mut p = project(160, 90);
+        p.media = vec![media("rb", &src, 160, 90, 4.0, true)];
+        // Hold the frame at source 1.5s (red) for 2s on the timeline, then play on from 1.5s.
+        let mut hold = clip("h", "rb", 1.0, 1.5, 2.0);
+        hold.freeze = true;
+        hold.muted = true;
+        p.tracks[0].clips.extend([clip("a", "rb", 0.0, 0.5, 1.0), hold, clip("b", "rb", 3.0, 1.5, 2.0)]);
+        let out = d.join("hold.mp4");
+        run(&p, &ExportSettings::default(), None, &out);
+        // Through the hold it stays red although the source has turned blue by then.
+        for t in [1.2, 2.5, 2.9] {
+            let c = pixel(&out, t, 80, 45);
+            assert!(c[0] > 200 && c[2] < 60, "held red at {t}: {c:?}");
+        }
+        assert!(pixel(&out, 3.8, 80, 45)[2] > 200, "plays on into the blue part");
+        assert!(mean_volume(&out, 1.2, 1.6) < -60.0, "the hold is silent");
+        assert!(mean_volume(&out, 0.2, 0.6) > -40.0, "sound around it");
         let _ = std::fs::remove_dir_all(&d);
     }
 

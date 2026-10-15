@@ -323,10 +323,18 @@ export class Engine {
         const el = videoSlot.el as HTMLVideoElement;
         this.place(el, clip, media.width, media.height, W, H, t, incoming ? mix : 1, incoming ? 2 : 1);
         if (clip.backdrop === "blur") backdrop = this.drawBackdrop(layer, el, clip, media, W, H, t, incoming ? mix : 1);
-        this.voices.push({ slot: videoSlot, clip, video: true, lead: !track.hidden });
-        const g = this.gain(track, clip, t, audible && media.hasAudio);
-        el.muted = g <= 0;
-        if (g > 0 && Math.abs(el.volume - g) > 0.005) el.volume = g;
+        if (clip.freeze) {
+          // A frame hold isn't played: it just shows its frame, silently.
+          if (!el.paused) el.pause();
+          el.muted = true;
+          videoSlot.activeClip = null;
+          videoSlot.seek(clip.in, 0.5 / (fps || 30));
+        } else {
+          this.voices.push({ slot: videoSlot, clip, video: true, lead: !track.hidden });
+          const g = this.gain(track, clip, t, audible && media.hasAudio);
+          el.muted = g <= 0;
+          if (g > 0 && Math.abs(el.volume - g) > 0.005) el.volume = g;
+        }
       }
     } else if (clip && (clip.type === "title" || media?.kind === "image")) {
       showImg[0] = this.renderStill(layer, 0, clip, media, W, H, t, incoming ? mix : 1, incoming ? 2 : 1);
@@ -352,7 +360,7 @@ export class Engine {
           if (!held.el.paused) held.el.pause();
           held.el.muted = true;
           held.activeClip = null; // not a voice: re-cue it like a new clip if it plays again
-          held.seek(incoming ? other.out - (0.5 / (fps || 30)) * speedOf(other) : other.in, 0.01);
+          held.seek(incoming && !other.freeze ? other.out - (0.5 / (fps || 30)) * speedOf(other) : other.in, 0.01);
           this.place(held.el as HTMLVideoElement, other, om.width, om.height, W, H, at, alpha, z);
         }
       } else if (other.type === "title" || om?.kind === "image") {
