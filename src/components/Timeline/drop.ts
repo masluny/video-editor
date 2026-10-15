@@ -1,7 +1,8 @@
 // Dropping library items (media, title presets) onto the timeline or the viewer.
 
 import type { DragPayload } from "../../store/drag";
-import { store } from "../../store/store";
+import { mainTrackId, store } from "../../store/store";
+import { clipEnd } from "../../lib/timeline";
 import { DEFAULT_STILL_DURATION, DEFAULT_TITLE_DURATION, TITLE_PRESETS } from "../../lib/defaults";
 import { laneAt, overViewer, snap } from "./geometry";
 import type { Id, TrackKind } from "../../lib/types";
@@ -27,12 +28,23 @@ export function payloadKind(payload: DragPayload): TrackKind | null {
   return null;
 }
 
-/** Where a drop at (x, y) would land: a lane + snapped start time. */
-export function dropTarget(payload: DragPayload, x: number, y: number): { trackId?: Id; at: number; guide: number | null } | null {
+/**
+ * Where a drop at (x, y) would land: a lane + snapped start time. On the magnetic main
+ * track it slots in at the nearest edit point instead (`flip`, i.e. ⌘, places it freely).
+ */
+export function dropTarget(payload: DragPayload, x: number, y: number, flip = false): { trackId?: Id; at: number; guide: number | null; magnetic?: boolean } | null {
   const lane = laneAt(x, y);
   if (!lane) return null;
   const kind = payloadKind(payload);
   const len = payloadLength(payload);
+  const s = store();
+  if (payload.kind === "media" && s.rippleMain && !flip && kind === lane.kind && lane.trackId === mainTrackId(s.project)) {
+    const edges = s.project.tracks.find((t) => t.id === lane.trackId)!.clips.flatMap((c) => [c.start, clipEnd(c)]);
+    if (edges.length) {
+      const at = edges.reduce((best, e) => (Math.abs(e - lane.time) < Math.abs(best - lane.time) ? e : best));
+      return { trackId: lane.trackId, at, guide: at, magnetic: true };
+    }
+  }
   // Snap whichever edge (start or end) is closer to a target.
   const a = snap(lane.time, new Set());
   const b = snap(lane.time + len, new Set());
@@ -50,9 +62,12 @@ export function dropPayload(payload: DragPayload, x: number, y: number, insert: 
     if (payload.kind === "title") return !!s.placeTitle(TITLE_PRESETS.find((p) => p.id === payload.presetId)?.style, {});
     return false;
   }
-  const target = dropTarget(payload, x, y);
+  const target = dropTarget(payload, x, y, insert);
   if (!target) return false;
-  if (payload.kind === "media") return !!s.placeMedia(payload.mediaId, { trackId: target.trackId, at: target.at, mode });
+  // ⌘ means insert on ordinary tracks, and placing freely (overwrite) on the magnetic one.
+  const onMain = s.rippleMain && target.trackId === mainTrackId(s.project);
+  const how = target.magnetic ? "magnetic" : onMain ? "overwrite" : mode;
+  if (payload.kind === "media") return !!s.placeMedia(payload.mediaId, { trackId: target.trackId, at: target.at, mode: how });
   if (payload.kind === "title") {
     const preset = TITLE_PRESETS.find((p) => p.id === payload.presetId);
     return !!s.placeTitle(preset?.style, { trackId: target.trackId, at: target.at });

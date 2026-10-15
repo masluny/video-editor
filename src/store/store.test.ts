@@ -560,3 +560,12 @@ describe("magnetic main track", () => {
   });
 });
 
+
+describe("magnetic drops", () => {
+  it("slots library media in at an edit point on V1", () => {
+    st().placeMedia("v", { at: 0, range: { in: 0, out: 2 } });
+    st().placeMedia("v", { at: 2, range: { in: 0, out: 2 } });
+    st().placeMedia("v", { at: 2, mode: "magnetic", range: { in: 5, out: 6 } });
+    expect(clipsOf("video").map((c) => [c.start, c.in])).toEqual([[0, 0], [2, 5], [3, 0]]);
+  });
+});

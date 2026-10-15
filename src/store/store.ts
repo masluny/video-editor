@@ -36,7 +36,8 @@ import { activeLevel, DUCK_DEFAULTS, duckingPoints, speechRegions } from "../lib
 import { GROUP_PROPS, hasKeyAt, keyClock, keyTolerance, propAt, withKey, type KeyGroup, type KeyProp } from "../lib/keyframes";
 
 export type Tool = "select" | "blade";
-export type PlaceMode = "overwrite" | "insert";
+/** Overwrite what's there, insert (splitting at the point), or magnetic: insert at the nearest edit point. */
+export type PlaceMode = "overwrite" | "insert" | "magnetic";
 
 export interface MediaRuntime {
   thumbs?: string[];
@@ -483,13 +484,15 @@ export const useStore = create<State>()((set, get) => ({
 
     let placedOn: Id | null = null;
     st.apply((p) => {
-      let track = (opts.trackId && p.tracks.find((t) => t.id === opts.trackId && t.kind === kind && !t.locked)) || pickTrack(p, kind, at, len);
+      const wanted = opts.trackId ?? (opts.mode === "magnetic" && kind === "video" ? mainTrackId(p as Project) : null);
+      let track = (wanted && p.tracks.find((t) => t.id === wanted && t.kind === kind && !t.locked)) || pickTrack(p, kind, at, len);
       if (!track) {
         const t = newTrack(kind, nextTrackName(p as Project, kind));
         insertTrack(p, t);
         track = p.tracks.find((x) => x.id === t.id)!;
       }
-      track.clips = (opts.mode === "insert" ? insert : overwrite)(plain(track.clips) as Clip[], clip) as Draft<Clip>[];
+      const place = opts.mode === "insert" ? insert : opts.mode === "magnetic" ? (all: Clip[], c: Clip) => magneticInsert(all, [c], c.start) : overwrite;
+      track.clips = place(plain(track.clips) as Clip[], clip) as Draft<Clip>[];
       placedOn = track.id;
       // First real footage in an empty project: adopt its frame rate, and its size unless
       // a format was picked by hand (e.g. vertical for horizontal footage).

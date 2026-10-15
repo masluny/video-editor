@@ -1221,9 +1221,10 @@ function DropGhost({ rows }: { rows: Row[] }) {
   const payload = useDrag((s) => s.payload);
   const x = useDrag((s) => s.x);
   const y = useDrag((s) => s.y);
+  const flip = useDrag((s) => s.insert);
   const zoom = useStore((s) => s.zoom);
   if (!payload || payload.kind === "files") return null;
-  const target = dropTarget(payload, x, y);
+  const target = dropTarget(payload, x, y, flip);
   if (!target) return null;
   const kind = payloadKind(payload);
   const row =
