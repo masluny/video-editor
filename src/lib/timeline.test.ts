@@ -12,6 +12,7 @@ import {
   prevEditPoint,
   closeAllGaps,
   cutToBeats,
+  magneticInsert,
   removeRange,
   rippleDelete,
   rippleTrim,
@@ -245,5 +246,26 @@ describe("cutToBeats", () => {
     const [out] = cutToBeats([fast], beats, unlimited);
     expect(+clipEnd(out).toFixed(6)).toBe(1.75);
     expect(+out.out.toFixed(6)).toBe(3.5);
+  });
+});
+
+describe("magneticInsert", () => {
+  it("drops at the nearest edit point and pushes the rest along", () => {
+    const rest = [c("b", 0, 3), c("c", 3, 2)];
+    expect(spans(magneticInsert(rest, [c("a", 9, 1)], 2)).map((x) => x.slice(0, 2))).toEqual([[0, 3], [3, 4], [4, 6]]);
+    expect(spans(magneticInsert(rest, [c("a", 9, 1)], 0.4)).map((x) => x.slice(0, 2))).toEqual([[0, 1], [1, 4], [4, 6]]);
+    // Past the end: appended, no gap.
+    expect(spans(magneticInsert(rest, [c("a", 9, 1)], 30)).map((x) => x.slice(0, 2))).toEqual([[0, 3], [3, 5], [5, 6]]);
+  });
+
+  it("keeps several movers together in order, and lands where dropped on an empty track", () => {
+    const out = magneticInsert([c("b", 0, 2)], [c("x", 7, 1), c("y", 8, 0.5)], 0);
+    expect(out.map((x) => [x.id, x.start])).toEqual([["x", 0], ["y", 1], ["b", 1.5]]);
+    expect(magneticInsert([], [c("x", 0, 1)], 2.5).map((x) => x.start)).toEqual([2.5]);
+  });
+
+  it("leaves gaps elsewhere on the track alone", () => {
+    const out = magneticInsert([c("b", 0, 2), c("c", 6, 2)], [c("x", 0, 1)], 2.2);
+    expect(spans(out).map((x) => x.slice(0, 2))).toEqual([[0, 2], [2, 3], [7, 9]]);
   });
 });

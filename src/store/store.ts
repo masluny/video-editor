@@ -8,6 +8,7 @@ import {
   closeAllGaps,
   cutToBeats,
   isUnbounded,
+  magneticInsert,
   EPS,
   gapAt,
   closeGap,
@@ -138,6 +139,13 @@ interface State {
   updateClips: (ids: Id[], fn: (c: Draft<Clip>) => void, opts?: { live?: boolean }) => void;
   /** Live (uncommitted) move of clips, possibly across tracks; overlaps are resolved by settleClips. */
   moveClipsLive: (moves: { id: Id; trackId: Id; start: number }[]) => void;
+  /**
+   * Live drag preview, recomputed each time from `from` (the project when the drag began):
+   * clips go to their tracks and starts, overlapping for now (settleClips resolves that).
+   * With `magnetic`, clips leaving the main track close their gaps, and clips landing on it
+   * are inserted at its edit point nearest where they're dropped.
+   */
+  dragLive: (from: Project, moves: { id: Id; trackId: Id; start: number }[], magnetic: boolean) => void;
   /** Live copies of clips at the same place (Alt-drag). Returns old id -> new id. */
   duplicateInPlaceLive: (ids: Id[]) => Map<Id, Id>;
   /** Resolve overlaps after a drag: moved clips overwrite whatever they now cover. */
@@ -611,6 +619,34 @@ export const useStore = create<State>()((set, get) => ({
         if (t) t.clips.push(clip as Draft<Clip>);
       }
     }, { live: true });
+  },
+
+  dragLive: (from, moves, magnetic) => {
+    const { project, liveBase } = get();
+    const byId = new Map(moves.map((m) => [m.id, m]));
+    const main = magnetic ? mainTrackId(from) : null;
+    const next = produce(from, (p) => {
+      const pulled: Clip[] = [];
+      for (const t of p.tracks) {
+        const all = plain(t.clips) as Clip[];
+        const out = new Set(all.filter((c) => byId.has(c.id)).map((c) => c.id));
+        if (!out.size) continue;
+        pulled.push(...all.filter((c) => out.has(c.id)));
+        t.clips = (t.id === main ? rippleDelete(all, out) : all.filter((c) => !out.has(c.id))) as Draft<Clip>[];
+      }
+      const toMain: Clip[] = [];
+      for (const c of sortClips(pulled)) {
+        const m = byId.get(c.id)!;
+        const moved = { ...c, start: Math.max(0, m.start) };
+        if (m.trackId === main) toMain.push(moved);
+        else p.tracks.find((x) => x.id === m.trackId)?.clips.push(moved as Draft<Clip>);
+      }
+      if (toMain.length) {
+        const t = p.tracks.find((x) => x.id === main)!;
+        t.clips = magneticInsert(plain(t.clips) as Clip[], toMain, Math.min(...toMain.map((c) => c.start))) as Draft<Clip>[];
+      }
+    });
+    set({ project: next, liveBase: liveBase ?? project });
   },
 
   duplicateInPlaceLive: (ids) => {

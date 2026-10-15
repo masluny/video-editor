@@ -155,6 +155,25 @@ export function cutToBeats(clips: Clip[], beats: number[], room: (c: Clip) => nu
   return out;
 }
 
+/**
+ * A magnetic drop: `movers` go end to end (in their order) at the edit point of `clips`
+ * nearest `at` (a clip's start or end; after the last clip at most), and everything from
+ * that point on moves right to make room. Into an empty track they land at `at`.
+ */
+export function magneticInsert(clips: Clip[], movers: Clip[], at: number): Clip[] {
+  const sorted = sortClips(clips);
+  const edges = [...new Set(sorted.flatMap((c) => [c.start, clipEnd(c)]))];
+  const point = edges.length ? edges.reduce((best, e) => (Math.abs(e - at) < Math.abs(best - at) ? e : best)) : Math.max(0, at);
+  const block = movers.reduce((d, c) => d + clipDuration(c), 0);
+  const out = sorted.map((c) => (c.start >= point - EPS ? { ...c, start: c.start + block } : c));
+  let t = point;
+  for (const m of movers) {
+    out.push({ ...m, start: t });
+    t += clipDuration(m);
+  }
+  return sortClips(out);
+}
+
 /** Remove clips and close the gaps they leave. */
 export function rippleDelete(clips: Clip[], ids: Set<string>): Clip[] {
   const removed = clips.filter((c) => ids.has(c.id));

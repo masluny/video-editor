@@ -288,6 +288,8 @@ export function Timeline() {
     const sy = e.clientY;
     let moved = false;
     let primary = clip.id;
+    // The project the live preview is rebuilt from on every move (after any Alt-copies).
+    let from = proj;
 
     trackDrag(
       (ev) => {
@@ -301,6 +303,7 @@ export function Timeline() {
             ids = items.map((i) => i.id);
             primary = map.get(primary) ?? primary;
           }
+          from = store().project;
         }
         const zoom = store().zoom;
         let dt = Math.max(-minStart, (ev.clientX - sx) / zoom);
@@ -329,7 +332,9 @@ export function Timeline() {
           return dest && !dest.locked;
         });
         if (!ok) shift = 0;
-        store().moveClipsLive(items.map((i) => ({ id: i.id, trackId: lanes[i.kind][i.i + shift].id, start: i.start + dt })));
+        // The magnetic main track reorders instead of overwriting (⌘ to place freely).
+        const magnetic = store().rippleMain && !mod(ev);
+        store().dragLive(from, items.map((i) => ({ id: i.id, trackId: lanes[i.kind][i.i + shift].id, start: i.start + dt })), magnetic);
         setGuide(shownGuide);
         const onEnd = shownGuide != null && magnet > 0 && Math.abs(shownGuide - magnet) < EPS && Math.abs(g.start + g.dur + dt - magnet) < EPS;
         setHint(onEnd ? { time: magnet, trackId: lanes[grabbed.kind][grabbed.i + shift].id, text: "Ends with the video", match: true } : null);
@@ -811,7 +816,7 @@ function Toolbar({ size, onSize, onFit }: { size: TrackSize; onSize: (s: TrackSi
       </IconButton>
       <IconButton
         size="sm"
-        title={`Magnetic main track (P): ${ripple ? "on" : "off"}. Trims and deletes on V1 close up instead of leaving gaps. While trimming, ⌘ flips this for any track and ⌥ rolls a cut.`}
+        title={`Magnetic main track (P): ${ripple ? "on" : "off"}. On V1, dragging reorders clips, and trims and deletes close up instead of leaving gaps. ⌘ while dragging flips it; ⌥ on a cut rolls it.`}
         active={ripple}
         onClick={() => s().toggleRippleMain()}
       >

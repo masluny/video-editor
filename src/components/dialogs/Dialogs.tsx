@@ -74,6 +74,7 @@ const SHORTCUTS: [string, [string, string][]][] = [
       ["⏎ / ⇧⏎", "Add / insert selected library item at playhead"],
       ["Alt-drag", "Duplicate while dragging"],
       ["Shift-drag", "Move without snapping"],
+      ["⌘-drag on V1", "Place freely (overwrite) instead of reordering"],
     ],
   ],
   [

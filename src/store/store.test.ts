@@ -533,4 +533,30 @@ describe("magnetic main track", () => {
     expect(clipsOf("video").filter((c) => c.type === "media").map((c) => c.start)).toEqual([2]);
     st().toggleRippleMain();
   });
+
+  it("reorders when a clip is dragged along V1, closes up when it leaves, overwrites with the magnet off", () => {
+    const [a, b, c] = [0, 2, 4].map((at) => st().placeMedia("v", { at, range: { in: 0, out: 2 } })!);
+    const v1 = st().project.tracks.find((t) => t.kind === "video")!.id;
+    const v2 = st().project.tracks.filter((t) => t.kind === "video")[1].id;
+    const order = () => st().project.tracks.find((t) => t.id === v1)!.clips.map((x) => [x.id, x.start]);
+    // Without A, B is at 0-2 and C at 2-4: A's left edge at 1.5 is nearest the cut at 2.
+    const from = st().project;
+    st().dragLive(from, [{ id: a, trackId: v1, start: 3.2 }], true); // (nearest the end: after C)
+    expect(order().map(([id]) => id)).toEqual([b, c, a]);
+    st().dragLive(from, [{ id: a, trackId: v1, start: 1.5 }], true); // each move starts over from `from`
+    st().settleClips([a]);
+    expect(order()).toEqual([[b, 0], [a, 2], [c, 4]]);
+    st().undo();
+    expect(order()).toEqual([[a, 0], [b, 2], [c, 4]]);
+    // Up to V2: V1 closes up.
+    st().dragLive(st().project, [{ id: b, trackId: v2, start: 2 }], true);
+    st().settleClips([b]);
+    expect(order()).toEqual([[a, 0], [c, 2]]);
+    st().undo();
+    // Magnet off (⌘): A lands on B's place and overwrites most of it.
+    st().dragLive(st().project, [{ id: a, trackId: v1, start: 1.5 }], false);
+    st().settleClips([a]);
+    expect(order().map(([, t]) => t)).toEqual([1.5, 3.5, 4]);
+  });
 });
+
