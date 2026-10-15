@@ -282,7 +282,7 @@ export class Engine {
     const sx = tf.scale * q * (tf.flipH ? -1 : 1);
     const sy = tf.scale * q * (tf.flipV ? -1 : 1);
     const filter = cssFilter(clip.color, 1 / q);
-    const clipPath = cssClipPath(clip.crop);
+    const clipPath = cssClipPath(clip.crop, clip.corners, bw, bh);
     const key = `${W}x${H}|${bw}|${bh}|${tf.x}|${tf.y}|${tf.rotation}|${sx}|${sy}|${filter}|${clipPath}`;
     const s = el.style;
     if (this.geometry.get(el) !== key) {

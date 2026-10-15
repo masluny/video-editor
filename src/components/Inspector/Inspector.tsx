@@ -37,7 +37,7 @@ import { projectDuration } from "../../lib/timeline";
 import { clipBefore, dissolveInto } from "../../lib/transitions";
 import { DEFAULT_MOTION_AMOUNT, ENTRANCE_PRESETS, isEntrance, MOTION_PRESETS, motionAmount, motionPreset, type MotionPreset } from "../../lib/motion";
 import { cn } from "../../lib/cn";
-import { cornerLayout, type Corner } from "../../lib/visual";
+import { cornerLayout, cornerOf, fitBox, squareCrop, type Corner } from "../../lib/visual";
 import { autoColorClips, cleanUpVoice, cutToBeat, duckUnderVoice, evenOutVolume } from "../../lib/actions";
 import { useLocal } from "../../lib/useLocal";
 import { GROUP_PROPS, hasKeyAt, isAnimated, keyClock, keyTimes, keyTolerance, posed, type KeyGroup, type KeyProp } from "../../lib/keyframes";
@@ -413,7 +413,7 @@ function ClipInspector({ clip, track, media }: { clip: Clip; track: Track; media
                     title={`Small, ${corner.replace("-", " ")}`}
                     onClick={() => {
                       const { width: W, height: H } = store().project.settings;
-                      const l = cornerLayout(corner, media.width || W, media.height || H, W, H);
+                      const l = cornerLayout(corner, media.width || W, media.height || H, W, H, 0.35, clip.crop);
                       upd((c) => void (c.transform.fit = "contain"), true);
                       store().setPose(id, { scale: l.scale, x: l.x, y: l.y });
                       commit();
@@ -463,7 +463,21 @@ function ClipInspector({ clip, track, media }: { clip: Clip; track: Track; media
       {visual && <MotionSection clip={clip} />}
 
       {visual && !isTitle && (
-        <Section id="crop" title="Crop" actions={<ResetButton title="Reset crop" onClick={() => upd((c) => void (c.crop = defaultCrop()))} />}>
+        <Section
+          id="crop"
+          title="Crop & corners"
+          actions={
+            <ResetButton
+              title="Reset crop and corners"
+              onClick={() =>
+                upd((c) => {
+                  c.crop = defaultCrop();
+                  c.corners = undefined;
+                })
+              }
+            />
+          }
+        >
           <div className="grid grid-cols-2 gap-1.5">
             {(["top", "bottom", "left", "right"] as const).map((side) => (
               <NumberField
@@ -479,6 +493,48 @@ function ClipInspector({ clip, track, media }: { clip: Clip; track: Track; media
               />
             ))}
           </div>
+          <SliderField
+            label="Corners"
+            value={clip.corners ?? 0}
+            min={0}
+            max={0.5}
+            step={0.01}
+            displayScale={200}
+            suffix="%"
+            defaultValue={0}
+            onChange={(v, o) => upd((c) => void (c.corners = v > 0.001 ? v : undefined), o.live)}
+            onCommit={() => store().commit()}
+          />
+          <FieldRow label="Shape">
+            <div className="flex flex-1 gap-1">
+              <button
+                className={chip(false)}
+                title="Crop to a centred square and round it off: a circle (for a face-cam)"
+                onClick={() => {
+                  const { width: W, height: H } = store().project.settings;
+                  const [mw, mh] = [media?.width || W, media?.height || H];
+                  const box = fitBox(mw, mh, W, H, clip.transform.fit);
+                  const crop = squareCrop(box.width, box.height);
+                  // A picture-in-picture stays tucked into its corner.
+                  const corner = cornerOf(clip.transform.x, clip.transform.y);
+                  const place = corner && clip.transform.fit === "contain" && !clip.keyframes ? cornerLayout(corner, mw, mh, W, H, clip.transform.scale, crop) : null;
+                  upd((c) => {
+                    c.crop = crop;
+                    c.corners = 0.5;
+                    if (place) Object.assign(c.transform, { x: place.x, y: place.y });
+                  });
+                }}
+              >
+                Circle
+              </button>
+              <button className={chip(false)} title="Rounded corners" onClick={() => upd((c) => void (c.corners = 0.08))}>
+                Rounded
+              </button>
+              <button className={chip(false)} title="Square corners, no crop" onClick={() => upd((c) => void ((c.crop = defaultCrop()), (c.corners = undefined)))}>
+                Full
+              </button>
+            </div>
+          </FieldRow>
         </Section>
       )}
 

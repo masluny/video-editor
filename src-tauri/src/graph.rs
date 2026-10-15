@@ -258,6 +258,23 @@ fn place_expr(centre: &str, keyed: Option<String>, base: f64, motion: Option<(f6
     }
 }
 
+/// Alpha of rounded corners for a `lw`×`lh` layer (after its crop), as a geq expression of
+/// X/Y with a one-pixel soft edge; None without corners. Mirrors `cornerRadius` in visual.ts.
+fn corner_mask(clip: &Clip, lw: u32, lh: u32) -> Option<String> {
+    let c = &clip.crop;
+    let (w, h) = (lw as f64, lh as f64);
+    let (x0, x1) = (w * c.left.clamp(0.0, 1.0), w * (1.0 - c.right.clamp(0.0, 1.0)));
+    let (y0, y1) = (h * c.top.clamp(0.0, 1.0), h * (1.0 - c.bottom.clamp(0.0, 1.0)));
+    let r = clip.corners.clamp(0.0, 0.5) * (x1 - x0).min(y1 - y0);
+    if !(r >= 0.5) || clip.kind != ClipKind::Media {
+        return None;
+    }
+    // Distance outside the inner rectangle the corners are drawn around, per axis.
+    let dx = format!("max(max({}-X,X-{}),0)", f(x0 + r), f(x1 - r));
+    let dy = format!("max(max({}-Y,Y-{}),0)", f(y0 + r), f(y1 - r));
+    Some(format!("clip({}-hypot({dx},{dy})+0.5,0,1)", f(r)))
+}
+
 /// Working pixel format of a layer: RGB when colour maths runs, alpha when it's needed.
 fn pix_fmt(rgb: bool, alpha: bool) -> &'static str {
     match (rgb, alpha) {
@@ -518,6 +535,7 @@ pub fn build(
                     || rotation.abs() > 1e-3
                     || keyed_rotation
                     || clip.crop.is_active()
+                    || clip.corners > 1e-3
                     || ramp.is_some();
 
                 // Timing and fading, shared by the clip and its backdrop.
@@ -600,6 +618,15 @@ pub fn build(
                 if clip.color.blur > 0.01 {
                     chain.push(format!("gblur=sigma={}", f(clip.color.blur * scale * kx)));
                 }
+                // Rounded corners: one frame of mask, multiplied into the alpha of every frame.
+                let mut source = source;
+                if let Some(mask) = corner_mask(clip, lw, lh) {
+                    graph.push(format!("[{source}]{},split[rc{n}][ra{n}]", chain.join(",")));
+                    graph.push(format!("color=c=black:s={lw}x{lh}:d=0.04,format=gray,geq=lum='255*{mask}'[rm{n}]"));
+                    graph.push(format!("[ra{n}]alphaextract[re{n}];[re{n}][rm{n}]blend=all_mode=multiply[rn{n}];[rc{n}][rn{n}]alphamerge[rr{n}]"));
+                    source = format!("rr{n}");
+                    chain = vec![];
+                }
                 chain.extend(fades("o"));
                 if keyed_rotation {
                     // A canvas that fits every angle; the overlay centres it.
@@ -629,6 +656,9 @@ pub fn build(
                     chain.push(format!("scale=w='max(2,trunc(iw*{z}/2)*2)':h='max(2,trunc(ih*{z}/2)*2)':eval=frame:flags=bicubic"));
                 }
                 chain.extend(offset);
+                if chain.is_empty() {
+                    chain.push("null".into());
+                }
                 graph.push(format!("[{source}]{}[l{n}]", chain.join(",")));
                 let p = progress(clip.start - r0);
                 let keyed = |keys: &[Key], k: f64| (!keys.is_empty()).then(|| key_expr(keys, clip, clip.start - r0, k));
@@ -1335,6 +1365,36 @@ mod tests {
         let snr = |file: &PathBuf, t: f64| mean_volume(file, t + 0.2, 0.6) - mean_volume(file, t + 1.3, 0.5);
         let (before, after) = (snr(&noisy, 4.0), snr(&clean, 2.0));
         assert!(after > before + 8.0, "speech-to-noise {before:.1} dB -> {after:.1} dB");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn rounded_corners_and_circles() {
+        if !ffmpeg_ok() { return; }
+        let d = tmpdir();
+        let white = d.join("white.mp4");
+        solid(&white, "white", 160, 90, 2.0, None);
+        let mut p = project(160, 90);
+        p.media = vec![media("w", &white, 160, 90, 2.0, false)];
+        // 0-1s: a circle (square crop, corners 0.5): radius 45 around the centre.
+        let mut circle = clip("c", "w", 0.0, 0.0, 1.0);
+        let side = (1.0 - 90.0 / 160.0) / 2.0;
+        circle.crop = Crop { left: side, right: side, ..Default::default() };
+        circle.corners = 0.5;
+        // 1-2s: half size (80x45 in the middle) with corners of 0.2 × 45 = 9 px, faded to half.
+        let mut card = clip("r", "w", 1.0, 0.0, 1.0);
+        card.transform.scale = 0.5;
+        card.corners = 0.2;
+        card.opacity = 0.5;
+        p.tracks[0].clips.extend([circle, card]);
+        let out = d.join("corners.mp4");
+        run(&p, &ExportSettings::default(), None, &out);
+        let lum = |t: f64, x: u32, y: u32| pixel(&out, t, x, y)[0];
+        assert!(lum(0.5, 80, 45) > 230 && lum(0.5, 80, 3) > 200 && lum(0.5, 38, 45) > 200, "inside the circle");
+        assert!(lum(0.5, 38, 4) < 30 && lum(0.5, 120, 86) < 30, "the square's corners are cut away");
+        assert!((100..160).contains(&lum(1.5, 80, 45)), "card at half opacity: {}", lum(1.5, 80, 45));
+        assert!(lum(1.5, 41, 24) < 30, "card corner rounded off");
+        assert!(lum(1.5, 50, 45) > 100, "card edge straight");
         let _ = std::fs::remove_dir_all(&d);
     }
 

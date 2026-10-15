@@ -182,6 +182,8 @@ pub struct Clip {
     pub key_ease: bool,
     /// What fills the frame behind the clip.
     pub backdrop: Option<Backdrop>,
+    /// Rounded corners: radius as a fraction of the visible picture's short side.
+    pub corners: f64,
     /// Frame hold: the source frame at `in` for the clip's whole length, silent.
     pub freeze: bool,
 }
@@ -217,6 +219,7 @@ impl Default for Clip {
             keyframes: Keyframes::default(),
             key_ease: false,
             backdrop: None,
+            corners: 0.0,
             freeze: false,
         }
     }

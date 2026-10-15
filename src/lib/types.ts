@@ -162,6 +162,8 @@ export interface Clip {
   keyEase?: boolean;
   /** Volume envelope in source time, e.g. from ducking (see lib/envelope.ts). */
   volumePoints?: VolumePoint[];
+  /** Rounded corners: radius as a fraction of the visible picture's short side (0.5 with a square crop = a circle). */
+  corners?: number;
   /** Fill the frame behind the clip with a blurred, enlarged copy of it (bars → blur). */
   backdrop?: "blur";
   /** A frame hold: shows the source frame at `in` for the whole clip, silently. */
