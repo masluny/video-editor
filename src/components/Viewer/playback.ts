@@ -100,6 +100,11 @@ export class Slot {
     return !this.el.seeking && this.pending == null && this.el.readyState >= 3;
   }
 
+  /** The element couldn't load its media (unsupported, unreadable): it will never be ready. */
+  get failed(): boolean {
+    return !!this.el.error;
+  }
+
   /** Start watching for movement again (after play() or a resync seek). */
   restart(now: number) {
     this.started = false;
@@ -216,11 +221,12 @@ export class Transport {
       for (const v of voices) {
         if (v.slot.fresh && (v.slot.el.paused || Math.abs(drift(v, t, this.rate)) > CONTIGUOUS)) v.slot.seek(mediaTime(v.clip, t), 0.03);
       }
-      if (voices.some((v) => v.slot.fresh && !v.slot.ready)) this.preroll(now);
+      if (voices.some((v) => v.slot.fresh && !v.slot.ready && !v.slot.failed)) this.preroll(now);
     }
     if (this.prerolling) {
       for (const v of voices) this.cue(v, t, fps);
-      if (voices.every((v) => v.slot.ready) || now - this.prerollSince > PREROLL_MS) this.prerolling = false;
+      // Media that failed to load is never waited for: the rest plays on without it.
+      if (voices.every((v) => v.slot.ready || v.slot.failed) || now - this.prerollSince > PREROLL_MS) this.prerolling = false;
       if (this.prerolling || !rolling) return;
     }
     for (const v of voices) {
@@ -257,6 +263,7 @@ export class Transport {
     const { slot, clip } = v;
     const el = slot.el;
     slot.fresh = false;
+    if (slot.failed) return;
     const base = clampRate(speedOf(clip) * this.rate);
     if (el.paused) {
       slot.nudge = 0;
