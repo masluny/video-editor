@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Clip, MediaAsset, Track } from "./types";
 import { mediaClip } from "./defaults";
 import { split } from "./timeline";
-import { dissolveAt, dissolveGain, dissolveInto, dissolveMix, dissolveOutOf } from "./transitions";
+import { dissolveAt, dissolveGain, dissolveInto, dissolveMix, dissolveOutOf, transitionFx } from "./transitions";
 import { migrateProject } from "./migrate";
 
 const media: MediaAsset = {
@@ -49,5 +49,19 @@ describe("dissolves", () => {
     expect(right.transitionIn).toBeUndefined();
     const p = migrateProject({ version: 2, settings: {}, media: [media], tracks: [{ kind: "video", clips: [c("a", 0, 4), c("b", 4, 4, 1.5)] }] });
     expect(p.tracks[0].clips.map((x) => x.transitionIn)).toEqual([undefined, 1.5]);
+  });
+});
+
+describe("transition styles", () => {
+  it("moves layers the way the export does", () => {
+    expect(transitionFx(undefined, 0.25, 1920)).toEqual({ inAlpha: 0.25, inDx: 0, inScale: 1, outDx: 0 });
+    const push = transitionFx("push", 0.5, 1920);
+    expect(push).toEqual({ inAlpha: 1, inDx: 960, inScale: 1, outDx: -960 });
+    expect(transitionFx("push", 0, 1920).inDx).toBe(1920);
+    expect(transitionFx("slide", 0.5, 1920)).toMatchObject({ inDx: 960, outDx: 0 });
+    const zoom = transitionFx("zoom", 0.5, 1920);
+    expect(zoom.inAlpha).toBe(0.5);
+    expect(zoom.inScale).toBeCloseTo(1.05);
+    expect(transitionFx("zoom", 1, 1920).inScale).toBe(1);
   });
 });

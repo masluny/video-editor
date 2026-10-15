@@ -27,7 +27,7 @@
 //! No user-provided strings ever end up inside the filtergraph: media is passed
 //! with `-i`, titles arrive as pre-rendered PNGs, and numbers are formatted here.
 
-use crate::model::{Backdrop, Clip, ClipKind, Fit, Key, MediaKind, Project, TrackKind, VolumePoint};
+use crate::model::{Backdrop, Clip, ClipKind, Fit, Key, MediaKind, Project, TrackKind, TransitionStyle, VolumePoint};
 use crate::util::f;
 use anyhow::{anyhow, Result};
 use serde::Deserialize;
@@ -273,6 +273,26 @@ fn corner_mask(clip: &Clip, lw: u32, lh: u32) -> Option<String> {
     let dx = format!("max(max({}-X,X-{}),0)", f(x0 + r), f(x1 - r));
     let dy = format!("max(max({}-Y,Y-{}),0)", f(y0 + r), f(y1 - r));
     Some(format!("clip({}-hypot({dx},{dy})+0.5,0,1)", f(r)))
+}
+
+/// How much larger a zoom transition starts (src/lib/transitions.ts `TRANSITION_ZOOM`).
+const TRANSITION_ZOOM: f64 = 0.2;
+
+/// Progress 0 → 1 through a window starting at `a`, `len` long, as an expression of `t`.
+fn window(a: f64, len: f64) -> String {
+    format!("clip((t{})/{},0,1)", signed(-a), f(len.max(EPS)))
+}
+
+fn smoothstep(p: &str) -> String {
+    format!("({p}*{p}*(3-2*{p}))")
+}
+
+/// An overlay coordinate expression with `term` added (quoting it if it wasn't).
+fn with_term(expr: &str, term: &str) -> String {
+    match expr.strip_prefix('\'').and_then(|e| e.strip_suffix('\'')) {
+        Some(inner) => format!("'{inner}{term}'"),
+        None => format!("'{expr}{term}'"),
+    }
 }
 
 /// Working pixel format of a layer: RGB when colour maths runs, alpha when it's needed.
@@ -521,12 +541,18 @@ pub fn build(
                 let colors = color_filters(&clip.color);
                 let rgb = !colors.is_empty() || opacity < 0.999 || keyed_opacity;
                 // The incoming side of a dissolve ramps 0 → 1 over [start - x_in, start + x_in].
+                // Transition styles: the incoming clip's own, and the next clip's (which may push
+                // this one out).
+                let next = track.clips.iter().find(|c| !std::ptr::eq(*c, clip) && (c.start - clip.end()).abs() < CUT_EPS);
+                let style_in = if x_in > 0.0 { clip.transition_style } else { None };
+                let style_out = if x_out > 0.0 { next.and_then(|c| c.transition_style) } else { None };
+                let layer_start = clip.start + sp.head - pre;
                 let ramp = (x_in > 0.0).then(|| {
-                    let layer_start = clip.start + sp.head - pre;
                     let (a, b) = (clip.start - x_in - layer_start, clip.start + x_in - layer_start);
                     (a.max(0.0), b - a.max(0.0))
                 });
-                let ramp = ramp.filter(|&(_, d)| d > EPS);
+                // Push and slide move the clip in opaque; dissolve and zoom fade it in.
+                let ramp = ramp.filter(|&(_, d)| d > EPS && matches!(style_in, None | Some(TransitionStyle::Zoom)));
                 let alpha = has_alpha
                     || opacity < 0.999
                     || keyed_opacity
@@ -648,10 +674,12 @@ pub fn build(
                 };
                 let zoom = motion.map(|m| format!("({}{}*{})", f(m.from.scale), signed(m.to.scale - m.from.scale), progress(pre - sp.head)));
                 let keyed_zoom = (!kf.scale.is_empty()).then(|| format!("({})/{}", key_expr(&kf.scale, clip, pre - sp.head, 1.0), f(scale)));
-                let z = match (zoom, keyed_zoom) {
-                    (Some(a), Some(b)) => Some(format!("{a}*{b}")),
-                    (a, b) => a.or(b),
-                };
+                // A zoom transition settles from a close-up across its window (layer clock).
+                let transition_zoom = (style_in == Some(TransitionStyle::Zoom)).then(|| {
+                    let p = window(clip.start - x_in - layer_start, 2.0 * x_in);
+                    format!("(1+{}*pow(1-{p},2))", f(TRANSITION_ZOOM))
+                });
+                let z = [zoom, keyed_zoom, transition_zoom].into_iter().flatten().reduce(|a, b| format!("{a}*{b}"));
                 if let Some(z) = z {
                     chain.push(format!("scale=w='max(2,trunc(iw*{z}/2)*2)':h='max(2,trunc(ih*{z}/2)*2)':eval=frame:flags=bicubic"));
                 }
@@ -662,7 +690,14 @@ pub fn build(
                 graph.push(format!("[{source}]{}[l{n}]", chain.join(",")));
                 let p = progress(clip.start - r0);
                 let keyed = |keys: &[Key], k: f64| (!keys.is_empty()).then(|| key_expr(keys, clip, clip.start - r0, k));
-                let ox = place_expr("(W-w)/2", keyed(&kf.x, kx), t.x, motion.map(|m| (m.from.x, m.to.x, p.as_str())), kx);
+                let mut ox = place_expr("(W-w)/2", keyed(&kf.x, kx), t.x, motion.map(|m| (m.from.x, m.to.x, p.as_str())), kx);
+                // Push / slide: in from the right across the incoming window; push: out to the left.
+                if matches!(style_in, Some(TransitionStyle::Push | TransitionStyle::Slide)) {
+                    ox = with_term(&ox, &format!("+W*(1-{})", smoothstep(&window(clip.start - x_in - r0, 2.0 * x_in))));
+                }
+                if style_out == Some(TransitionStyle::Push) {
+                    ox = with_term(&ox, &format!("-W*{}", smoothstep(&window(clip.end() - x_out - r0, 2.0 * x_out))));
+                }
                 let oy = place_expr("(H-h)/2", keyed(&kf.y, ky), t.y, motion.map(|m| (m.from.y, m.to.y, p.as_str())), ky);
                 graph.push(format!("[{prev}][l{n}]overlay=x={ox}:y={oy}:eof_action=pass:format=auto[v{n}]"));
                 prev = format!("v{n}");
@@ -1395,6 +1430,44 @@ mod tests {
         assert!((100..160).contains(&lum(1.5, 80, 45)), "card at half opacity: {}", lum(1.5, 80, 45));
         assert!(lum(1.5, 41, 24) < 30, "card corner rounded off");
         assert!(lum(1.5, 50, 45) > 100, "card edge straight");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn push_slide_and_zoom_transitions() {
+        if !ffmpeg_ok() { return; }
+        let d = tmpdir();
+        // Red with a white stripe on its right edge, then blue; a 1 s transition at 2 s.
+        let red = d.join("red.mp4");
+        ff(&["-f", "lavfi", "-i", "color=c=red:s=160x90:r=30:d=3,drawbox=x=120:y=0:w=40:h=90:color=white:t=fill",
+             "-c:v", "libx264", "-pix_fmt", "yuv420p", red.to_str().unwrap()]);
+        let blue = d.join("blue.mp4");
+        solid(&blue, "blue", 160, 90, 3.0, None);
+        let render = |style: Option<TransitionStyle>| {
+            let mut p = project(160, 90);
+            p.media = vec![media("r", &red, 160, 90, 3.0, false), media("b", &blue, 160, 90, 3.0, false)];
+            let mut b = clip("b", "b", 2.0, 0.0, 2.0);
+            b.transition_in = 1.0;
+            b.transition_style = style;
+            p.tracks[0].clips.extend([clip("r", "r", 0.0, 0.0, 2.0), b]);
+            let out = d.join(format!("{style:?}.mp4"));
+            run(&p, &ExportSettings::default(), None, &out);
+            out
+        };
+        let red_px = |px: [u8; 3]| px[0] > 180 && px[1] < 70 && px[2] < 70;
+        let white_px = |px: [u8; 3]| px[0] > 200 && px[1] > 200 && px[2] > 200;
+        let blue_px = |px: [u8; 3]| px[2] > 180 && px[0] < 70;
+        // Push, half way: red has moved left by half the frame (its stripe now at x 40-80), blue fills the right half.
+        let push = render(Some(TransitionStyle::Push));
+        assert!(white_px(pixel(&push, 2.0, 60, 45)) && blue_px(pixel(&push, 2.0, 130, 45)), "push half way");
+        assert!(red_px(pixel(&push, 1.55, 60, 45)) && blue_px(pixel(&push, 2.48, 20, 45)), "push before / after");
+        // Slide: red stays put (stripe hidden under blue), blue covers the right half.
+        let slide = render(Some(TransitionStyle::Slide));
+        assert!(red_px(pixel(&slide, 2.0, 60, 45)) && blue_px(pixel(&slide, 2.0, 130, 45)), "slide half way");
+        // Zoom: a cross-fade (half red, half blue) while blue settles.
+        let zoom = render(Some(TransitionStyle::Zoom));
+        let m = pixel(&zoom, 2.0, 60, 45);
+        assert!(m[0] > 80 && m[0] < 180 && m[2] > 80 && m[2] < 180, "zoom mixes: {m:?}");
         let _ = std::fs::remove_dir_all(&d);
     }
 

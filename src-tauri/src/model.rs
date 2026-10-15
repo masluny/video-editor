@@ -172,6 +172,8 @@ pub struct Clip {
     pub fade_out: f64,
     /// Cross-dissolve (seconds) from the clip that ends where this one starts.
     pub transition_in: f64,
+    /// How that transition looks (None: a dissolve).
+    pub transition_style: Option<TransitionStyle>,
     /// Zoom / pan across the clip (src/lib/motion.ts).
     pub motion: Option<Motion>,
     /// Volume envelope in source time (src/lib/envelope.ts).
@@ -186,6 +188,18 @@ pub struct Clip {
     pub corners: f64,
     /// Frame hold: the source frame at `in` for the clip's whole length, silent.
     pub freeze: bool,
+}
+
+/// A moving transition (src/lib/transitions.ts `transitionFx`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TransitionStyle {
+    /// The incoming clip pushes the outgoing one out to the left.
+    Push,
+    /// The incoming clip slides in from the right over the outgoing one.
+    Slide,
+    /// The incoming clip fades in while settling from a close-up.
+    Zoom,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -214,6 +228,7 @@ impl Default for Clip {
             fade_in: 0.0,
             fade_out: 0.0,
             transition_in: 0.0,
+            transition_style: None,
             motion: None,
             volume_points: vec![],
             keyframes: Keyframes::default(),

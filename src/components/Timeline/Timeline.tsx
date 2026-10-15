@@ -61,7 +61,7 @@ import { useLocal } from "../../lib/useLocal";
 import { keyLabel, seconds, timecode } from "../../lib/format";
 import { cn } from "../../lib/cn";
 import { MARKER_COLORS } from "../../lib/defaults";
-import { clipAfter, clipBefore, DEFAULT_DISSOLVE, dissolveInto } from "../../lib/transitions";
+import { clipAfter, clipBefore, DEFAULT_DISSOLVE, dissolveInto, TRANSITION_STYLES } from "../../lib/transitions";
 import { addBeatMarkers, duckUnderVoice, evenOutVolume, exportCaptions, splitAtShotChanges, cutToBeat, pasteLook, autoColorClips, matchColorTo, cleanUpVoice } from "../../lib/actions";
 
 interface Row {
@@ -728,6 +728,22 @@ function Cuts({ track, zoom, viewStart, viewEnd }: { track: Track; zoom: number;
     openMenu(e, [
       ...DISSOLVE_LENGTHS.map((d): MenuItem => ({ label: `${name} ${d}s`, checked: Math.abs(len - d) < 1e-3, onSelect: () => s().setDissolve(to.id, d) })),
       { separator: true },
+      ...(track.kind === "video"
+        ? [
+            ...TRANSITION_STYLES.map(
+              (t): MenuItem => ({
+                label: t.label,
+                checked: len > 0 && (to.transitionStyle ?? "dissolve") === t.id,
+                onSelect: () =>
+                  s().updateClip(to.id, (c) => {
+                    c.transitionStyle = t.id === "dissolve" ? undefined : t.id;
+                    if (!(c.transitionIn && c.transitionIn > 0)) c.transitionIn = t.id === "dissolve" ? DEFAULT_DISSOLVE : 0.5;
+                  }),
+              }),
+            ),
+            { separator: true } as MenuItem,
+          ]
+        : []),
       { label: track.kind === "audio" ? "Fade out and in instead" : "Dip to black instead", onSelect: () => s().dipToBlack(to.id, len || DEFAULT_DISSOLVE) },
       { label: "Remove transition", danger: true, disabled: !(len > 0), onSelect: () => s().setDissolve(to.id, 0) },
     ]);
@@ -749,7 +765,7 @@ function Cuts({ track, zoom, viewStart, viewEnd }: { track: Track; zoom: number;
               key={to.id}
               className="absolute z-[6] flex items-center justify-center rounded-md border border-black/30 bg-white/85 text-black shadow hover:bg-white"
               style={{ left: x - w / 2, width: w, top, height: size }}
-              title={`${name} ${seconds(2 * d.half)} · click to change`}
+              title={`${to.transitionStyle ? TRANSITION_STYLES.find((x) => x.id === to.transitionStyle)!.label : name} ${seconds(2 * d.half)} · click to change`}
               onPointerDown={stop}
               onClick={(e) => menu(e, to)}
               onContextMenu={(e) => menu(e, to)}

@@ -34,7 +34,7 @@ import { ProjectSettingsForm } from "./ProjectSettingsForm";
 import { openMenu } from "../ui/Menu";
 import { bytes, duration as fmtDuration, fpsLabel, seconds, timecode } from "../../lib/format";
 import { projectDuration } from "../../lib/timeline";
-import { clipBefore, dissolveInto } from "../../lib/transitions";
+import { clipBefore, DEFAULT_DISSOLVE, dissolveInto, TRANSITION_STYLES } from "../../lib/transitions";
 import { DEFAULT_MOTION_AMOUNT, ENTRANCE_PRESETS, isEntrance, MOTION_PRESETS, motionAmount, motionPreset, type MotionPreset } from "../../lib/motion";
 import { cn } from "../../lib/cn";
 import { cornerLayout, cornerOf, fitBox, squareCrop, type Corner } from "../../lib/visual";
@@ -670,8 +670,29 @@ function TransitionSection({ clip, track }: { clip: Clip; track: Track }) {
   const len = clip.transitionIn ?? 0;
   return (
     <Section id="transition" title="Transition in">
+      {track.kind === "video" && (
+        <FieldRow label="Style">
+          <div className="flex flex-1 flex-wrap gap-1">
+            {TRANSITION_STYLES.map((t) => (
+              <button
+                key={t.id}
+                title={t.hint}
+                className={chip(len > 0 && (clip.transitionStyle ?? "dissolve") === t.id)}
+                onClick={() =>
+                  store().updateClip(clip.id, (c) => {
+                    c.transitionStyle = t.id === "dissolve" ? undefined : t.id;
+                    if (!(c.transitionIn && c.transitionIn > 0)) c.transitionIn = t.id === "dissolve" ? DEFAULT_DISSOLVE : 0.5;
+                  })
+                }
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+        </FieldRow>
+      )}
       <SliderField
-        label={track.kind === "audio" ? "Crossfade" : "Dissolve"}
+        label={track.kind === "audio" ? "Crossfade" : "Length"}
         value={len}
         min={0}
         max={10}

@@ -154,6 +154,8 @@ export interface Clip {
   fadeOut: number;
   /** Cross-dissolve (seconds) from the clip that ends where this one starts. */
   transitionIn?: number;
+  /** How that transition looks (missing: a dissolve). */
+  transitionStyle?: "push" | "slide" | "zoom";
   /** Zoom / pan across the clip (see lib/motion.ts). */
   motion?: Motion;
   /** Position / scale / rotation / opacity over time, on the clip clock (see lib/keyframes.ts). */

@@ -1,10 +1,11 @@
-// Cross-dissolves between clips on one track.
+// Transitions between clips on one track: cross-dissolves, and moves (push, slide, zoom).
 //
 // A dissolve belongs to the incoming clip (`transitionIn`, seconds) and is centred on its
 // cut with the clip that ends exactly where it starts. No extra source frames are needed:
 // during the first half the incoming clip holds its first frame and fades in on top of
 // the outgoing one; during the second half the outgoing clip holds its last frame
-// underneath. Their sound dips across the cut. The export (graph.rs) mirrors this.
+// underneath. Their sound dips across the cut. A moving style changes how the two layers
+// meet in that window (see transitionFx). The export (graph.rs) mirrors this.
 
 import type { Clip, Track } from "./types";
 import { clipDuration, clipEnd, EPS } from "./timeline";
@@ -69,4 +70,42 @@ export function dissolveGain(track: Track, clip: Clip, t: number): number {
   const out = dissolveOutOf(track, clip);
   if (out && t > out.cut - out.half) g *= Math.max(0, Math.min(1, (out.cut - t) / out.half));
   return g;
+}
+
+export type TransitionStyle = "dissolve" | "push" | "slide" | "zoom";
+
+export const TRANSITION_STYLES: { id: TransitionStyle; label: string; hint: string }[] = [
+  { id: "dissolve", label: "Dissolve", hint: "Fade from one clip to the next" },
+  { id: "push", label: "Push", hint: "The next clip pushes this one out to the left" },
+  { id: "slide", label: "Slide", hint: "The next clip slides in from the right, over this one" },
+  { id: "zoom", label: "Zoom", hint: "The next clip fades in while zooming out of a close-up" },
+];
+
+/** Where a transition's layers are at `mix` (0 → 1 across it), for a frame `W` wide. */
+export interface TransitionFx {
+  /** Incoming clip: opacity, horizontal offset (px) and scale factor. */
+  inAlpha: number;
+  inDx: number;
+  inScale: number;
+  /** Outgoing clip: horizontal offset (px). */
+  outDx: number;
+}
+
+/** Zoom starts this much larger than the clip's own framing. */
+export const TRANSITION_ZOOM = 0.2;
+
+const smooth = (p: number) => p * p * (3 - 2 * p);
+
+export function transitionFx(style: TransitionStyle | undefined, mix: number, W: number): TransitionFx {
+  const p = Math.max(0, Math.min(1, mix));
+  switch (style) {
+    case "push":
+      return { inAlpha: 1, inDx: W * (1 - smooth(p)), inScale: 1, outDx: -W * smooth(p) };
+    case "slide":
+      return { inAlpha: 1, inDx: W * (1 - smooth(p)), inScale: 1, outDx: 0 };
+    case "zoom":
+      return { inAlpha: p, inDx: 0, inScale: 1 + TRANSITION_ZOOM * (1 - p) * (1 - p), outDx: 0 };
+    default:
+      return { inAlpha: p, inDx: 0, inScale: 1, outDx: 0 };
+  }
 }

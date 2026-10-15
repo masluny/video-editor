@@ -17,11 +17,18 @@ import type { Clip, Id, MediaAsset, Project, Track } from "../../lib/types";
 import { clipAt, clipDuration, clipEnd, EPS, projectDuration, speedOf } from "../../lib/timeline";
 import { backdropBlur, cssClipPath, cssFilter, fadeFactor, fitBox } from "../../lib/visual";
 import { titleImageUrl } from "../../lib/title";
-import { dissolveAt, dissolveGain, dissolveMix } from "../../lib/transitions";
+import { dissolveAt, dissolveGain, dissolveMix, transitionFx } from "../../lib/transitions";
 import { motionAt, motionProgress } from "../../lib/motion";
 import { posed, propAt } from "../../lib/keyframes";
 import { gainAt } from "../../lib/envelope";
 import { mediaTime, Slot, Transport, type Voice } from "./playback";
+
+/** A transition's extra shift (px) and scale of a layer. */
+interface Move {
+  dx: number;
+  scale: number;
+}
+const NO_MOVE: Move = { dx: 0, scale: 1 };
 
 export interface EngineHost {
   project(): Project;
@@ -269,11 +276,13 @@ export class Engine {
   }
 
   /** Position/transform/colour an element like graph.rs does; geometry writes are cached. */
-  private place(el: HTMLElement, clip: Clip, mw: number, mh: number, W: number, H: number, t: number, alpha = 1, z = 1) {
+  private place(el: HTMLElement, clip: Clip, mw: number, mh: number, W: number, H: number, t: number, alpha = 1, z = 1, move: Move = NO_MOVE) {
     const pose = posed(clip, t - clip.start);
     const m = clip.motion ? motionAt(clip.motion, motionProgress(clip.motion, t - clip.start, clipDuration(clip))) : null;
     const base = pose.transform;
-    const tf = m ? { ...base, scale: base.scale * m.scale, x: base.x + m.x, y: base.y + m.y } : base;
+    const moved = m ? { ...base, scale: base.scale * m.scale, x: base.x + m.x, y: base.y + m.y } : base;
+    // A moving transition shifts / scales the whole layer on top of its own framing.
+    const tf = move === NO_MOVE ? moved : { ...moved, x: moved.x + move.dx, scale: moved.scale * move.scale };
     const box = fitBox(mw, mh, W, H, tf.fit);
     // Boxes bigger than the frame (Fill into another shape) are laid out at frame size and
     // scaled up by the transform instead: huge video layout boxes can fail to paint.
@@ -317,6 +326,11 @@ export class Engine {
     const dz = clip ? dissolveAt(track, t) : null;
     const mix = dz ? dissolveMix(dz, t) : 1;
     const incoming = !!dz && clip === dz.to;
+    // How the two layers meet: the incoming one fades / moves in, the outgoing one may move out.
+    const fx = dz ? transitionFx(dz.to.transitionStyle, mix, W) : null;
+    const inMove: Move = fx && (fx.inDx || fx.inScale !== 1) ? { dx: fx.inDx, scale: fx.inScale } : NO_MOVE;
+    const outMove: Move = fx?.outDx ? { dx: fx.outDx, scale: 1 } : NO_MOVE;
+    const [ownAlpha, ownZ, ownMove] = incoming ? [fx!.inAlpha, 2, inMove] : [1, 1, dz ? outMove : NO_MOVE];
 
     let backdrop = false;
     if (clip && media && media.kind === "video") {
@@ -324,8 +338,8 @@ export class Engine {
       if (url) {
         videoSlot = this.acquire(layer, clip.id, url);
         const el = videoSlot.el as HTMLVideoElement;
-        this.place(el, clip, media.width, media.height, W, H, t, incoming ? mix : 1, incoming ? 2 : 1);
-        if (clip.backdrop === "blur") backdrop = this.drawBackdrop(layer, el, clip, media, W, H, t, incoming ? mix : 1);
+        this.place(el, clip, media.width, media.height, W, H, t, ownAlpha, ownZ, ownMove);
+        if (clip.backdrop === "blur") backdrop = this.drawBackdrop(layer, el, clip, media, W, H, t, ownAlpha);
         if (clip.freeze) {
           // A frame hold isn't played: it just shows its frame, silently.
           if (!el.paused) el.pause();
@@ -340,8 +354,8 @@ export class Engine {
         }
       }
     } else if (clip && (clip.type === "title" || media?.kind === "image")) {
-      showImg[0] = this.renderStill(layer, 0, clip, media, W, H, t, incoming ? mix : 1, incoming ? 2 : 1);
-      if (showImg[0] && media && clip.backdrop === "blur") backdrop = this.drawBackdrop(layer, layer.imgs![0], clip, media, W, H, t, incoming ? mix : 1);
+      showImg[0] = this.renderStill(layer, 0, clip, media, W, H, t, ownAlpha, ownZ, ownMove);
+      if (showImg[0] && media && clip.backdrop === "blur") backdrop = this.drawBackdrop(layer, layer.imgs![0], clip, media, W, H, t, ownAlpha);
     }
     if (!backdrop && layer.backdrop && layer.backdrop.style.visibility !== "hidden") layer.backdrop.style.visibility = "hidden";
 
@@ -351,7 +365,7 @@ export class Engine {
       const om = this.mediaFor(p, other);
       // Evaluate its own fades at the frame it holds.
       const at = incoming ? clipEnd(other) - EPS : other.start;
-      const [alpha, z] = incoming ? [1, 1] : [mix, 2];
+      const [alpha, z, move] = incoming ? [1, 1, outMove] : [fx!.inAlpha, 2, inMove];
       if (om?.kind === "video") {
         const url = this.host.source(om);
         if (url) {
@@ -364,10 +378,10 @@ export class Engine {
           held.el.muted = true;
           held.activeClip = null; // not a voice: re-cue it like a new clip if it plays again
           held.seek(incoming && !other.freeze ? other.out - (0.5 / (fps || 30)) * speedOf(other) : other.in, 0.01);
-          this.place(held.el as HTMLVideoElement, other, om.width, om.height, W, H, at, alpha, z);
+          this.place(held.el as HTMLVideoElement, other, om.width, om.height, W, H, at, alpha, z, move);
         }
       } else if (other.type === "title" || om?.kind === "image") {
-        showImg[1] = this.renderStill(layer, 1, other, om, W, H, at, alpha, z);
+        showImg[1] = this.renderStill(layer, 1, other, om, W, H, at, alpha, z, move);
       }
     }
 
@@ -442,7 +456,7 @@ export class Engine {
     return entry.url;
   }
 
-  private renderStill(layer: Layer, which: 0 | 1, clip: Clip, media: MediaAsset | undefined, W: number, H: number, t: number, alpha: number, z: number): boolean {
+  private renderStill(layer: Layer, which: 0 | 1, clip: Clip, media: MediaAsset | undefined, W: number, H: number, t: number, alpha: number, z: number, move: Move = NO_MOVE): boolean {
     const img = layer.imgs![which];
     let url: string | null;
     let mw = W;
@@ -458,7 +472,7 @@ export class Engine {
       layer.imgKeys[which] = url;
       img.src = url;
     }
-    this.place(img, clip, mw, mh, W, H, t, alpha, z);
+    this.place(img, clip, mw, mh, W, H, t, alpha, z, move);
     return true;
   }
 

@@ -172,6 +172,7 @@ function clip(c: Json, mediaIds: Set<string>): Clip | null {
     fadeIn: num(c.fadeIn, 0, 0),
     fadeOut: num(c.fadeOut, 0, 0),
     transitionIn: num(c.transitionIn, 0, 0, 10) || undefined,
+    transitionStyle: ["push", "slide", "zoom"].includes(c.transitionStyle) ? c.transitionStyle : undefined,
     motion: motion(c.motion),
     volumePoints: volumePoints(c.volumePoints),
     keyframes: keyframes(c.keyframes),
