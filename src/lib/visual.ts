@@ -11,6 +11,11 @@ export function fitBox(mw: number, mh: number, w: number, h: number, fit: Fit): 
 }
 
 /** CSS filter string; order must match graph.rs::color_filters. */
+/** Gaussian blur (std. deviation, frame pixels) of a "blur" backdrop; graph.rs matches it. */
+export function backdropBlur(W: number, H: number): number {
+  return 0.03 * Math.min(W, H);
+}
+
 /** CSS filter for a colour adjustment; `blurScale` compensates an element drawn at a different size. */
 export function cssFilter(c: ColorAdjust, blurScale = 1): string {
   const parts: string[] = [];

@@ -51,6 +51,8 @@ export interface Toast {
   kind: "info" | "success" | "error";
   message: string;
   action?: { label: string; run: () => void };
+  /** A second, alternative action shown after the first. */
+  secondary?: { label: string; run: () => void };
 }
 
 export type Dialog =
@@ -164,6 +166,8 @@ interface State {
   closeTrackGaps: (trackId: Id) => void;
   /** Set how picture clips (all, or just `ids`) fit the frame. Returns how many changed. */
   fitClips: (fit: Clip["transform"]["fit"], ids?: Id[]) => number;
+  /** Fill the bars behind picture clips (all, or `ids`) with their blurred copy, or not. */
+  setBackdrop: (backdrop: Clip["backdrop"], ids?: Id[]) => number;
 
   // --- tracks ----------------------------------------------------------------
   addTrack: (kind: TrackKind) => void;
@@ -204,7 +208,7 @@ interface State {
   setFullscreen: (on: boolean) => void;
 
   /** Show a toast; returns its id (for dismissing a progress message early). */
-  toast: (message: string, kind?: Toast["kind"], action?: Toast["action"]) => Id;
+  toast: (message: string, kind?: Toast["kind"], action?: Toast["action"], secondary?: Toast["secondary"]) => Id;
   dismissToast: (id: Id) => void;
   openDialog: (d: Dialog) => void;
 }
@@ -910,23 +914,17 @@ export const useStore = create<State>()((set, get) => ({
     });
   },
 
-  fitClips: (fit, ids) => {
-    const { project } = get();
-    const want = ids && new Set(ids);
-    const picture = new Set(project.media.filter((m) => m.hasVideo).map((m) => m.id));
-    let n = 0;
-    get().apply((p) => {
-      for (const t of p.tracks) {
-        if (t.kind !== "video" || t.locked) continue;
-        for (const c of t.clips) {
-          if (c.type !== "media" || !picture.has(c.mediaId!) || (want && !want.has(c.id)) || c.transform.fit === fit) continue;
-          c.transform.fit = fit;
-          n++;
-        }
-      }
-    });
-    return n;
-  },
+  fitClips: (fit, ids) => reframe(ids, (c) => (c.transform.fit === fit ? false : ((c.transform.fit = fit), true))),
+
+  setBackdrop: (backdrop, ids) =>
+    reframe(ids, (c) => {
+      if (c.backdrop === backdrop) return false;
+      if (backdrop) {
+        c.backdrop = backdrop;
+        c.transform.fit = "contain";
+      } else delete c.backdrop;
+      return true;
+    }),
 
   closeTrackGaps: (trackId) => {
     const t = get().project.tracks.find((x) => x.id === trackId);
@@ -1031,8 +1029,8 @@ export const useStore = create<State>()((set, get) => ({
   setZoom: (z) => set({ zoom: Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z)) }),
   setFullscreen: (on) => set({ fullscreen: on }),
 
-  toast: (message, kind = "info", action) => {
-    const t: Toast = { id: uid(), kind, message, action };
+  toast: (message, kind = "info", action, secondary) => {
+    const t: Toast = { id: uid(), kind, message, action, secondary };
     set((s) => ({ toasts: [...s.toasts.slice(-4), t] }));
     return t.id;
   },
@@ -1042,6 +1040,21 @@ export const useStore = create<State>()((set, get) => ({
 
 // Set inside placeMedia's recipe, read right after it (immer recipes can't return extra data).
 let adopted: { w: number; h: number; fps: number } | null = null;
+
+/** Change picture clips (all, or `ids`) on unlocked video tracks; `fn` says if it changed one. */
+function reframe(ids: Id[] | undefined, fn: (c: Draft<Clip>) => boolean): number {
+  const { project, apply } = useStore.getState();
+  const want = ids && new Set(ids);
+  const picture = new Set(project.media.filter((m) => m.hasVideo).map((m) => m.id));
+  let n = 0;
+  apply((p) => {
+    for (const t of p.tracks) {
+      if (t.kind !== "video" || t.locked) continue;
+      for (const c of t.clips) if (c.type === "media" && picture.has(c.mediaId!) && (!want || want.has(c.id)) && fn(c)) n++;
+    }
+  });
+  return n;
+}
 
 /** Lift / extract the In–Out range across every unlocked track (markers follow an extract). */
 function cutRange(ripple: boolean) {

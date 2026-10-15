@@ -176,6 +176,15 @@ pub struct Clip {
     pub motion: Option<Motion>,
     /// Volume envelope in source time (src/lib/envelope.ts).
     pub volume_points: Vec<VolumePoint>,
+    /// What fills the frame behind the clip.
+    pub backdrop: Option<Backdrop>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Backdrop {
+    /// A blurred, frame-filling copy of the clip.
+    Blur,
 }
 
 impl Default for Clip {
@@ -199,6 +208,7 @@ impl Default for Clip {
             transition_in: 0.0,
             motion: None,
             volume_points: vec![],
+            backdrop: None,
         }
     }
 }

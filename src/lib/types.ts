@@ -157,6 +157,8 @@ export interface Clip {
   motion?: Motion;
   /** Volume envelope in source time, e.g. from ducking (see lib/envelope.ts). */
   volumePoints?: VolumePoint[];
+  /** Fill the frame behind the clip with a blurred, enlarged copy of it (bars → blur). */
+  backdrop?: "blur";
   title?: TitleStyle;
   /** Optional user label shown on the clip. */
   label?: string;

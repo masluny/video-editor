@@ -36,6 +36,17 @@ function ToastView({ toast }: { toast: Toast }) {
     >
       <Icon className={cn("mt-px h-4 w-4 shrink-0", toast.kind === "error" ? "text-danger" : toast.kind === "success" ? "text-success" : "text-accent-ink")} />
       <p className="min-w-0 flex-1 whitespace-pre-wrap break-words text-sm leading-[18px] text-ink">{toast.message}</p>
+      {toast.secondary && (
+        <button
+          className="shrink-0 rounded px-1.5 text-sm font-semibold text-accent-ink hover:text-white"
+          onClick={() => {
+            toast.secondary!.run();
+            dismiss(toast.id);
+          }}
+        >
+          {toast.secondary.label}
+        </button>
+      )}
       {toast.action && (
         <button
           className="shrink-0 rounded px-1.5 text-sm font-semibold text-accent-ink hover:text-white"

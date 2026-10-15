@@ -15,7 +15,7 @@
 
 import type { Clip, Id, MediaAsset, Project, Track } from "../../lib/types";
 import { clipAt, clipDuration, clipEnd, EPS, projectDuration, speedOf } from "../../lib/timeline";
-import { cssClipPath, cssFilter, fadeFactor, fitBox } from "../../lib/visual";
+import { backdropBlur, cssClipPath, cssFilter, fadeFactor, fitBox } from "../../lib/visual";
 import { titleImageUrl } from "../../lib/title";
 import { dissolveAt, dissolveGain, dissolveMix } from "../../lib/transitions";
 import { motionAt, motionProgress } from "../../lib/motion";
@@ -39,6 +39,8 @@ interface Layer {
   current: Slot | null;
   /** Stills & titles: the active clip, and the other side of a dissolve. */
   imgs: [HTMLImageElement, HTMLImageElement] | null;
+  /** Blurred copy of the active clip filling the frame behind it ("blur" backdrop). */
+  backdrop: HTMLCanvasElement | null;
   imgKeys: [string, string];
 }
 
@@ -198,7 +200,7 @@ export class Engine {
         this.stage.appendChild(a);
         return new Slot(a);
       };
-      return { track: track.id, kind: "audio", root: null, slots: [mk(), mk()], current: null, imgs: null, imgKeys: ["", ""] };
+      return { track: track.id, kind: "audio", root: null, slots: [mk(), mk()], current: null, imgs: null, imgKeys: ["", ""], backdrop: null };
     }
     const root = document.createElement("div");
     Object.assign(root.style, { position: "absolute", inset: "0", pointerEvents: "none" });
@@ -213,9 +215,11 @@ export class Engine {
       return img;
     };
     const imgs: [HTMLImageElement, HTMLImageElement] = [mkImg(), mkImg()];
-    root.append(a, b, ...imgs);
+    const backdrop = document.createElement("canvas");
+    Object.assign(backdrop.style, { position: "absolute", left: "0", top: "0", visibility: "hidden", pointerEvents: "none", zIndex: "0" });
+    root.append(backdrop, a, b, ...imgs);
     this.stage.appendChild(root);
-    return { track: track.id, kind: "video", root, slots: [new Slot(a), new Slot(b)], current: null, imgs, imgKeys: ["", ""] };
+    return { track: track.id, kind: "video", root, slots: [new Slot(a), new Slot(b)], current: null, imgs, imgKeys: ["", ""], backdrop };
   }
 
   private disposeLayer(l: Layer) {
@@ -311,12 +315,14 @@ export class Engine {
     const mix = dz ? dissolveMix(dz, t) : 1;
     const incoming = !!dz && clip === dz.to;
 
+    let backdrop = false;
     if (clip && media && media.kind === "video") {
       const url = this.host.source(media);
       if (url) {
         videoSlot = this.acquire(layer, clip.id, url);
         const el = videoSlot.el as HTMLVideoElement;
         this.place(el, clip, media.width, media.height, W, H, t, incoming ? mix : 1, incoming ? 2 : 1);
+        if (clip.backdrop === "blur") backdrop = this.drawBackdrop(layer, el, clip, media, W, H, t, incoming ? mix : 1);
         this.voices.push({ slot: videoSlot, clip, video: true, lead: !track.hidden });
         const g = this.gain(track, clip, t, audible && media.hasAudio);
         el.muted = g <= 0;
@@ -324,7 +330,9 @@ export class Engine {
       }
     } else if (clip && (clip.type === "title" || media?.kind === "image")) {
       showImg[0] = this.renderStill(layer, 0, clip, media, W, H, t, incoming ? mix : 1, incoming ? 2 : 1);
+      if (showImg[0] && media && clip.backdrop === "blur") backdrop = this.drawBackdrop(layer, layer.imgs![0], clip, media, W, H, t, incoming ? mix : 1);
     }
+    if (!backdrop && layer.backdrop && layer.backdrop.style.visibility !== "hidden") layer.backdrop.style.visibility = "hidden";
 
     let held: Slot | null = null;
     if (dz) {
@@ -375,6 +383,36 @@ export class Engine {
     layer.imgs!.forEach((img, i) => {
       if (!showImg[i] && img.style.visibility !== "hidden") img.style.visibility = "hidden";
     });
+  }
+
+  /** Paint a blurred, frame-filling copy of `source` behind the clip (cheap: 1/8 size, CSS blur). */
+  private drawBackdrop(layer: Layer, source: HTMLVideoElement | HTMLImageElement, clip: Clip, media: MediaAsset, W: number, H: number, t: number, alpha: number): boolean {
+    const cv = layer.backdrop!;
+    const f = 1 / 8;
+    const blur = backdropBlur(W, H);
+    // Overscan by the blur's reach so its darkened edges fall outside the (clipped) stage.
+    const m = Math.ceil(3 * blur * f);
+    const [iw, ih] = [Math.max(2, Math.round(W * f)), Math.max(2, Math.round(H * f))];
+    const [cw, ch] = [iw + 2 * m, ih + 2 * m];
+    if (cv.width !== cw || cv.height !== ch) [cv.width, cv.height] = [cw, ch];
+    const [mw, mh] = [media.width || W, media.height || H];
+    const k = Math.max(iw / mw, ih / mh);
+    const g = cv.getContext("2d");
+    try {
+      g?.drawImage(source, 0, 0, cw, ch); // rough fill for the overscan
+      g?.drawImage(source, m + (iw - mw * k) / 2, m + (ih - mh * k) / 2, mw * k, mh * k); // the frame: cover, as exported
+    } catch {
+      return false; // no frame decoded yet
+    }
+    const colour = cssFilter({ ...clip.color, blur: 0 });
+    const s = cv.style;
+    const filter = `${colour === "none" ? "" : colour} blur(${blur}px)`.trim();
+    if (s.filter !== filter) s.filter = filter;
+    const box = [`${-m / f}px`, `${cw / f}px`, `${ch / f}px`];
+    if (s.width !== box[1] || s.height !== box[2]) [s.left, s.top, s.width, s.height] = [box[0], box[0], box[1], box[2]];
+    s.opacity = String(Math.max(0, Math.min(1, clip.opacity * fadeFactor(clip, t - clip.start) * alpha)));
+    if (s.visibility !== "visible") s.visibility = "visible";
+    return true;
   }
 
   private titleUrl(clip: Clip, W: number, H: number): string | null {

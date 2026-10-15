@@ -156,6 +156,7 @@ function clip(c: Json, mediaIds: Set<string>): Clip | null {
     transitionIn: num(c.transitionIn, 0, 0, 10) || undefined,
     motion: motion(c.motion),
     volumePoints: volumePoints(c.volumePoints),
+    backdrop: c.backdrop === "blur" ? "blur" : undefined,
     title: type === "title" ? titleStyle(c.title) : undefined,
     label: typeof c.label === "string" && c.label ? c.label : undefined,
   };

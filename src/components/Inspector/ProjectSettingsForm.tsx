@@ -11,7 +11,12 @@ function offerFill() {
   const picture = new Set(media.filter((m) => m.hasVideo).map((m) => m.id));
   const boxed = tracks.some((t) => t.kind === "video" && t.clips.some((c) => c.type === "media" && picture.has(c.mediaId!) && c.transform.fit === "contain"));
   if (!boxed) return;
-  s.toast("Clips keep their shape and may show bars in the new frame.", "info", { label: "Fill frame", run: () => store().fitClips("cover") });
+  s.toast(
+    "Clips keep their shape and show bars in the new frame.",
+    "info",
+    { label: "Fill frame", run: () => store().fitClips("cover") },
+    { label: "Blur bars", run: () => store().setBackdrop("blur") },
+  );
 }
 
 /** Frame size, frame rate and background colour of the project. */

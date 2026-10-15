@@ -15,12 +15,15 @@
 //! * motion (Ken Burns) rescales the finished layer every frame and moves it in the
 //!   overlay, both linear in the progress through the clip (`src/lib/motion.ts`);
 //! * a volume envelope (source-time gain points, e.g. from ducking) becomes a
-//!   piecewise-linear `volume` expression (`src/lib/envelope.ts`).
+//!   piecewise-linear `volume` expression (`src/lib/envelope.ts`);
+//! * a "blur" backdrop is a second branch of the same input, scaled to cover the frame,
+//!   blurred (`backdropBlur` in `src/lib/visual.ts`) and laid under the clip with its
+//!   timing and fades.
 //!
 //! No user-provided strings ever end up inside the filtergraph: media is passed
 //! with `-i`, titles arrive as pre-rendered PNGs, and numbers are formatted here.
 
-use crate::model::{Clip, ClipKind, Fit, MediaKind, Project, TrackKind, VolumePoint};
+use crate::model::{Backdrop, Clip, ClipKind, Fit, MediaKind, Project, TrackKind, VolumePoint};
 use crate::util::f;
 use anyhow::{anyhow, Result};
 use serde::Deserialize;
@@ -180,6 +183,21 @@ fn envelope(points: &[VolumePoint], src_in: f64, speed: f64, dur: f64) -> Option
     let end = pts[pts.len() - 1];
     terms.push(format!("{}*gte(t,{})", f(end.1), f(end.0)));
     Some(terms.join("+"))
+}
+
+/// Working pixel format of a layer: RGB when colour maths runs, alpha when it's needed.
+fn pix_fmt(rgb: bool, alpha: bool) -> &'static str {
+    match (rgb, alpha) {
+        (true, true) => "gbrap",
+        (true, false) => "gbrp",
+        (false, true) => "yuva420p",
+        (false, false) => "yuv420p",
+    }
+}
+
+/// Blur (std. deviation, project pixels) of a "blur" backdrop; visual.ts: backdropBlur.
+fn backdrop_sigma(w: f64, h: f64) -> f64 {
+    0.03 * w.min(h)
 }
 
 fn even(v: f64) -> u32 {
@@ -406,16 +424,53 @@ pub fn build(
                 let ramp = ramp.filter(|&(_, d)| d > EPS);
                 let alpha = has_alpha || opacity < 0.999 || fade_in > 0.0 || fade_out > 0.0 || rotation.abs() > 1e-3 || clip.crop.is_active() || ramp.is_some();
 
-                let mut chain: Vec<String> = vec![];
-                chain.push(if is_video {
+                // Timing and fading, shared by the clip and its backdrop.
+                let mut timing: Vec<String> = vec![if is_video {
                     format!("setpts=(PTS-STARTPTS)/{}", f(clip.speed()))
                 } else {
                     "setpts=PTS-STARTPTS".into()
-                });
-                chain.push(format!("trim=duration={}", f(sp.dur)));
+                }];
+                timing.push(format!("trim=duration={}", f(sp.dur)));
                 if pre > 0.0 || post > 0.0 {
-                    chain.push(format!("tpad=start_mode=clone:start_duration={}:stop_mode=clone:stop_duration={}", f(pre), f(post)));
+                    timing.push(format!("tpad=start_mode=clone:start_duration={}:stop_mode=clone:stop_duration={}", f(pre), f(post)));
                 }
+                let mut fades: Vec<String> = vec![];
+                if opacity < 0.999 {
+                    fades.push(format!("colorchannelmixer=aa={}", f(opacity)));
+                }
+                if fade_in > 0.0 {
+                    fades.push(format!("fade=t=in:st={}:d={}:alpha=1", f(pre), f(fade_in)));
+                }
+                if fade_out > 0.0 {
+                    fades.push(format!("fade=t=out:st={}:d={}:alpha=1", f(pre + sp.dur - fade_out), f(fade_out)));
+                }
+                if let Some((st, d)) = ramp {
+                    fades.push(format!("fade=t=in:st={}:d={}:alpha=1", f(st), f(d)));
+                }
+                let offset = (sp.at - pre > 0.0).then(|| format!("setpts=PTS+{}/TB", f(sp.at - pre)));
+                let backdrop = clip.kind == ClipKind::Media && clip.backdrop == Some(Backdrop::Blur);
+                let source = if backdrop {
+                    graph.push(format!("[{idx}:v]split=2[c{n}][b{n}]"));
+                    // Blur at a quarter of the size, then scale up: same look, far cheaper.
+                    let (bw, bh) = (even(ow as f64 / 4.0), even(oh as f64 / 4.0));
+                    let mut b = timing.clone();
+                    b.push(format!("scale={bw}:{bh}:force_original_aspect_ratio=increase:flags=bilinear"));
+                    b.push(format!("crop={bw}:{bh}"));
+                    b.push(format!("format={}", pix_fmt(rgb, alpha)));
+                    b.extend(colors.iter().cloned());
+                    b.push(format!("gblur=sigma={}", f(backdrop_sigma(pw, ph) * kx / 4.0)));
+                    b.push(format!("scale={ow}:{oh}:flags=bilinear"));
+                    b.extend(fades.iter().cloned());
+                    b.extend(offset.clone());
+                    graph.push(format!("[b{n}]{}[bl{n}]", b.join(",")));
+                    graph.push(format!("[{prev}][bl{n}]overlay=x=0:y=0:eof_action=pass:format=auto[bv{n}]"));
+                    prev = format!("bv{n}");
+                    format!("c{n}")
+                } else {
+                    format!("{idx}:v")
+                };
+
+                let mut chain = timing;
                 chain.push(format!("scale={lw}:{lh}:flags=bicubic"));
                 if t.flip_h {
                     chain.push("hflip".into());
@@ -423,16 +478,8 @@ pub fn build(
                 if t.flip_v {
                     chain.push("vflip".into());
                 }
-                chain.push(format!(
-                    "format={}",
-                    match (rgb, alpha) {
-                        (true, true) => "gbrap",
-                        (true, false) => "gbrp",
-                        (false, true) => "yuva420p",
-                        (false, false) => "yuv420p",
-                    }
-                ));
-                chain.extend(colors);
+                chain.push(format!("format={}", pix_fmt(rgb, alpha)));
+                chain.extend(colors.iter().cloned());
                 if clip.crop.is_active() {
                     let c = &clip.crop;
                     let (l, r, tp, b) = (c.left.clamp(0.0, 1.0), c.right.clamp(0.0, 1.0), c.top.clamp(0.0, 1.0), c.bottom.clamp(0.0, 1.0));
@@ -446,18 +493,7 @@ pub fn build(
                 if clip.color.blur > 0.01 {
                     chain.push(format!("gblur=sigma={}", f(clip.color.blur * scale * kx)));
                 }
-                if opacity < 0.999 {
-                    chain.push(format!("colorchannelmixer=aa={}", f(opacity)));
-                }
-                if fade_in > 0.0 {
-                    chain.push(format!("fade=t=in:st={}:d={}:alpha=1", f(pre), f(fade_in)));
-                }
-                if fade_out > 0.0 {
-                    chain.push(format!("fade=t=out:st={}:d={}:alpha=1", f(pre + sp.dur - fade_out), f(fade_out)));
-                }
-                if let Some((st, d)) = ramp {
-                    chain.push(format!("fade=t=in:st={}:d={}:alpha=1", f(st), f(d)));
-                }
+                chain.extend(fades);
                 if rotation.abs() > 1e-3 {
                     let a = f(rotation.to_radians());
                     chain.push(format!("rotate=a={a}:ow=rotw({a}):oh=roth({a}):c=black@0"));
@@ -476,10 +512,8 @@ pub fn build(
                     let z = format!("({}{}*{})", f(m.from.scale), signed(m.to.scale - m.from.scale), progress(pre - sp.head));
                     chain.push(format!("scale=w='max(2,trunc(iw*{z}/2)*2)':h='max(2,trunc(ih*{z}/2)*2)':eval=frame:flags=bicubic"));
                 }
-                if sp.at - pre > 0.0 {
-                    chain.push(format!("setpts=PTS+{}/TB", f(sp.at - pre)));
-                }
-                graph.push(format!("[{idx}:v]{}[l{n}]", chain.join(",")));
+                chain.extend(offset);
+                graph.push(format!("[{source}]{}[l{n}]", chain.join(",")));
                 let (ox, oy) = match motion {
                     Some(m) => {
                         let p = progress(clip.start - r0);
@@ -1119,6 +1153,30 @@ mod tests {
         // Eased: 1-(1-0.4)^3 = 0.78 of the way at 0.4s -> scale 0.89 (x ~71..89).
         assert!(white(0.4, 87), "well on its way after 0.4s thanks to the ease");
         assert!(white(2.0, 88) && !white(2.0, 92), "held at full size (x 70..90)");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn blur_backdrop_fills_the_bars() {
+        if !ffmpeg_ok() { return; }
+        let d = tmpdir();
+        let src = d.join("wide.mp4");
+        solid(&src, "green", 160, 90, 2.0, None);
+        // Landscape footage in a portrait frame: bars above and below.
+        let mut p = project(90, 160);
+        p.media = vec![media("w", &src, 160, 90, 2.0, false)];
+        p.tracks[0].clips.push(clip("c", "w", 0.0, 0.0, 2.0));
+        let plain = d.join("bars.mp4");
+        run(&p, &ExportSettings::default(), None, &plain);
+        assert!(pixel(&plain, 1.0, 45, 10)[1] < 30, "bars are the black background");
+        p.tracks[0].clips[0].backdrop = Some(Backdrop::Blur);
+        p.tracks[0].clips[0].fade_in = 0.5;
+        let filled = d.join("filled.mp4");
+        run(&p, &ExportSettings::default(), None, &filled);
+        let top = pixel(&filled, 1.0, 45, 10);
+        assert!(top[1] > 90 && top[0] < 60, "bars show the blurred clip: {top:?}");
+        assert!(pixel(&filled, 1.0, 45, 80)[1] > 90, "clip itself in the middle");
+        assert!(pixel(&filled, 0.05, 45, 10)[1] < 30, "the backdrop fades in with the clip");
         let _ = std::fs::remove_dir_all(&d);
     }
 

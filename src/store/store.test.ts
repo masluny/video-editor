@@ -201,6 +201,16 @@ describe("reframing", () => {
     const title = st().project.tracks.flatMap((t) => t.clips).find((c) => c.type === "title")!;
     expect(title.transform.fit).toBe("contain");
   });
+
+  it("fills the bars with a blur (back to Fit) and takes it away again", () => {
+    const a = st().placeMedia("v", { at: 0 })!;
+    st().fitClips("cover");
+    expect(st().setBackdrop("blur")).toBe(1);
+    expect(findClip(st().project, a)!.clip).toMatchObject({ backdrop: "blur", transform: { fit: "contain" } });
+    expect(st().setBackdrop("blur")).toBe(0);
+    expect(st().setBackdrop(undefined, [a])).toBe(1);
+    expect("backdrop" in findClip(st().project, a)!.clip).toBe(false);
+  });
 });
 
 describe("markers", () => {

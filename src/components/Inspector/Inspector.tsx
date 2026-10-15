@@ -187,6 +187,17 @@ function MultiInspector({ ids }: { ids: string[] }) {
             ]}
           />
         </FieldRow>
+        <FieldRow label="Bars">
+          <Segmented
+            className="flex-1"
+            value={first.backdrop ?? "none"}
+            onChange={(b) => store().setBackdrop(b === "blur" ? "blur" : undefined, ids)}
+            options={[
+              { value: "none", label: "Colour", title: "The project background colour" },
+              { value: "blur", label: "Blur", title: "A blurred, enlarged copy of each clip" },
+            ]}
+          />
+        </FieldRow>
         <SliderField label="Opacity" value={first.opacity} min={0} max={1} step={0.01} displayScale={100} suffix="%" defaultValue={1} onChange={(v, o) => upd((c) => void (c.opacity = v), o.live)} onCommit={commit} />
         <SliderField label="Volume" value={first.volume} min={0} max={2} step={0.01} displayScale={100} suffix="%" defaultValue={1} onChange={(v, o) => upd((c) => void (c.volume = v), o.live)} onCommit={commit} />
         <SliderField label="Fade in" value={first.fadeIn} min={0} max={10} sliderMax={3} step={0.05} suffix="s" defaultValue={0} onChange={(v, o) => upd((c) => void (c.fadeIn = Math.min(v, clipDuration(c as Clip) - c.fadeOut)), o.live)} onCommit={commit} />
@@ -287,6 +298,19 @@ function ClipInspector({ clip, track, media }: { clip: Clip; track: Track; media
                   { value: "contain", label: "Fit", title: "Show the whole picture (letterbox)" },
                   { value: "cover", label: "Fill", title: "Fill the frame (crop overflow)" },
                   { value: "stretch", label: "Stretch", title: "Stretch to the frame" },
+                ]}
+              />
+            </FieldRow>
+          )}
+          {!isTitle && (
+            <FieldRow label="Bars" hint="What shows around a clip that doesn't fill the frame">
+              <Segmented
+                className="flex-1"
+                value={clip.backdrop ?? "none"}
+                onChange={(b) => store().setBackdrop(b === "blur" ? "blur" : undefined, [id])}
+                options={[
+                  { value: "none", label: "Colour", title: "The project background colour" },
+                  { value: "blur", label: "Blur", title: "A blurred, enlarged copy of the clip" },
                 ]}
               />
             </FieldRow>
