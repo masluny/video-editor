@@ -728,13 +728,18 @@ export const useStore = create<State>()((set, get) => ({
 
   deleteClips: (ids, ripple) => {
     if (!ids.length) return;
+    const asked = new Set(ids);
     const del = new Set(ids);
+    // A video's detached audio goes with it (deleting just the audio leaves the video); it
+    // leaves a gap, so a ripple delete of the video never pulls the music along.
+    for (const t of get().project.tracks) for (const c of t.clips) if (c.link && del.has(c.link)) del.add(c.id);
     const main = get().rippleMain ? mainTrackId(get().project) : null;
     get().apply((p) => {
       for (const t of p.tracks) {
         if (t.locked || !t.clips.some((c) => del.has(c.id))) continue;
         const all = plain(t.clips) as Clip[];
-        t.clips = (ripple || t.id === main ? rippleDelete(all, del) : all.filter((c) => !del.has(c.id))) as Draft<Clip>[];
+        const close = (ripple && all.some((c) => asked.has(c.id))) || t.id === main;
+        t.clips = (close ? rippleDelete(all, del) : all.filter((c) => !del.has(c.id))) as Draft<Clip>[];
       }
     });
     pruneSelection();

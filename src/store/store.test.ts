@@ -647,4 +647,20 @@ describe("splitting linked clips", () => {
     const after = st().project.tracks.filter((t) => t.kind === "audio").flatMap((t) => t.clips);
     expect(after.map((c) => c.link)).toEqual(clipsOf("video").map((c) => c.id));
   });
+
+  it("deletes a video's detached audio with it, but not the other way round", () => {
+    const a = st().placeMedia("v", { at: 0, range: { in: 0, out: 4 } })!;
+    st().detachAudio(a);
+    const audio = () => st().project.tracks.filter((t) => t.kind === "audio").flatMap((t) => t.clips);
+    st().deleteClips([audio()[0].id], false);
+    expect(clipsOf("video")).toHaveLength(1);
+    st().undo();
+    st().deleteClips([a], false);
+    expect(audio()).toHaveLength(0);
+    st().undo();
+    // Ripple-deleting the video doesn't ripple the audio track: music after it stays put.
+    const music = st().placeMedia("s", { at: 6, trackId: audio()[0] && st().project.tracks.find((t) => t.clips.some((c) => c.link))!.id })!;
+    st().deleteClips([a], true);
+    expect(findClip(st().project, music)!.clip.start).toBe(6);
+  });
 });
