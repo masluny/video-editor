@@ -266,7 +266,7 @@ fn corner_mask(clip: &Clip, lw: u32, lh: u32) -> Option<String> {
     let (x0, x1) = (w * c.left.clamp(0.0, 1.0), w * (1.0 - c.right.clamp(0.0, 1.0)));
     let (y0, y1) = (h * c.top.clamp(0.0, 1.0), h * (1.0 - c.bottom.clamp(0.0, 1.0)));
     let r = clip.corners.clamp(0.0, 0.5) * (x1 - x0).min(y1 - y0);
-    if !(r >= 0.5) || clip.kind != ClipKind::Media {
+    if r.is_nan() || r < 0.5 || clip.kind != ClipKind::Media {
         return None;
     }
     // Distance outside the inner rectangle the corners are drawn around, per axis.
