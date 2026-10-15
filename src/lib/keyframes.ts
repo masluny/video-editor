@@ -2,7 +2,8 @@
 //
 // Like volume envelopes, keys live on the clip's own clock (`in + local × speed`, the
 // source time for media), so trimming, moving or splitting a clip never shifts them. Values
-// move linearly between keys and hold before the first and after the last. A keyed
+// move linearly between keys (or ease in and out of them, with the clip's keyEase) and
+// hold before the first and after the last. A keyed
 // property ignores its static value (transform.x, opacity, …). graph.rs renders the same.
 
 import type { Clip, Transform } from "./types";
@@ -32,13 +33,19 @@ export function keyLocal(c: Clip, t: number): number {
   return (t - c.in) / speedOf(c);
 }
 
-/** Piecewise-linear value of keys at clip-clock `t`, or `fallback` without keys. */
-export function valueAt(keys: Key[] | undefined, t: number, fallback: number): number {
+/**
+ * Value of keys at clip-clock `t`, or `fallback` without keys: linear between keys, or
+ * easing in and out of each (smoothstep) when `ease`.
+ */
+export function valueAt(keys: Key[] | undefined, t: number, fallback: number, ease = false): number {
   if (!keys?.length) return fallback;
   if (t <= keys[0].t) return keys[0].v;
   for (let i = 1; i < keys.length; i++) {
     const [a, b] = [keys[i - 1], keys[i]];
-    if (t <= b.t) return b.t - a.t > 1e-9 ? a.v + ((b.v - a.v) * (t - a.t)) / (b.t - a.t) : b.v;
+    if (t > b.t) continue;
+    if (b.t - a.t <= 1e-9) return b.v;
+    const u = (t - a.t) / (b.t - a.t);
+    return a.v + (b.v - a.v) * (ease ? u * u * (3 - 2 * u) : u);
   }
   return keys[keys.length - 1].v;
 }
@@ -47,7 +54,7 @@ const staticValue = (c: Clip, p: KeyProp): number => (p === "opacity" ? c.opacit
 
 /** A property's value `local` seconds into the clip. */
 export function propAt(c: Clip, p: KeyProp, local: number): number {
-  return valueAt(c.keyframes?.[p], keyClock(c, local), staticValue(c, p));
+  return valueAt(c.keyframes?.[p], keyClock(c, local), staticValue(c, p), !!c.keyEase);
 }
 
 /** The clip's transform and opacity `local` seconds in, keyframes applied. */

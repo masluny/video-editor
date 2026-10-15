@@ -15,6 +15,14 @@ describe("keyframes", () => {
     expect(valueAt(undefined, 2, 7)).toBe(7);
   });
 
+  it("eases in and out of keys when asked", () => {
+    const keys = [{ t: 0, v: 0 }, { t: 4, v: 100 }];
+    expect(valueAt(keys, 1, 0, true)).toBeCloseTo(15.625); // smoothstep(0.25)
+    expect(valueAt(keys, 2, 0, true)).toBe(50);
+    const c = clip({ keyEase: true, keyframes: { opacity: [{ t: 5, v: 0 }, { t: 9, v: 1 }] } });
+    expect(propAt(c, "opacity", 1)).toBeCloseTo(0.15625);
+  });
+
   it("runs on the clip clock: source time for media, through speed", () => {
     const c = clip({ speed: 2, keyframes: { x: [{ t: 5, v: 0 }, { t: 9, v: 400 }] } });
     expect(keyClock(c, 1)).toBe(7);

@@ -158,6 +158,8 @@ export interface Clip {
   motion?: Motion;
   /** Position / scale / rotation / opacity over time, on the clip clock (see lib/keyframes.ts). */
   keyframes?: Keyframes;
+  /** Keyframed values ease in and out of each key instead of moving linearly. */
+  keyEase?: boolean;
   /** Volume envelope in source time, e.g. from ducking (see lib/envelope.ts). */
   volumePoints?: VolumePoint[];
   /** Fill the frame behind the clip with a blurred, enlarged copy of it (bars → blur). */

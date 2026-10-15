@@ -432,6 +432,19 @@ function ClipInspector({ clip, track, media }: { clip: Clip; track: Track; media
           </FieldRow>
           <SliderField label="Scale" value={pose.transform.scale} {...poseField("scale")} min={0.05} max={10} sliderMin={0.1} sliderMax={3} step={0.01} displayScale={100} suffix="%" defaultValue={1} trailing={<KeyButton clip={clip} group="scale" label="Scale" />} />
           <SliderField label="Rotation" value={pose.transform.rotation} {...poseField("rotation")} min={-3600} max={3600} sliderMin={-180} sliderMax={180} step={1} suffix="°" defaultValue={0} trailing={<KeyButton clip={clip} group="rotation" label="Rotation" />} />
+          {clip.keyframes && (
+            <FieldRow label="Keyframes" hint="How keyframed values move between keys">
+              <Segmented
+                className="flex-1"
+                value={clip.keyEase ? "smooth" : "linear"}
+                onChange={(v) => upd((c) => void (c.keyEase = v === "smooth" || undefined))}
+                options={[
+                  { value: "linear", label: "Linear", title: "Constant speed between keys" },
+                  { value: "smooth", label: "Smooth", title: "Ease in and out of every key" },
+                ]}
+              />
+            </FieldRow>
+          )}
           <FieldRow label="Flip">
             <IconButton title="Flip horizontally" active={clip.transform.flipH} onClick={() => upd((c) => void (c.transform.flipH = !c.transform.flipH))}>
               <FlipHorizontal2 className="h-4 w-4" />

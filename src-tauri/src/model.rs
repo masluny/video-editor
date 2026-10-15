@@ -178,6 +178,8 @@ pub struct Clip {
     pub volume_points: Vec<VolumePoint>,
     /// Position / scale / rotation / opacity over time, on the clip clock (src/lib/keyframes.ts).
     pub keyframes: Keyframes,
+    /// Keyed values ease in and out of each key (smoothstep) instead of moving linearly.
+    pub key_ease: bool,
     /// What fills the frame behind the clip.
     pub backdrop: Option<Backdrop>,
     /// Frame hold: the source frame at `in` for the clip's whole length, silent.
@@ -213,6 +215,7 @@ impl Default for Clip {
             motion: None,
             volume_points: vec![],
             keyframes: Keyframes::default(),
+            key_ease: false,
             backdrop: None,
             freeze: false,
         }

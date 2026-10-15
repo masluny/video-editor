@@ -189,8 +189,9 @@ fn envelope(points: &[VolumePoint], src_in: f64, speed: f64, dur: f64) -> Option
     Some(terms.join("+"))
 }
 
-/// Value of keys at clip-clock time `t`: linear between keys, held outside.
-fn key_value(keys: &[Key], t: f64) -> f64 {
+/// Value of keys at clip-clock time `t`: linear between keys (smoothstep with `ease`),
+/// held outside.
+fn key_value(keys: &[Key], t: f64, ease: bool) -> f64 {
     let Some(first) = keys.first() else { return 0.0 };
     if t <= first.t {
         return first.v;
@@ -198,22 +199,31 @@ fn key_value(keys: &[Key], t: f64) -> f64 {
     for w in keys.windows(2) {
         let (a, b) = (w[0], w[1]);
         if t <= b.t {
-            return if b.t - a.t > 1e-9 { a.v + (b.v - a.v) * (t - a.t) / (b.t - a.t) } else { b.v };
+            if b.t - a.t <= 1e-9 {
+                return b.v;
+            }
+            let u = (t - a.t) / (b.t - a.t);
+            return a.v + (b.v - a.v) * if ease { u * u * (3.0 - 2.0 * u) } else { u };
         }
     }
     keys[keys.len() - 1].v
 }
 
 /// Keys as an expression of time `t`, for a clip whose local time 0 falls at t = `t0`,
-/// times `k`: the first value plus, per segment, its slope times how far into it `t` is
-/// (clamped), so it needs no conditionals.
+/// times `k`: the first value plus, per segment, its change times how far into it `t` is
+/// (clamped; through smoothstep when the clip eases), so it needs no conditionals.
 fn key_expr(keys: &[Key], clip: &Clip, t0: f64, k: f64) -> String {
     let at: Vec<(f64, f64)> = keys.iter().map(|key| (t0 + (key.t - clip.source_in) / clip.speed(), key.v * k)).collect();
     let mut e = f(at[0].1);
     for w in at.windows(2) {
         let ((ta, va), (tb, vb)) = (w[0], w[1]);
         if tb - ta > 1e-9 && (vb - va).abs() > 1e-9 {
-            e += &format!("{}*(clip(t,{},{}){})", signed((vb - va) / (tb - ta)), f(ta), f(tb), signed(-ta));
+            if clip.key_ease {
+                let u = format!("clip((t{})/{},0,1)", signed(-ta), f(tb - ta));
+                e += &format!("{}*{u}*{u}*(3-2*{u})", signed(vb - va));
+            } else {
+                e += &format!("{}*(clip(t,{},{}){})", signed((vb - va) / (tb - ta)), f(ta), f(tb), signed(-ta));
+            }
         }
     }
     e
@@ -222,7 +232,7 @@ fn key_expr(keys: &[Key], clip: &Clip, t0: f64, k: f64) -> String {
 /// Keyed opacity on a layer's own clock (clip time 0 at `t0`, `len` long): an alpha gain
 /// named `name`, updated through `sendcmd` on every frame where the value changes.
 fn opacity_keys(keys: &[Key], clip: &Clip, t0: f64, len: f64, fps: f64, name: &str) -> Vec<String> {
-    let at = |tau: f64| (key_value(keys, clip.source_in + (tau - t0) * clip.speed()).clamp(0.0, 1.0) * 1000.0).round() / 1000.0;
+    let at = |tau: f64| (key_value(keys, clip.source_in + (tau - t0) * clip.speed(), clip.key_ease).clamp(0.0, 1.0) * 1000.0).round() / 1000.0;
     let mut cmds = vec![];
     let mut last = at(0.0);
     for i in 1..=(len * fps).ceil() as usize {
@@ -1248,6 +1258,36 @@ mod tests {
         run(&p, &ExportSettings::default(), Some((0.5, 4.0)), &part);
         assert!(pixel(&part, 0.02, 80, 45)[0] > 200, "range starts with the square centred");
         assert!((100..160).contains(&pixel(&part, 2.5, 80, 45)[0]), "and the fade half way at 3s");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn eased_keyframes_start_slow() {
+        if !ffmpeg_ok() { return; }
+        let d = tmpdir();
+        let keys = |v: &[(f64, f64)]| v.iter().map(|&(t, v)| Key { t, v }).collect::<Vec<_>>();
+        let square = d.join("square.mp4");
+        ff(&["-f", "lavfi", "-i", "color=c=black:s=160x90:r=30:d=2,drawbox=x=70:y=35:w=20:h=20:color=white:t=fill",
+             "-c:v", "libx264", "-pix_fmt", "yuv420p", square.to_str().unwrap()]);
+        let white = d.join("white.mp4");
+        solid(&white, "white", 160, 90, 2.0, None);
+        let mut p = project(160, 90);
+        p.media = vec![media("sq", &square, 160, 90, 2.0, false), media("w", &white, 160, 90, 2.0, false)];
+        let mut slide = clip("s", "sq", 0.0, 0.0, 2.0);
+        slide.key_ease = true;
+        slide.keyframes.x = keys(&[(0.0, -40.0), (2.0, 40.0)]);
+        let mut fade = clip("f", "w", 2.0, 0.0, 2.0);
+        fade.key_ease = true;
+        fade.keyframes.opacity = keys(&[(0.0, 0.0), (2.0, 1.0)]);
+        p.tracks[0].clips.extend([slide, fade]);
+        let out = d.join("eased.mp4");
+        run(&p, &ExportSettings::default(), None, &out);
+        // A quarter of the way in, smoothstep has covered 15.6% (linear: 25%): the square's
+        // centre is at x ≈ 52.5 (linear: 60), and the white is at ≈ 40 (linear: 64).
+        assert!(pixel(&out, 0.5, 45, 45)[0] > 200 && pixel(&out, 0.5, 66, 45)[0] < 60, "eased position");
+        assert!(pixel(&out, 1.0, 80, 45)[0] > 200, "half way is still the middle");
+        let w = pixel(&out, 2.5, 80, 45)[0];
+        assert!((28..52).contains(&w), "eased opacity: {w}");
         let _ = std::fs::remove_dir_all(&d);
     }
 

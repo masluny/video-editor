@@ -175,6 +175,7 @@ function clip(c: Json, mediaIds: Set<string>): Clip | null {
     motion: motion(c.motion),
     volumePoints: volumePoints(c.volumePoints),
     keyframes: keyframes(c.keyframes),
+    keyEase: c.keyEase === true || undefined,
     backdrop: c.backdrop === "blur" ? "blur" : undefined,
     freeze: c.freeze === true || undefined,
     title: type === "title" ? titleStyle(c.title) : undefined,
