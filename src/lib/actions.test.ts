@@ -1,14 +1,23 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const detectScenes = vi.fn<(path: string, from: number, to: number, threshold: number) => Promise<number[]>>();
+const pictureStats = vi.fn<(path: string, from: number, to: number) => Promise<PictureStats>>();
 vi.mock("./backend", async (orig) => {
   const real = await orig<typeof import("./backend")>();
-  return { ...real, backend: { ...real.backend, detectScenes: (...a: [string, number, number, number]) => detectScenes(...a) } };
+  return {
+    ...real,
+    backend: {
+      ...real.backend,
+      detectScenes: (...a: [string, number, number, number]) => detectScenes(...a),
+      pictureStats: (...a: [string, number, number]) => pictureStats(...a),
+    },
+  };
 });
 
 import { useStore } from "../store/store";
 import { clipEnd } from "./timeline";
-import { cutToBeat, splitAtShotChanges, SHOT_THRESHOLD } from "./actions";
+import { autoColorClips, cutToBeat, matchColorTo, splitAtShotChanges, SHOT_THRESHOLD } from "./actions";
+import type { PictureStats } from "./autocolor";
 import type { MediaAsset } from "./types";
 
 const video: MediaAsset = {
@@ -78,5 +87,33 @@ describe("cut to the beat", () => {
     const t = st().toasts[st().toasts.length - 1];
     t.action!.run();
     expect(clipEnd(clips()[0])).toBe(20);
+  });
+});
+
+describe("auto and matched colour", () => {
+  const dull: PictureStats = { low: 0.42, high: 0.84, avg: 0.63, sat: 0.38 };
+  const good: PictureStats = { low: 0.11, high: 0.89, avg: 0.5, sat: 0.86 };
+
+  it("corrects each clip from its own picture, in one undo step", async () => {
+    const a = st().placeMedia("v", { at: 0, range: { in: 2, out: 6 } })!;
+    pictureStats.mockResolvedValue(dull);
+    await autoColorClips([a]);
+    expect(pictureStats).toHaveBeenCalledWith("/clip.mov", 2, 6);
+    const c = clips()[0].color;
+    expect(c.contrast).toBeGreaterThan(2);
+    st().undo();
+    expect(clips()[0].color.contrast).toBe(1);
+  });
+
+  it("matches clips to a reference as it's shown, look included", async () => {
+    const a = st().placeMedia("v", { at: 0, range: { in: 0, out: 2 } })!;
+    const ref = st().placeMedia("v", { at: 2, range: { in: 10, out: 12 } })!;
+    st().updateClip(ref, (c) => void (c.color.sepia = 0.3));
+    pictureStats.mockImplementation(async (_p, from) => (from === 10 ? good : dull));
+    await matchColorTo([a, ref], ref);
+    const [ca, cr] = clips().map((c) => c.color);
+    expect(ca.sepia).toBe(0.3);
+    expect(ca.contrast).toBeGreaterThan(1.5);
+    expect(cr.contrast).toBe(1); // the reference itself is untouched
   });
 });

@@ -37,7 +37,7 @@ import { clipBefore, dissolveInto } from "../../lib/transitions";
 import { DEFAULT_MOTION_AMOUNT, ENTRANCE_PRESETS, isEntrance, MOTION_PRESETS, motionAmount, motionPreset, type MotionPreset } from "../../lib/motion";
 import { cn } from "../../lib/cn";
 import { cornerLayout, type Corner } from "../../lib/visual";
-import { cutToBeat, duckUnderVoice, evenOutVolume } from "../../lib/actions";
+import { autoColorClips, cutToBeat, duckUnderVoice, evenOutVolume } from "../../lib/actions";
 import { useLocal } from "../../lib/useLocal";
 import { GROUP_PROPS, hasKeyAt, isAnimated, keyClock, keyTimes, keyTolerance, posed, type KeyGroup, type KeyProp } from "../../lib/keyframes";
 
@@ -264,6 +264,9 @@ function MultiInspector({ ids }: { ids: string[] }) {
           </Button>
           <Button size="sm" onClick={() => evenOutVolume(ids)} title="Set each clip's volume so they sound equally loud">
             <AudioLines className="h-3.5 w-3.5" /> Even out volume
+          </Button>
+          <Button size="sm" onClick={() => void autoColorClips(ids)} title="Correct exposure and colour of each clip from its own picture. To make clips look alike, right-click the one to match and choose Match colour.">
+            <Wand2 className="h-3.5 w-3.5" /> Auto colour
           </Button>
           <Button size="sm" variant="danger" onClick={() => store().deleteClips(ids, false)}>
             Delete
@@ -687,6 +690,9 @@ function ColorSection({ clip, upd }: { clip: Clip; upd: (fn: (c: Draft<Clip>) =>
   return (
     <Section id="color" title="Colour" actions={<ResetButton title="Reset colour" onClick={() => upd((x) => void (x.color = defaultColor()))} />}>
       <div className="mb-1 flex flex-wrap gap-1">
+        <button className={cn(chip(false), "flex items-center gap-1")} title="Correct exposure and colour from the clip's own picture" onClick={() => void autoColorClips([clip.id])}>
+          <Wand2 className="h-3 w-3" /> Auto
+        </button>
         {LOOKS.map((l) => {
           const target = { ...defaultColor(), ...l.color };
           const active = (Object.keys(target) as (keyof ColorAdjust)[]).every((k) => Math.abs(target[k] - c[k]) < 1e-3);

@@ -1,9 +1,10 @@
-//! Media analysis: silences (for "Remove silences") and shot changes (for "Split at shot
-//! changes").
+//! Media analysis: silences (for "Remove silences"), shot changes (for "Split at shot
+//! changes") and picture statistics (for "Auto colour" and "Match colour").
 
 use crate::ffmpeg::{self, Tool};
 use crate::util::f;
-use anyhow::Result;
+use anyhow::{anyhow, Result};
+use serde::Serialize;
 
 /// Silent intervals `[start, end]` (source seconds) inside `[from, to]` of a media file.
 pub async fn detect_silence(path: &str, from: f64, to: f64, noise_db: f64, min_silence: f64) -> Result<Vec<[f64; 2]>> {
@@ -97,9 +98,86 @@ fn parse_scenes(log: &str, offset: f64, len: f64) -> Vec<f64> {
     out
 }
 
+/// Tonal range and colourfulness of a stretch of picture: luma at the 10th and 90th
+/// percentiles and on average (0..1, video range), and mean chroma (0..1 of full scale).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct PictureStats {
+    pub low: f64,
+    pub high: f64,
+    pub avg: f64,
+    pub sat: f64,
+}
+
+/// Picture statistics of `[from, to]` of a video (or an image), from a dozen sampled frames.
+pub async fn picture_stats(path: &str, from: f64, to: f64) -> Result<PictureStats> {
+    let bin = ffmpeg::resolve(Tool::Ffmpeg).await?;
+    let (_, stderr) = ffmpeg::run(&bin, &stats_args(path, from, (to - from).max(0.0))).await?;
+    parse_stats(&stderr).ok_or_else(|| anyhow!("no frames to measure"))
+}
+
+pub fn stats_args(path: &str, from: f64, len: f64) -> Vec<String> {
+    // About twelve frames whatever the length (at least one for a still).
+    let rate = (12.0 / len.max(0.1)).clamp(0.05, 4.0);
+    vec![
+        "-hide_banner".into(),
+        "-nostats".into(),
+        "-ss".into(),
+        f(from),
+        "-t".into(),
+        f(len.max(0.1)),
+        "-i".into(),
+        path.into(),
+        "-an".into(),
+        "-sn".into(),
+        "-dn".into(),
+        "-vf".into(),
+        format!("fps={},scale=320:-2,format=yuv420p,signalstats,metadata=mode=print", f(rate)),
+        "-f".into(),
+        "null".into(),
+        "-".into(),
+    ]
+}
+
+pub(crate) fn parse_stats(log: &str) -> Option<PictureStats> {
+    let mut sums = [0.0f64; 4];
+    let mut counts = [0usize; 4];
+    for line in log.lines() {
+        let Some(at) = line.find("lavfi.signalstats.") else { continue };
+        let Some((key, value)) = line[at + 18..].split_once('=') else { continue };
+        let i = match key {
+            "YLOW" => 0,
+            "YHIGH" => 1,
+            "YAVG" => 2,
+            "SATAVG" => 3,
+            _ => continue,
+        };
+        if let Ok(v) = value.trim().parse::<f64>() {
+            sums[i] += v;
+            counts[i] += 1;
+        }
+    }
+    if counts.iter().any(|&n| n == 0) {
+        return None;
+    }
+    let mean = |i: usize| sums[i] / counts[i] as f64;
+    let luma = |y: f64| ((y - 16.0) / 219.0).clamp(0.0, 1.0);
+    Some(PictureStats { low: luma(mean(0)), high: luma(mean(1)), avg: luma(mean(2)), sat: (mean(3) / 128.0).clamp(0.0, 2.0) })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{parse_scenes, parse_silences};
+    use super::{parse_scenes, parse_silences, parse_stats};
+
+    #[test]
+    fn parses_signalstats_log() {
+        let log = "[Parsed_metadata_4 @ 0x1] lavfi.signalstats.YLOW=41\n[Parsed_metadata_4 @ 0x1] lavfi.signalstats.YHIGH=210\n\
+                   lavfi.signalstats.YAVG=125\nlavfi.signalstats.SATAVG=64\nlavfi.signalstats.YLOW=43\nlavfi.signalstats.YHIGH=208\n\
+                   lavfi.signalstats.YAVG=127\nlavfi.signalstats.SATAVG=64\n";
+        let s = parse_stats(log).unwrap();
+        assert!((s.low - 26.0 / 219.0).abs() < 1e-9 && (s.high - 193.0 / 219.0).abs() < 1e-9);
+        assert!((s.avg - 110.0 / 219.0).abs() < 1e-9 && (s.sat - 0.5).abs() < 1e-9);
+        assert!(parse_stats("nothing here").is_none());
+    }
 
     #[test]
     fn parses_scdet_log() {

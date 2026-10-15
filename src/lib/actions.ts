@@ -10,6 +10,7 @@ import { isDirty, store, findClip, useStore } from "../store/store";
 import { captionsOf, isSubtitlePath, parseSubtitles, toSrt } from "./subtitles";
 import { BEAT_RATE, beatsFromPeaks, detectBeats, mono, toBeatRate, type Beats } from "./beats";
 import { forgetProject, rememberProject } from "./recent";
+import { adjusted, autoColor, matchColor, type PictureStats } from "./autocolor";
 
 export async function importFiles(paths: string[], place?: { trackId?: Id; at: number }): Promise<MediaAsset[]> {
   // Subtitle files become a captions track; everything else is probed as media.
@@ -226,6 +227,65 @@ export function pasteLook(ids: Id[]) {
   const n = s.pasteLook(ids);
   if (n) s.toast(`Pasted the look onto ${n} clip${n > 1 ? "s" : ""}.`, "success", { label: "Undo", run: () => store().undo() });
   else s.toast("Select clips on a video track to paste the look onto.", "info");
+}
+
+/** Picture stats of a clip's source range, measured by ffmpeg. */
+async function clipStats(c: Clip): Promise<PictureStats | null> {
+  const media = store().project.media.find((m) => m.id === c.mediaId);
+  if (!media?.hasVideo || store().runtime[media.id]?.missing) return null;
+  const still = media.kind === "image" || c.freeze;
+  return backend.pictureStats(media.path, c.in, still ? c.in + 0.1 : c.out);
+}
+
+/** The picture clips among `ids` (video tracks, real footage). */
+function pictureClips(ids: Id[]): Clip[] {
+  const { project } = store();
+  return ids
+    .map((id) => findClip(project, id))
+    .filter((h): h is NonNullable<typeof h> => !!h && h.track.kind === "video" && !h.track.locked && h.clip.type === "media" && !!project.media.find((m) => m.id === h.clip.mediaId)?.hasVideo)
+    .map((h) => h.clip);
+}
+
+/** Measure clips, then give each a new tone in one undo step. */
+async function recolour(clips: Clip[], tone: (s: PictureStats, c: Clip) => Partial<Clip["color"]>, busyText: string, done: (n: number) => string) {
+  const s = store();
+  const busy = s.toast(busyText, "busy");
+  try {
+    const measured = await Promise.all(clips.map(async (c) => [c.id, await clipStats(c)] as const));
+    const tones = new Map(measured.filter((m): m is readonly [Id, PictureStats] => !!m[1]).map(([id, st]) => [id, tone(st, clips.find((c) => c.id === id)!)]));
+    store().dismissToast(busy);
+    if (!tones.size) return void store().toast("Couldn't read the picture of these clips (offline?).", "info");
+    store().apply((p) => {
+      for (const t of p.tracks) for (const c of t.clips) if (tones.has(c.id)) Object.assign(c.color, tones.get(c.id));
+    });
+    store().toast(done(tones.size), "success", { label: "Undo", run: () => store().undo() });
+  } catch (e) {
+    store().dismissToast(busy);
+    store().toast(`Couldn't analyse the picture: ${e instanceof Error ? e.message : String(e)}`, "error");
+  }
+}
+
+/** One-click colour: a full tonal range and livelier colour for each clip, from its own picture. */
+export async function autoColorClips(ids: Id[]) {
+  const clips = pictureClips(ids);
+  if (!clips.length) return void store().toast("Select video or photo clips to correct.", "info");
+  await recolour(clips, (st) => autoColor(st), "Looking at the picture…", (n) => `Corrected the colour of ${n} clip${n > 1 ? "s" : ""}.`);
+}
+
+/** Make clips look like a reference clip (as it's shown, adjustments and look included). */
+export async function matchColorTo(ids: Id[], refId: Id) {
+  const ref = findClip(store().project, refId)?.clip;
+  const clips = pictureClips(ids.filter((id) => id !== refId));
+  if (!ref || !clips.length) return;
+  const refStats = await clipStats(ref).catch(() => null);
+  if (!refStats) return void store().toast("Couldn't read the reference clip's picture.", "info");
+  const shown = adjusted(refStats, ref.color);
+  await recolour(
+    clips,
+    (st) => ({ ...matchColor(st, shown), sepia: ref.color.sepia, hue: ref.color.hue }),
+    "Matching colour…",
+    (n) => `Matched ${n} clip${n > 1 ? "s" : ""} to “${stripExtension(store().project.media.find((m) => m.id === ref.mediaId)?.name ?? "the reference")}”.`,
+  );
 }
 
 export async function importViaDialog() {

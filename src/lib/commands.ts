@@ -4,7 +4,7 @@
 import { findClip, store } from "../store/store";
 import { clipEnd, EPS, videoEnd } from "./timeline";
 import { clipBefore } from "./transitions";
-import { addBeatMarkers, duckUnderVoice, evenOutVolume, exportCaptions, importViaDialog, splitAtShotChanges, cutToBeat, pasteLook, newProject, openProject, saveProject } from "./actions";
+import { addBeatMarkers, duckUnderVoice, evenOutVolume, exportCaptions, importViaDialog, splitAtShotChanges, cutToBeat, pasteLook, autoColorClips, newProject, openProject, saveProject } from "./actions";
 
 export interface Command {
   id: string;
@@ -135,6 +135,14 @@ export function commands(): Command[] {
     { id: "beats", label: "Add beat markers", group: "Audio", keywords: "music rhythm tempo bpm", blocked: () => need(withSound().length > 0, "Select a clip with sound"), run: () => void addBeatMarkers(withSound()[0].clip.id) },
     { id: "detach", label: "Detach audio", group: "Audio", keywords: "separate unlink", blocked: () => need(selected().some((h) => h.track.kind === "video"), "Select a video clip"), run: () => selected().forEach((h) => h.track.kind === "video" && s().detachAudio(h.clip.id)) },
     // -------------------------------------------------------------- picture
+    {
+      id: "auto-colour",
+      label: "Auto colour",
+      group: "Picture",
+      keywords: "enhance correct exposure grade fix magic wand",
+      blocked: () => need(selected().some((h) => h.track.kind === "video" && h.clip.type === "media"), "Select video or photo clips"),
+      run: () => void autoColorClips(s().selection),
+    },
     { id: "fill-all", label: "Fill the frame with every clip", group: "Picture", keywords: "crop cover reframe vertical", run: () => s().fitClips("cover") },
     { id: "fit-all", label: "Fit every clip whole", group: "Picture", keywords: "letterbox contain", run: () => s().fitClips("contain") },
     { id: "blur-all", label: "Blur the bars behind every clip", group: "Picture", keywords: "background backdrop vertical tiktok", run: () => s().setBackdrop("blur") },

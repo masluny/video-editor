@@ -12,6 +12,7 @@ import {
   AlignHorizontalJustifyStart,
   Music2,
   Paintbrush,
+  Palette,
   Eye,
   EyeOff,
   Flag,
@@ -60,7 +61,7 @@ import { keyLabel, seconds, timecode } from "../../lib/format";
 import { cn } from "../../lib/cn";
 import { MARKER_COLORS } from "../../lib/defaults";
 import { clipAfter, clipBefore, DEFAULT_DISSOLVE, dissolveInto } from "../../lib/transitions";
-import { addBeatMarkers, duckUnderVoice, evenOutVolume, exportCaptions, splitAtShotChanges, cutToBeat, pasteLook } from "../../lib/actions";
+import { addBeatMarkers, duckUnderVoice, evenOutVolume, exportCaptions, splitAtShotChanges, cutToBeat, pasteLook, autoColorClips, matchColorTo } from "../../lib/actions";
 
 interface Row {
   track: Track;
@@ -488,6 +489,13 @@ export function Timeline() {
           ]
         : []),
       ...(track.kind === "video" ? [{ label: ids.length > 1 ? `Cut ${ids.length} clips to the beat` : "Cut to the beat", icon: <Music2 className="h-3.5 w-3.5" />, disabled: track.locked, onSelect: () => void cutToBeat(ids) } as MenuItem] : []),
+      ...(track.kind === "video" && clip.type === "media" && media?.hasVideo
+        ? [
+            ids.length > 1
+              ? ({ label: `Match colour of the other ${ids.length - 1} to this clip`, icon: <Palette className="h-3.5 w-3.5" />, onSelect: () => void matchColorTo(ids, clip.id) } as MenuItem)
+              : ({ label: "Auto colour", icon: <Wand2 className="h-3.5 w-3.5" />, disabled: track.locked, onSelect: () => void autoColorClips(ids) } as MenuItem),
+          ]
+        : []),
       { label: "Duplicate", icon: <Copy className="h-3.5 w-3.5" />, shortcut: "⌘D", disabled: track.locked, onSelect: () => s.duplicateClips(ids) },
       { label: "Copy", shortcut: "⌘C", onSelect: () => s.copy() },
       { label: "Cut", shortcut: "⌘X", disabled: track.locked, onSelect: () => s.cut() },

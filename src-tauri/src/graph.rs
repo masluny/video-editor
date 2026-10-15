@@ -1292,6 +1292,33 @@ mod tests {
     }
 
     #[test]
+    fn colour_adjustments_move_picture_stats_as_autocolor_models() {
+        if !ffmpeg_ok() { return; }
+        let d = tmpdir();
+        // A washed-out test pattern; src/lib/autocolor.test.ts holds its measured stats, and
+        // matchColor() to the original picks brightness 0.8, contrast 2.28, saturation 1.24.
+        let dull = d.join("dull.mp4");
+        ff(&["-f", "lavfi", "-i", "testsrc2=s=640x360:r=25:d=2,eq=contrast=0.55:brightness=0.12:saturation=0.45",
+             "-c:v", "libx264", "-pix_fmt", "yuv420p", dull.to_str().unwrap()]);
+        let mut p = project(640, 360);
+        p.media = vec![media("d", &dull, 640, 360, 2.0, false)];
+        let mut c = clip("c", "d", 0.0, 0.0, 2.0);
+        c.color = ColorAdjust { brightness: 0.8, contrast: 2.28, saturation: 1.24, ..Default::default() };
+        p.tracks[0].clips.push(c);
+        let out = d.join("matched.mp4");
+        run(&p, &ExportSettings::default(), None, &out);
+        let stats = |file: &PathBuf| {
+            let o = Command::new("ffmpeg").args(crate::analysis::stats_args(file.to_str().unwrap(), 0.0, 2.0)).output().unwrap();
+            crate::analysis::parse_stats(&String::from_utf8_lossy(&o.stderr)).unwrap()
+        };
+        let s = stats(&out);
+        // The model's prediction (and, near enough, the original's own stats).
+        assert!((s.low - 0.118).abs() < 0.05 && (s.high - 0.892).abs() < 0.05, "{s:?}");
+        assert!((s.sat - 0.862).abs() < 0.12, "{s:?}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
     fn volume_envelope_ducks_music_on_its_own_clock() {
         if !ffmpeg_ok() { return; }
         let d = tmpdir();

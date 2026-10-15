@@ -90,6 +90,11 @@ pub async fn detect_scenes(path: String, from: f64, to: f64, threshold: f64) -> 
 }
 
 #[tauri::command]
+pub async fn picture_stats(path: String, from: f64, to: f64) -> CmdResult<analysis::PictureStats> {
+    analysis::picture_stats(&path, from, to).await.map_err(err)
+}
+
+#[tauri::command]
 pub async fn export_start(app: AppHandle, request: export::ExportRequest) -> CmdResult<String> {
     export::start(&app, request).await.map_err(err)
 }
