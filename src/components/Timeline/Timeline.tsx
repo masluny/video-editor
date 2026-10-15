@@ -54,7 +54,7 @@ import { dropTarget, payloadKind, payloadLength } from "./drop";
 import { IconButton, Segmented } from "../ui/controls";
 import { openMenu, type MenuItem } from "../ui/Menu";
 import { useLocal } from "../../lib/useLocal";
-import { seconds, timecode } from "../../lib/format";
+import { keyLabel, seconds, timecode } from "../../lib/format";
 import { cn } from "../../lib/cn";
 import { MARKER_COLORS } from "../../lib/defaults";
 import { clipAfter, clipBefore, DEFAULT_DISSOLVE, dissolveInto } from "../../lib/transitions";
@@ -859,7 +859,7 @@ function Toolbar({ size, onSize, onFit }: { size: TrackSize; onSize: (s: TrackSi
         value={lz(zoom)}
         style={{ ["--fill" as string]: `${((lz(zoom) - lz(ZOOM_MIN)) / (lz(ZOOM_MAX) - lz(ZOOM_MIN))) * 100}%` }}
         onChange={(e) => s().setZoom(Math.exp(parseFloat(e.target.value)))}
-        title="Zoom (⌘ + scroll)"
+        title={keyLabel("Zoom (⌘-scroll)")}
       />
       <IconButton size="sm" title="Zoom in (+)" onClick={() => s().setZoom(zoom * 1.4)}>
         <ZoomIn className="h-3.5 w-3.5" />
