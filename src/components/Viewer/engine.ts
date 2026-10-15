@@ -14,10 +14,11 @@
 // still pre-rolls: the clock holds until it can play.
 
 import type { Clip, Id, MediaAsset, Project, Track } from "../../lib/types";
-import { clipAt, clipEnd, EPS, projectDuration, speedOf } from "../../lib/timeline";
+import { clipAt, clipDuration, clipEnd, EPS, projectDuration, speedOf } from "../../lib/timeline";
 import { cssClipPath, cssFilter, fadeFactor, fitBox } from "../../lib/visual";
 import { titleImageUrl } from "../../lib/title";
 import { dissolveAt, dissolveGain, dissolveMix } from "../../lib/transitions";
+import { motionAt } from "../../lib/motion";
 import { Slot, Transport, type Voice } from "./playback";
 
 export interface EngineHost {
@@ -263,7 +264,9 @@ export class Engine {
 
   /** Position/transform/colour an element like graph.rs does; geometry writes are cached. */
   private place(el: HTMLElement, clip: Clip, mw: number, mh: number, W: number, H: number, t: number, alpha = 1, z = 1) {
-    const tf = clip.transform;
+    const d = clipDuration(clip);
+    const m = clip.motion ? motionAt(clip.motion, d > 0 ? (t - clip.start) / d : 0) : null;
+    const tf = m ? { ...clip.transform, scale: clip.transform.scale * m.scale, x: clip.transform.x + m.x, y: clip.transform.y + m.y } : clip.transform;
     const box = fitBox(mw, mh, W, H, tf.fit);
     const sx = tf.scale * (tf.flipH ? -1 : 1);
     const sy = tf.scale * (tf.flipV ? -1 : 1);

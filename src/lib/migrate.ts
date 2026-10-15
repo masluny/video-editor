@@ -5,6 +5,7 @@ import type { Clip, ColorAdjust, Crop, Marker, MediaAsset, MediaKind, Project, T
 import { defaultColor, defaultCrop, defaultTitleStyle, defaultTransform, newProject, newTrack } from "./defaults";
 import { uid } from "./uid";
 import { basename } from "./format";
+import type { Motion, MotionPreset } from "./motion";
 
 type Json = Record<string, any>;
 
@@ -59,6 +60,13 @@ function transform(t: Json | undefined): Transform {
     flipH: bool(t.flipH),
     flipV: bool(t.flipV),
   };
+}
+
+function motion(m: Json | undefined): Motion | undefined {
+  if (!m || typeof m !== "object" || !m.from || !m.to) return undefined;
+  const point = (p: Json) => ({ scale: num(p.scale, 1, 0.05, 20), x: num(p.x, 0), y: num(p.y, 0) });
+  const presets: MotionPreset[] = ["zoom-in", "zoom-out", "pan-left", "pan-right", "pan-up", "pan-down"];
+  return { preset: presets.includes(m.preset) ? m.preset : undefined, from: point(m.from), to: point(m.to) };
 }
 
 function crop(c: Json | undefined): Crop {
@@ -130,6 +138,7 @@ function clip(c: Json, mediaIds: Set<string>): Clip | null {
     fadeIn: num(c.fadeIn, 0, 0),
     fadeOut: num(c.fadeOut, 0, 0),
     transitionIn: num(c.transitionIn, 0, 0, 10) || undefined,
+    motion: motion(c.motion),
     title: type === "title" ? titleStyle(c.title) : undefined,
     label: typeof c.label === "string" && c.label ? c.label : undefined,
   };

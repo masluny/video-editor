@@ -1,5 +1,5 @@
 import * as React from "react";
-import { AlertTriangle, Gauge, Type, VolumeX } from "lucide-react";
+import { AlertTriangle, Gauge, Move, Type, VolumeX } from "lucide-react";
 import type { Clip, MediaAsset, Track } from "../../lib/types";
 import type { MediaRuntime } from "../../store/store";
 import { clipDuration, speedOf } from "../../lib/timeline";
@@ -131,6 +131,7 @@ export const ClipView = React.memo(function ClipView({
               </span>
             )}
             {hasAudio && clip.muted && <VolumeX className="h-3 w-3 opacity-90" />}
+            {clip.motion && <Move className="h-3 w-3 opacity-90" aria-label="Motion" />}
             {!isDefaultColor(clip.color) && <span className="rounded bg-black/30 px-1">fx</span>}
           </span>
         </div>

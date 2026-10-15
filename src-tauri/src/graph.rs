@@ -11,7 +11,9 @@
 //! * a cross-dissolve (`transition_in`) is centred on a cut: the incoming layer starts
 //!   half the dissolve early holding its first frame and fades in, the outgoing layer
 //!   runs on holding its last frame underneath, and the sound dips across the cut.
-//!   Mirrors `src/lib/transitions.ts`.
+//!   Mirrors `src/lib/transitions.ts`;
+//! * motion (Ken Burns) rescales the finished layer every frame and moves it in the
+//!   overlay, both linear in the progress through the clip (`src/lib/motion.ts`).
 //!
 //! No user-provided strings ever end up inside the filtergraph: media is passed
 //! with `-i`, titles arrive as pre-rendered PNGs, and numbers are formatted here.
@@ -434,15 +436,30 @@ pub fn build(
                     let a = f(rotation.to_radians());
                     chain.push(format!("rotate=a={a}:ow=rotw({a}):oh=roth({a}):c=black@0"));
                 }
+                // Progress through the whole clip as an expression of time `t`, where the
+                // clip starts at `t0` (the layer's own clock here, the export's in the overlay).
+                let still = crate::model::MotionPoint::default();
+                let motion = clip.motion.filter(|m| m.from != still || m.to != still);
+                let progress = |t0: f64| format!("clip((t{})/{},0,1)", signed(-t0), f(clip.duration()));
+                if let Some(m) = motion {
+                    let z = format!("({}{}*{})", f(m.from.scale), signed(m.to.scale - m.from.scale), progress(pre - sp.head));
+                    chain.push(format!("scale=w='max(2,trunc(iw*{z}/2)*2)':h='max(2,trunc(ih*{z}/2)*2)':eval=frame:flags=bicubic"));
+                }
                 if sp.at - pre > 0.0 {
                     chain.push(format!("setpts=PTS+{}/TB", f(sp.at - pre)));
                 }
                 graph.push(format!("[{idx}:v]{}[l{n}]", chain.join(",")));
-                graph.push(format!(
-                    "[{prev}][l{n}]overlay=x=(W-w)/2{}:y=(H-h)/2{}:eof_action=pass:format=auto[v{n}]",
-                    signed(t.x * kx),
-                    signed(t.y * ky)
-                ));
+                let (ox, oy) = match motion {
+                    Some(m) => {
+                        let p = progress(clip.start - r0);
+                        (
+                            format!("'(W-w)/2{}{}*{p}'", signed((t.x + m.from.x) * kx), signed((m.to.x - m.from.x) * kx)),
+                            format!("'(H-h)/2{}{}*{p}'", signed((t.y + m.from.y) * ky), signed((m.to.y - m.from.y) * ky)),
+                        )
+                    }
+                    None => (format!("(W-w)/2{}", signed(t.x * kx)), format!("(H-h)/2{}", signed(t.y * ky))),
+                };
+                graph.push(format!("[{prev}][l{n}]overlay=x={ox}:y={oy}:eof_action=pass:format=auto[v{n}]"));
                 prev = format!("v{n}");
                 n += 1;
             }
@@ -974,6 +991,39 @@ mod tests {
         // The sound dips across the cut.
         assert!(mean_volume(&out, 1.97, 0.06) < mean_volume(&out, 1.0, 0.3) - 12.0, "audio dip at the cut");
         assert!(mean_volume(&out, 3.0, 0.3) > -40.0, "B audible after the dissolve");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn motion_zooms_and_pans_across_the_clip() {
+        if !ffmpeg_ok() { return; }
+        let d = tmpdir();
+        // A white 20x20 square in the middle of a black frame.
+        let src = d.join("square.mp4");
+        ff(&["-f", "lavfi", "-i", "color=c=black:s=160x90:r=30:d=4,drawbox=x=70:y=35:w=20:h=20:color=white:t=fill",
+             "-c:v", "libx264", "-pix_fmt", "yuv420p", src.to_str().unwrap()]);
+        let mut p = project(160, 90);
+        p.media = vec![media("sq", &src, 160, 90, 4.0, false)];
+        let mut zoom = clip("z", "sq", 0.0, 0.0, 2.0);
+        zoom.motion = Some(Motion { from: MotionPoint::default(), to: MotionPoint { scale: 2.0, ..Default::default() } });
+        let mut pan = clip("p", "sq", 2.0, 0.0, 2.0);
+        pan.motion = Some(Motion { from: MotionPoint { x: -40.0, ..Default::default() }, to: MotionPoint { x: 40.0, ..Default::default() } });
+        p.tracks[0].clips.extend([zoom, pan]);
+        let out = d.join("motion.mp4");
+        run(&p, &ExportSettings::default(), None, &out);
+        let white = |t: f64, x: u32| pixel(&out, t, x, 45)[0] > 200;
+        // Zoom 1x -> 2x: the square (x 70..90) grows to x 60..100.
+        assert!(!white(0.05, 95), "square still small at the start");
+        assert!(white(1.95, 95), "square doubled by the end");
+        assert!(white(1.0, 70) && !white(1.0, 97), "1.5x half way: x 65..95");
+        // Pan -40 -> +40: the square slides from x 30..50 to x 110..130.
+        assert!(white(2.05, 40) && !white(2.05, 120), "starts left");
+        assert!(white(3.95, 120) && !white(3.95, 40), "ends right");
+        assert!(white(3.0, 80), "centred half way");
+        // Range export starting mid-clip keeps the motion on the clip's own clock.
+        let half = d.join("motion_range.mp4");
+        run(&p, &ExportSettings::default(), Some((3.0, 4.0)), &half);
+        assert!(pixel(&half, 0.02, 80, 45)[0] > 200, "range starts with the square centred");
         let _ = std::fs::remove_dir_all(&d);
     }
 

@@ -172,6 +172,8 @@ pub struct Clip {
     pub fade_out: f64,
     /// Cross-dissolve (seconds) from the clip that ends where this one starts.
     pub transition_in: f64,
+    /// Zoom / pan across the clip (src/lib/motion.ts).
+    pub motion: Option<Motion>,
 }
 
 impl Default for Clip {
@@ -193,6 +195,7 @@ impl Default for Clip {
             fade_in: 0.0,
             fade_out: 0.0,
             transition_in: 0.0,
+            motion: None,
         }
     }
 }
@@ -219,6 +222,29 @@ pub enum Fit {
     Contain,
     Cover,
     Stretch,
+}
+
+/// One end of a clip's motion: multiplies its scale and offsets it (project pixels).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MotionPoint {
+    pub scale: f64,
+    pub x: f64,
+    pub y: f64,
+}
+
+impl Default for MotionPoint {
+    fn default() -> Self {
+        Self { scale: 1.0, x: 0.0, y: 0.0 }
+    }
+}
+
+/// Linear glide from `from` to `to` over the clip's length.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Motion {
+    pub from: MotionPoint,
+    pub to: MotionPoint,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

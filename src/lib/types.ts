@@ -1,5 +1,7 @@
 // Project document (v2). Mirrored in src-tauri/src/model.rs — keep in sync.
 
+import type { Motion } from "./motion";
+
 export type Id = string;
 
 export type MediaKind = "video" | "audio" | "image";
@@ -150,6 +152,8 @@ export interface Clip {
   fadeOut: number;
   /** Cross-dissolve (seconds) from the clip that ends where this one starts. */
   transitionIn?: number;
+  /** Zoom / pan across the clip (see lib/motion.ts). */
+  motion?: Motion;
   title?: TitleStyle;
   /** Optional user label shown on the clip. */
   label?: string;
