@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BEAT_RATE, detectBeats, toBeatRate } from "./beats";
+import { BEAT_RATE, beatsFromPeaks, detectBeats, toBeatRate } from "./beats";
 
 /** A drum-ish click track: decaying noise bursts on the beat over quiet noise. */
 function clicks(bpm: number, seconds: number, offset: number, seed = 1): { samples: Float32Array; beats: number[] } {
@@ -43,6 +43,20 @@ describe("beat detection", () => {
     for (let i = 0; i < up.length; i++) up[i] = samples[i >> 2];
     const found = detectBeats(toBeatRate(up, 44100));
     expect(hitRate(beats, found.times)).toBeGreaterThan(0.9);
+  });
+
+  it("works from the timeline waveform's peaks when the audio can't be decoded", () => {
+    const { samples, beats } = clicks(120, 20, 0.25, 5);
+    // 100 peaks per second, 0..1, like the waveform the app computes for every clip.
+    const per = BEAT_RATE / 100;
+    const peaks = Array.from({ length: Math.floor(samples.length / per) }, (_, i) => {
+      let m = 0;
+      for (let j = i * per; j < (i + 1) * per; j++) m = Math.max(m, Math.abs(samples[Math.floor(j)]));
+      return m;
+    });
+    const found = beatsFromPeaks(peaks, 100);
+    expect(Math.abs(found.bpm - 120)).toBeLessThan(2);
+    expect(hitRate(beats, found.times, 0.03)).toBeGreaterThan(0.9);
   });
 
   it("copes with silence and very short audio", () => {

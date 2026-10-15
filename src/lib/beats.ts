@@ -1,7 +1,8 @@
-// Beat tracking for "Add beat markers": spectral-flux onsets, a tempo from their
-// autocorrelation (with a soft preference for ~120 BPM to avoid octave mistakes), then
-// dynamic-programming beat tracking (Ellis 2007), which follows the onsets while keeping
-// the beats evenly spaced.
+// Beat tracking for "Add beat markers": an onset envelope (spectral flux of decoded
+// audio, or rises in the timeline waveform's peaks when decoding isn't possible), a tempo
+// from its autocorrelation (with a soft preference for ~120 BPM to avoid octave
+// mistakes), then dynamic-programming beat tracking (Ellis 2007), which follows the
+// onsets while keeping the beats evenly spaced.
 
 /** Analysis rate: plenty for rhythm, and cheap. */
 export const BEAT_RATE = 11025;
@@ -87,8 +88,7 @@ export function onsetEnvelope(samples: Float32Array): Float64Array {
 }
 
 /** Beat period in frames (fractional), from the autocorrelation of the onset envelope. */
-function period(env: Float64Array): number {
-  const fps = BEAT_RATE / HOP;
+function period(env: Float64Array, fps: number): number {
   const lo = Math.floor((60 / 200) * fps);
   const hi = Math.ceil((60 / 60) * fps);
   const score = (lag: number) => {
@@ -118,10 +118,29 @@ function period(env: Float64Array): number {
 
 /** Beat times (seconds) of mono samples at BEAT_RATE. */
 export function detectBeats(samples: Float32Array): Beats {
-  const env = onsetEnvelope(samples);
-  const fps = BEAT_RATE / HOP;
+  // Frames are centred on their window.
+  return trackBeats(onsetEnvelope(samples), BEAT_RATE / HOP, WIN / 2 / BEAT_RATE);
+}
+
+/** Beat times from waveform peaks (0..1, `rate` per second): onsets are rises in level. */
+export function beatsFromPeaks(peaks: ArrayLike<number>, rate: number): Beats {
+  const rise = new Float64Array(peaks.length);
+  for (let i = 1; i < peaks.length; i++) rise[i] = Math.max(0, Math.log1p(100 * peaks[i]) - Math.log1p(100 * peaks[i - 1]));
+  // Coarse buckets put onsets a bucket early or late; a small binomial blur keeps the
+  // beat period from splitting across neighbouring lags.
+  const env = new Float64Array(rise.length);
+  const k = [1, 4, 6, 4, 1];
+  for (let i = 0; i < rise.length; i++) {
+    for (let j = -2; j <= 2; j++) env[i] += (rise[i + j] ?? 0) * k[j + 2];
+    env[i] /= 16;
+  }
+  return trackBeats(env, rate, 0);
+}
+
+/** Tempo and beats of an onset envelope sampled `fps` times a second (frame i at i/fps + offset). */
+export function trackBeats(env: Float64Array, fps: number, offset: number): Beats {
   if (env.length < fps * 2 || !env.some((v) => v > 0)) return { bpm: 0, times: [] };
-  const p = period(env);
+  const p = period(env, fps);
   // Dynamic programming: each frame's best score is its onset plus the best earlier beat
   // about one period back, penalised by how far that gap strays from the period.
   const tight = 100;
@@ -146,9 +165,7 @@ export function detectBeats(samples: Float32Array): Beats {
   const frames: number[] = [];
   for (; t >= 0; t = back[t]) frames.push(t);
   frames.reverse();
-  // Frames are centred on their window.
-  const times = frames.map((f) => (f * HOP + WIN / 2) / BEAT_RATE);
-  return { bpm: (60 * fps) / p, times };
+  return { bpm: (60 * fps) / p, times: frames.map((f) => f / fps + offset) };
 }
 
 /** Box-filtered downsampling to BEAT_RATE (enough for onsets). */

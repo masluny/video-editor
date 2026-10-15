@@ -1,17 +1,15 @@
 // Document-level actions shared by the top bar, menus and keyboard shortcuts.
 
-import type { Id, MediaAsset } from "./types";
-import { backend, confirmDialog, pickMedia, pickProjectToOpen, pickSavePath } from "./backend";
+import type { Clip, Id, MediaAsset } from "./types";
+import { backend, confirmDialog, fileUrl, pickMedia, pickProjectToOpen, pickSavePath } from "./backend";
 import { migrateProject } from "./migrate";
 import { uid } from "./uid";
 import { basename, stripExtension } from "./format";
-import { clipDuration } from "./timeline";
+import { clipDuration, speedOf } from "./timeline";
 import { isDirty, store, findClip, useStore } from "../store/store";
 import { captionsOf, isSubtitlePath, parseSubtitles, toSrt } from "./subtitles";
-import { BEAT_RATE, detectBeats, mono, toBeatRate } from "./beats";
+import { BEAT_RATE, beatsFromPeaks, detectBeats, mono, toBeatRate, type Beats } from "./beats";
 import { forgetProject, rememberProject } from "./recent";
-import { fileUrl } from "./backend";
-import { speedOf } from "./timeline";
 
 export async function importFiles(paths: string[], place?: { trackId?: Id; at: number }): Promise<MediaAsset[]> {
   // Subtitle files become a captions track; everything else is probed as media.
@@ -88,6 +86,31 @@ export function duckUnderVoice(ids: Id[]) {
   else s.toast(`Lowered ${n > 1 ? `${n} clips` : "the music"} under speech. The line on the clip shows its volume.`, "success");
 }
 
+/** Beats in a clip's source range (seconds after its `in`): decoded audio, else the waveform. */
+async function clipBeats(c: Clip, media: MediaAsset, path: string): Promise<Beats> {
+  try {
+    const data = await (await fetch(fileUrl(path))).arrayBuffer();
+    let ctx: OfflineAudioContext;
+    try {
+      ctx = new OfflineAudioContext(1, 1, BEAT_RATE);
+    } catch {
+      ctx = new OfflineAudioContext(1, 1, 44100); // some WebKits only decode at common rates
+    }
+    const audio = await ctx.decodeAudioData(data);
+    const [a, b] = [Math.floor(c.in * audio.sampleRate), Math.min(audio.length, Math.ceil(c.out * audio.sampleRate))];
+    const channels = Array.from({ length: audio.numberOfChannels }, (_, i) => audio.getChannelData(i).subarray(a, b));
+    const beats = detectBeats(toBeatRate(mono(channels), audio.sampleRate));
+    return { ...beats, times: beats.times.map((t) => t + a / audio.sampleRate - c.in) };
+  } catch (e) {
+    // The webview can't fetch or decode it: fall back on the waveform the app computed.
+    const wf = store().runtime[media.id]?.waveform;
+    if (!wf) throw e;
+    const first = Math.floor(c.in * wf.rate);
+    const beats = beatsFromPeaks(wf.peaks.slice(first, Math.ceil(c.out * wf.rate)).map((v) => v / 255), wf.rate);
+    return { ...beats, times: beats.times.map((t) => t + first / wf.rate - c.in) };
+  }
+}
+
 /** Find the beat of a clip's sound and put a marker on every `every`-th beat. */
 export async function addBeatMarkers(clipId: Id, every = 1) {
   const s = store();
@@ -102,20 +125,9 @@ export async function addBeatMarkers(clipId: Id, every = 1) {
   }
   const busy = s.toast("Listening for the beat…", "info");
   try {
-    const data = await (await fetch(fileUrl(path))).arrayBuffer();
-    let ctx: OfflineAudioContext;
-    try {
-      ctx = new OfflineAudioContext(1, 1, BEAT_RATE);
-    } catch {
-      ctx = new OfflineAudioContext(1, 1, 44100); // some WebKits only decode at common rates
-    }
-    const audio = await ctx.decodeAudioData(data);
-    // Only the part of the source the clip uses.
     const c = hit.clip;
-    const [a, b] = [Math.floor(c.in * audio.sampleRate), Math.min(audio.length, Math.ceil(c.out * audio.sampleRate))];
-    const channels = Array.from({ length: audio.numberOfChannels }, (_, i) => audio.getChannelData(i).subarray(a, b));
-    const { bpm, times } = detectBeats(toBeatRate(mono(channels), audio.sampleRate));
-    const at = times.filter((_, i) => i % every === 0).map((t) => c.start + t / speedOf(c));
+    const { bpm, times } = await clipBeats(c, media, path);
+    const at = times.filter((_, i) => i % every === 0).map((t) => c.start + t / speedOf(c)).filter((t) => t >= c.start && t <= c.start + clipDuration(c));
     const n = store().addMarkers(at);
     s.dismissToast(busy);
     if (n) s.toast(`Added ${n} beat marker${n > 1 ? "s" : ""} at ${Math.round(bpm * speedOf(c))} BPM. Clip edges now snap to the beat.`, "success");
