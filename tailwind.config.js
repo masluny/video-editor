@@ -16,6 +16,7 @@ export default {
         title: "#e8a23d",
         danger: { DEFAULT: "#ef5b5b", hover: "#ff7676" },
         success: "#3ccf91",
+        warning: "#f0b24a",
         playhead: "#ff4f6d",
       },
       fontFamily: {

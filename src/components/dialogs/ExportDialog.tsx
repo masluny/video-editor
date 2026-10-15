@@ -1,10 +1,10 @@
 import * as React from "react";
-import { CheckCircle2, Clapperboard, FolderOpen, Loader2, Play, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Clapperboard, FolderOpen, Loader2, Play, XCircle } from "lucide-react";
 import { Modal } from "../ui/Modal";
 import { Button, FieldRow, Segmented, Select, Switch } from "../ui/controls";
 import { store, useStore } from "../../store/store";
 import { backend, openPath, pickSavePath, revealInFolder, type ExportCodec, type ExportFormat, type ExportQuality, type ExportSettings } from "../../lib/backend";
-import { projectDuration } from "../../lib/timeline";
+import { projectDuration, videoEnd } from "../../lib/timeline";
 import { basename, duration as fmtDuration, fpsLabel, seconds } from "../../lib/format";
 import { useLocal } from "../../lib/useLocal";
 import { cancelExport, firstLine, startExport, useExportJob } from "./exportJob";
@@ -59,7 +59,11 @@ function Setup() {
   const [prefs, setPrefs] = useLocal<Prefs>("revind.exportPrefs", DEFAULT_PREFS);
   const p = { ...DEFAULT_PREFS, ...prefs };
   const set = (patch: Partial<Prefs>) => setPrefs({ ...p, ...patch });
-  const [useRange, setUseRange] = React.useState(!!range);
+  const total = projectDuration(project);
+  // Where the picture ends: audio running past it would export as black with sound.
+  const picture = videoEnd(project.tracks);
+  const overhang = picture > 0 && total - picture > 0.5 ? total - picture : 0;
+  const [mode, setMode] = React.useState<"all" | "picture" | "range">(range ? "range" : overhang ? "picture" : "all");
   const [hwAvailable, setHwAvailable] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
 
@@ -76,14 +80,20 @@ function Setup() {
   const isAudio = fmt.group === "audio";
   const canCodec = p.format === "mp4" || p.format === "mov";
   const codec = canCodec ? (p.format === "mp4" && p.codec === "prores" ? "h264" : p.codec) : "h264";
-  const total = projectDuration(project);
-  const span = useRange && range ? range.out - range.in : total;
+  const used = mode === "range" && !range ? "all" : mode === "picture" && (!overhang || isAudio) ? "all" : mode;
+  const span = used === "range" ? range!.out - range!.in : used === "picture" ? picture : total;
 
   const heights = [0, 2160, 1440, 1080, 720, 480, 360].filter((h) => h === 0 || h < Math.max(pw, ph) * 2);
   const outH = p.height > 0 ? p.height : ph;
   const outW = p.height > 0 ? even((pw * p.height) / ph) : pw;
   const gifH = p.format === "gif" && p.height === 0 ? Math.min(ph, 480) : outH;
   const gifW = p.format === "gif" && p.height === 0 ? even((pw * gifH) / ph) : outW;
+
+  const trimAudio = () => {
+    const ids = project.tracks.filter((t) => t.kind === "audio").flatMap((t) => t.clips.map((c) => c.id));
+    store().matchVideoLength(ids, 1);
+    setMode("all");
+  };
 
   const go = async () => {
     const ext = p.format;
@@ -102,7 +112,7 @@ function Setup() {
       normalizeAudio: p.normalizeAudio,
     };
     setBusy(true);
-    await startExport(output, settings, useRange && range ? [range.in, range.out] : null);
+    await startExport(output, settings, used === "range" ? [range!.in, range!.out] : used === "picture" ? [0, picture] : null);
     setBusy(false);
   };
 
@@ -176,15 +186,28 @@ function Setup() {
         <FieldRow label="Range">
           <Segmented
             className="flex-1"
-            value={useRange && range ? "range" : "all"}
-            onChange={(v) => setUseRange(v === "range")}
+            value={used}
+            onChange={setMode}
             options={[
               { value: "all", label: `Whole timeline · ${fmtDuration(total)}` },
+              ...(overhang && !isAudio ? [{ value: "picture" as const, label: `Picture · ${fmtDuration(picture)}`, title: "Stop where the last video clip or title ends" }] : []),
               ...(range ? [{ value: "range" as const, label: `In → Out · ${fmtDuration(range.out - range.in)}` }] : []),
             ]}
           />
         </FieldRow>
-        {!range && <p className="pl-[88px] text-2xs text-ink-dim">Tip: set an in/out range with I and O to export just a part.</p>}
+        {overhang > 0 && !isAudio && used === "all" && (
+          <div className="ml-[88px] flex items-start gap-2 rounded-md border border-warning/30 bg-warning/10 px-2.5 py-2 text-2xs leading-relaxed text-ink-muted">
+            <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0 text-warning" />
+            <span className="flex-1">
+              The audio runs {seconds(overhang)} past the picture, so the video ends on black.{" "}
+              <button className="font-semibold text-accent-ink hover:text-white" onClick={trimAudio}>
+                Trim audio to the picture
+              </button>
+            </span>
+          </div>
+        )}
+        {used === "picture" && <p className="pl-[88px] text-2xs text-ink-dim">Audio after {fmtDuration(picture)} is left out.</p>}
+        {!range && used !== "picture" && !overhang && <p className="pl-[88px] text-2xs text-ink-dim">Tip: set an in/out range with I and O to export just a part.</p>}
       </div>
 
       <div className="flex items-center justify-between rounded-lg border border-line bg-bg px-3 py-2.5">
