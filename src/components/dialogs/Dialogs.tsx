@@ -92,7 +92,7 @@ const SHORTCUTS: [string, [string, string][]][] = [
       ["; / '", "Lift / extract the range"],
       ["+ / −", "Zoom timeline"],
       ["⇧Z", "Zoom to fit"],
-      ["⌘ + scroll", "Zoom around the pointer"],
+      ["⌘-scroll", "Zoom around the pointer"],
     ],
   ],
   [
@@ -113,9 +113,9 @@ function ShortcutsDialog() {
   const fix = keyLabel;
   return (
     <Modal title="Keyboard shortcuts" icon={<Keyboard className="h-4 w-4" />} onClose={close} width={720}>
-      <div className="grid grid-cols-2 gap-x-8 gap-y-5">
+      <div className="columns-2 gap-x-8">
         {SHORTCUTS.map(([group, items]) => (
-          <div key={group}>
+          <div key={group} className="mb-5 break-inside-avoid">
             <h3 className="panel-title mb-2">{group}</h3>
             <div className="space-y-1">
               {items.map(([k, d]) => (

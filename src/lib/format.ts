@@ -57,5 +57,7 @@ const isMac = typeof navigator !== "undefined" && /Mac/i.test(navigator.platform
 
 /** A shortcut written with Mac symbols, spelled out on other platforms (⌘ → Ctrl+). */
 export function keyLabel(keys: string): string {
-  return isMac ? keys : keys.replace(/⌘/g, "Ctrl+").replace(/⌥/g, "Alt+").replace(/⇧/g, "Shift+");
+  if (isMac) return keys;
+  // "⌘-drag" reads "Ctrl-drag", "⌘K" reads "Ctrl+K".
+  return keys.replace(/([⌘⌥⇧])(-?)/g, (_, k: string, dash: string) => ({ "⌘": "Ctrl", "⌥": "Alt", "⇧": "Shift" })[k] + (dash || "+"));
 }
