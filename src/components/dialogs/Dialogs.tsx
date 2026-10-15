@@ -72,6 +72,7 @@ const SHORTCUTS: [string, [string, string][]][] = [
       ["⌫ / Del", "Delete selection"],
       ["⇧⌫", "Ripple delete (close the gap)"],
       ["⌘C / ⌘X / ⌘V", "Copy / cut / paste at playhead"],
+      ["⌥⌘V", "Paste the copied clip's look (colour, framing, motion)"],
       ["⌘D", "Duplicate"],
       ["⌘A", "Select all"],
       ["⏎ / ⇧⏎", "Add / insert selected library item at playhead"],

@@ -4,7 +4,7 @@
 import { findClip, store } from "../store/store";
 import { clipEnd, EPS, videoEnd } from "./timeline";
 import { clipBefore } from "./transitions";
-import { addBeatMarkers, duckUnderVoice, evenOutVolume, exportCaptions, importViaDialog, splitAtShotChanges, cutToBeat, newProject, openProject, saveProject } from "./actions";
+import { addBeatMarkers, duckUnderVoice, evenOutVolume, exportCaptions, importViaDialog, splitAtShotChanges, cutToBeat, pasteLook, newProject, openProject, saveProject } from "./actions";
 
 export interface Command {
   id: string;
@@ -49,6 +49,15 @@ export function commands(): Command[] {
     { id: "duplicate", label: "Duplicate", group: "Edit", shortcut: "⌘D", keywords: "copy clone", blocked: () => need(s().selection.length > 0, "Nothing selected"), run: () => s().duplicateClips(s().selection) },
     { id: "copy", label: "Copy", group: "Edit", shortcut: "⌘C", blocked: () => need(s().selection.length > 0, "Nothing selected"), run: () => s().copy() },
     { id: "paste", label: "Paste at playhead", group: "Edit", shortcut: "⌘V", blocked: () => need(s().clipboard.length > 0, "Clipboard is empty"), run: () => s().paste() },
+    {
+      id: "paste-look",
+      label: "Paste look (colour, framing, motion)",
+      group: "Edit",
+      shortcut: "⌥⌘V",
+      keywords: "attributes effects style copy grade",
+      blocked: () => need(s().clipboard.length > 0, "Copy a clip first (⌘C)") || need(selected().some((h) => h.track.kind === "video"), "Select clips on a video track"),
+      run: () => pasteLook(s().selection),
+    },
     { id: "select-all", label: "Select all", group: "Edit", shortcut: "⌘A", run: () => s().selectAll() },
     { id: "undo", label: "Undo", group: "Edit", shortcut: "⌘Z", blocked: () => need(s().past.length > 0, "Nothing to undo"), run: () => s().undo() },
     { id: "redo", label: "Redo", group: "Edit", shortcut: "⇧⌘Z", blocked: () => need(s().future.length > 0, "Nothing to redo"), run: () => s().redo() },

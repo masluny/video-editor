@@ -711,6 +711,12 @@ const SPEEDS = [0.25, 0.5, 0.75, 1, 1.5, 2, 4];
 
 function SpeedSection({ clip }: { clip: Clip }) {
   const sp = speedOf(clip);
+  // Empty time after the clip, up to the next clip on its track.
+  const gap = useStore((s) => {
+    const hit = findClip(s.project, clip.id);
+    const next = hit ? Math.min(Infinity, ...hit.track.clips.filter((c) => c.start >= clipEnd(clip) - EPS).map((c) => c.start)) : Infinity;
+    return Number.isFinite(next) ? next - clipEnd(clip) : 0;
+  });
   const setSpeed = (v: number, commit: boolean) => {
     const next = Math.max(0.1, Math.min(16, v));
     store().updateClip(clip.id, (c) => {
@@ -739,6 +745,23 @@ function SpeedSection({ clip }: { clip: Clip }) {
         ))}
       </div>
       <SliderField label="Custom" value={sp} min={0.1} max={16} sliderMin={0.1} sliderMax={4} step={0.05} suffix="×" defaultValue={1} onChange={(v) => setSpeed(v, false)} onCommit={() => store().settleClips([clip.id])} />
+      <FieldRow label="Length" hint="Type a length and the speed follows">
+        <NumberField
+          value={clipDuration(clip)}
+          min={(clip.out - clip.in) / 16}
+          max={(clip.out - clip.in) / 0.1}
+          step={0.1}
+          suffix="s"
+          className="min-w-0 flex-1"
+          onChange={(v) => setSpeed((clip.out - clip.in) / Math.max(MIN_CLIP, v), false)}
+          onCommit={() => store().settleClips([clip.id])}
+        />
+        {gap > 0.01 && (
+          <Button size="sm" title={`Change the speed so the clip runs up to the next one (${seconds(clipDuration(clip) + gap)})`} onClick={() => setSpeed((clip.out - clip.in) / (clipDuration(clip) + gap), true)}>
+            Fill gap
+          </Button>
+        )}
+      </FieldRow>
       <p className="text-2xs text-ink-dim">Audio keeps its pitch. Speeding up shortens the clip; slowing down may cover the next clip.</p>
     </Section>
   );

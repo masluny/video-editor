@@ -11,6 +11,7 @@ import {
   Clapperboard,
   AlignHorizontalJustifyStart,
   Music2,
+  Paintbrush,
   Eye,
   EyeOff,
   Flag,
@@ -58,7 +59,7 @@ import { keyLabel, seconds, timecode } from "../../lib/format";
 import { cn } from "../../lib/cn";
 import { MARKER_COLORS } from "../../lib/defaults";
 import { clipAfter, clipBefore, DEFAULT_DISSOLVE, dissolveInto } from "../../lib/transitions";
-import { addBeatMarkers, duckUnderVoice, evenOutVolume, exportCaptions, splitAtShotChanges, cutToBeat } from "../../lib/actions";
+import { addBeatMarkers, duckUnderVoice, evenOutVolume, exportCaptions, splitAtShotChanges, cutToBeat, pasteLook } from "../../lib/actions";
 
 interface Row {
   track: Track;
@@ -489,6 +490,9 @@ export function Timeline() {
       { label: "Duplicate", icon: <Copy className="h-3.5 w-3.5" />, shortcut: "⌘D", disabled: track.locked, onSelect: () => s.duplicateClips(ids) },
       { label: "Copy", shortcut: "⌘C", onSelect: () => s.copy() },
       { label: "Cut", shortcut: "⌘X", disabled: track.locked, onSelect: () => s.cut() },
+      ...(track.kind === "video" && s.clipboard.length && !s.clipboard.some((e) => e.clip.id === clip.id && ids.length === 1)
+        ? [{ label: `Paste look${ids.length > 1 ? ` onto ${ids.length} clips` : ""}`, icon: <Paintbrush className="h-3.5 w-3.5" />, shortcut: "⌥⌘V", disabled: track.locked, onSelect: () => pasteLook(ids) } as MenuItem]
+        : []),
       { separator: true },
     ];
     if (track.kind === "audio")

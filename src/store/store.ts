@@ -190,6 +190,11 @@ interface State {
   copy: () => void;
   cut: () => void;
   paste: () => void;
+  /**
+   * Give clips the look of the copied clip: colour, framing, crop, motion, opacity and
+   * bars (and a title's text style, keeping each title's own words). Returns how many changed.
+   */
+  pasteLook: (ids: Id[]) => number;
   detachAudio: (id: Id) => void;
   replaceWithRanges: (id: Id, ranges: [number, number][]) => number;
   closeGapAt: (trackId: Id, time: number) => void;
@@ -1016,6 +1021,25 @@ export const useStore = create<State>()((set, get) => ({
     if (!selection.length) return;
     get().copy();
     get().deleteClips(selection, false);
+  },
+
+  pasteLook: (ids) => {
+    const src = get().clipboard[0]?.clip;
+    if (!src) return 0;
+    const want = new Set(ids.filter((id) => id !== src.id));
+    let n = 0;
+    get().apply((p) => {
+      for (const t of p.tracks) {
+        if (t.locked || t.kind !== "video") continue;
+        for (const c of t.clips) {
+          if (!want.has(c.id)) continue;
+          Object.assign(c, structuredClone({ color: src.color, transform: src.transform, crop: src.crop, motion: src.motion, backdrop: src.backdrop, opacity: src.opacity }));
+          if (src.title && c.title) c.title = { ...structuredClone(src.title), text: c.title.text };
+          n++;
+        }
+      }
+    });
+    return n;
   },
 
   paste: () => {

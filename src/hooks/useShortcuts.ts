@@ -1,7 +1,7 @@
 import * as React from "react";
 import { store } from "../store/store";
 import { nextEditPoint, prevEditPoint, projectDuration, snapToFrame } from "../lib/timeline";
-import { importViaDialog, newProject, openProject, saveProject } from "../lib/actions";
+import { importViaDialog, newProject, openProject, pasteLook, saveProject } from "../lib/actions";
 
 function typing(e: KeyboardEvent) {
   const t = e.target as HTMLElement | null;
@@ -42,6 +42,8 @@ export function useShortcuts() {
         if (k === "y") return handled(() => s.redo());
         if (k === "c") return handled(() => s.copy());
         if (k === "x") return handled(() => s.cut());
+        // ⌥⌘V (by key position: ⌥ changes the character on macOS).
+        if (e.altKey && e.code === "KeyV") return handled(() => pasteLook(s.selection));
         if (k === "v") return handled(() => s.paste());
         if (k === "d") return handled(() => s.duplicateClips(s.selection));
         if (k === "a") return handled(() => s.selectAll());

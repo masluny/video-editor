@@ -219,6 +219,15 @@ export async function splitAtShotChanges(clipId: Id, threshold: number = SHOT_TH
   }
 }
 
+/** ⌥⌘V: the copied clip's look onto the selection, with feedback either way. */
+export function pasteLook(ids: Id[]) {
+  const s = store();
+  if (!s.clipboard.length) return void s.toast("Copy a clip first (⌘C), then paste its look onto other clips.", "info");
+  const n = s.pasteLook(ids);
+  if (n) s.toast(`Pasted the look onto ${n} clip${n > 1 ? "s" : ""}.`, "success", { label: "Undo", run: () => store().undo() });
+  else s.toast("Select clips on a video track to paste the look onto.", "info");
+}
+
 export async function importViaDialog() {
   const paths = await pickMedia();
   if (paths.length) await importFiles(paths);

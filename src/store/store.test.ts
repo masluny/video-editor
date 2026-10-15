@@ -569,3 +569,26 @@ describe("magnetic drops", () => {
     expect(clipsOf("video").map((c) => [c.start, c.in])).toEqual([[0, 0], [2, 5], [3, 0]]);
   });
 });
+
+describe("paste look", () => {
+  it("copies colour, framing and motion onto other clips, and title styles without their words", () => {
+    const a = st().placeMedia("v", { at: 0, range: { in: 0, out: 2 } })!;
+    const b = st().placeMedia("v", { at: 2, range: { in: 0, out: 2 } })!;
+    st().updateClip(a, (c) => {
+      c.color.saturation = 0;
+      c.transform.scale = 1.5;
+      c.motion = { from: { scale: 1, x: 0, y: 0 }, to: { scale: 1.2, x: 0, y: 0 } };
+    });
+    st().select([a]);
+    st().copy();
+    expect(st().pasteLook([a, b])).toBe(1); // not onto itself
+    const nb = findClip(st().project, b)!.clip;
+    expect([nb.color.saturation, nb.transform.scale, nb.motion?.to.scale]).toEqual([0, 1.5, 1.2]);
+    const t1 = st().placeTitle({ text: "One", fontSize: 40, color: "#ff0000" }, { at: 5 })!;
+    const t2 = st().placeTitle({ text: "Two" }, { at: 8 })!;
+    st().select([t1]);
+    st().copy();
+    st().pasteLook([t2]);
+    expect(findClip(st().project, t2)!.clip.title).toMatchObject({ text: "Two", fontSize: 40, color: "#ff0000" });
+  });
+});
