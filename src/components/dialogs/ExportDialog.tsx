@@ -9,6 +9,7 @@ import { basename, duration as fmtDuration, fpsLabel, seconds } from "../../lib/
 import { useLocal } from "../../lib/useLocal";
 import { cancelExport, firstLine, startExport, useExportJob } from "./exportJob";
 import { FPS_OPTIONS } from "../../lib/defaults";
+import { cn } from "../../lib/cn";
 
 const FORMATS: { value: ExportFormat; label: string; group: "video" | "audio" | "image" }[] = [
   { value: "mp4", label: "MP4 video", group: "video" },
@@ -34,6 +35,28 @@ interface Prefs {
 const DEFAULT_PREFS: Prefs = { format: "mp4", codec: "h264", quality: "high", height: 0, fps: 0, hardware: false, normalizeAudio: false, audioBitrate: 192 };
 
 const even = (n: number) => Math.max(2, Math.round(n / 2) * 2);
+
+/** One-click settings for where the video is going (the platforms' recommended uploads). */
+const PRESETS: { id: string; label: string; hint: string; prefs: (pw: number, ph: number, fps: number) => Partial<Prefs> }[] = [
+  {
+    id: "youtube",
+    label: "YouTube",
+    hint: "Full resolution, H.264 at the best quality, loudness evened out to YouTube's −14 LUFS",
+    prefs: () => ({ format: "mp4", codec: "h264", quality: "high", height: 0, fps: 0, normalizeAudio: true }),
+  },
+  {
+    id: "social",
+    label: "TikTok · Reels · Shorts",
+    hint: "1080 px on the short side, up to 60 fps, H.264, loudness evened out",
+    prefs: (pw, ph, fps) => ({ format: "mp4", codec: "h264", quality: "high", height: Math.min(pw, ph) > 1080 ? even((ph * 1080) / Math.min(pw, ph)) : 0, fps: fps > 60 ? 60 : 0, normalizeAudio: true }),
+  },
+  {
+    id: "small",
+    label: "Small file",
+    hint: "720 px on the short side at a smaller size, for messages and email",
+    prefs: (pw, ph) => ({ format: "mp4", codec: "h264", quality: "low", height: Math.min(pw, ph) > 720 ? even((ph * 720) / Math.min(pw, ph)) : 0, fps: 0, normalizeAudio: false }),
+  },
+];
 
 export function ExportDialog() {
   const close = () => store().openDialog(null);
@@ -83,7 +106,7 @@ function Setup() {
   const used = mode === "range" && !range ? "all" : mode === "picture" && (!overhang || isAudio) ? "all" : mode;
   const span = used === "range" ? range!.out - range!.in : used === "picture" ? picture : total;
 
-  const heights = [0, 2160, 1440, 1080, 720, 480, 360].filter((h) => h === 0 || h < Math.max(pw, ph) * 2);
+  const heights = [...new Set([0, 2160, 1440, 1080, 720, 480, 360, p.height])].filter((h) => h === 0 || h === p.height || h < Math.max(pw, ph) * 2).sort((a, b) => (a === 0 ? -1 : b === 0 ? 1 : b - a));
   const outH = p.height > 0 ? p.height : ph;
   const outW = p.height > 0 ? even((pw * p.height) / ph) : pw;
   const gifH = p.format === "gif" && p.height === 0 ? Math.min(ph, 480) : outH;
@@ -116,9 +139,31 @@ function Setup() {
     setBusy(false);
   };
 
+  const preset = PRESETS.find((x) => {
+    const want = x.prefs(pw, ph, pfps);
+    return (Object.keys(want) as (keyof Prefs)[]).every((k) => p[k] === want[k]);
+  });
+
   return (
     <div className="space-y-4">
       <div className="space-y-1.5">
+        <FieldRow label="Made for">
+          <div className="flex flex-1 flex-wrap gap-1">
+            {PRESETS.map((x) => (
+              <button
+                key={x.id}
+                title={x.hint}
+                onClick={() => set(x.prefs(pw, ph, pfps))}
+                className={cn(
+                  "h-7 rounded-md border px-2.5 text-xs font-medium transition-colors",
+                  preset?.id === x.id ? "border-accent bg-accent/15 text-accent-ink" : "border-line text-ink-muted hover:border-line-strong hover:text-ink",
+                )}
+              >
+                {x.label}
+              </button>
+            ))}
+          </div>
+        </FieldRow>
         <FieldRow label="Format">
           <Select className="flex-1" value={p.format} options={FORMATS.map((f) => ({ value: f.value, label: f.label }))} onChange={(format) => set({ format })} />
         </FieldRow>
