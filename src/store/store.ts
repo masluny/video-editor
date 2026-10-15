@@ -112,6 +112,8 @@ interface State {
   // --- media -----------------------------------------------------------------
   addMedia: (assets: MediaAsset[]) => MediaAsset[];
   removeMedia: (id: Id) => void;
+  /** Drop media no clip uses (one undo step). Returns how many went. */
+  removeUnusedMedia: () => number;
   relinkMedia: (id: Id, asset: Omit<MediaAsset, "id">) => void;
   setRuntime: (id: Id, patch: Partial<MediaRuntime>) => void;
   /** Put media on the timeline. Returns the new clip id. */
@@ -384,6 +386,15 @@ export const useStore = create<State>()((set, get) => ({
     });
     pruneSelection();
     if (get().selectedMedia === id) set({ selectedMedia: null });
+  },
+
+  removeUnusedMedia: () => {
+    const used = new Set(get().project.tracks.flatMap((t) => t.clips.map((c) => c.mediaId)));
+    const unused = get().project.media.filter((m) => !used.has(m.id));
+    if (!unused.length) return 0;
+    get().apply((p) => void (p.media = p.media.filter((m) => used.has(m.id))));
+    if (unused.some((m) => m.id === get().selectedMedia)) set({ selectedMedia: null });
+    return unused.length;
   },
 
   relinkMedia: (id, asset) => {

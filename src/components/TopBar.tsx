@@ -1,8 +1,10 @@
 import * as React from "react";
-import { ChevronDown, CircleHelp, Clapperboard, Loader2, Redo2, Undo2 } from "lucide-react";
+import { ChevronDown, CircleHelp, Clapperboard, Clock, Loader2, Redo2, Undo2 } from "lucide-react";
 import { isDirty, store, useStore } from "../store/store";
 import { Button, IconButton } from "./ui/controls";
-import { openMenu } from "./ui/Menu";
+import { openMenu, type MenuItem } from "./ui/Menu";
+import { recentProjects } from "../lib/recent";
+import { basename, stripExtension } from "../lib/format";
 import { importViaDialog, newProject, openProject, saveProject } from "../lib/actions";
 import { useExportJob } from "./dialogs/exportJob";
 import { isTauri } from "../lib/backend";
@@ -25,6 +27,10 @@ export function TopBar() {
     openMenu({ clientX: r.left, clientY: r.bottom + 4 }, [
       { label: "New project", shortcut: `${cmd}N`, onSelect: () => newProject() },
       { label: "Open…", shortcut: `${cmd}O`, onSelect: () => openProject() },
+      ...recentProjects()
+        .filter((p) => p !== store().filePath)
+        .slice(0, 5)
+        .map((p): MenuItem => ({ label: stripExtension(basename(p)), icon: <Clock className="h-3.5 w-3.5" />, onSelect: () => openProject(p) })),
       { separator: true },
       { label: "Save", shortcut: `${cmd}S`, onSelect: () => saveProject() },
       { label: "Save as…", shortcut: isMac ? "⇧⌘S" : "Ctrl+Shift+S", onSelect: () => saveProject(true) },

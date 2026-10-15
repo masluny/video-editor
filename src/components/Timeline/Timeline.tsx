@@ -526,6 +526,8 @@ export function Timeline() {
       { label: "Paste here", icon: <ClipboardPaste className="h-3.5 w-3.5" />, disabled: !s.clipboard.length, onSelect: () => (s.seek(snapToFrame(t, s.project.settings.fps)), s.paste()) },
       { label: "Close gap", disabled: !gap || track.locked, onSelect: () => s.closeGapAt(track.id, t) },
       { label: "Close all gaps", icon: <FoldHorizontal className="h-3.5 w-3.5" />, disabled: track.locked || track.clips.length < 2, onSelect: () => s.closeTrackGaps(track.id) },
+      { label: "Select everything after here", onSelect: () => s.select(s.project.tracks.flatMap((x) => (x.locked ? [] : x.clips.filter((c) => c.start >= t - EPS).map((c) => c.id)))) },
+      { label: "Select this track after here", onSelect: () => s.select(track.clips.filter((c) => c.start >= t - EPS).map((c) => c.id)) },
       ...(track.kind === "video"
         ? [{ label: "Add title here", icon: <Type className="h-3.5 w-3.5" />, disabled: track.locked, onSelect: () => s.placeTitle(undefined, { trackId: track.id, at: t }) } as MenuItem]
         : []),

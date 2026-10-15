@@ -9,6 +9,7 @@ import { clipDuration } from "./timeline";
 import { isDirty, store, findClip, useStore } from "../store/store";
 import { captionsOf, isSubtitlePath, parseSubtitles, toSrt } from "./subtitles";
 import { BEAT_RATE, detectBeats, mono, toBeatRate } from "./beats";
+import { forgetProject, rememberProject } from "./recent";
 import { fileUrl } from "./backend";
 import { speedOf } from "./timeline";
 
@@ -156,9 +157,11 @@ export async function openProject(path?: string) {
     const project = migrateProject(JSON.parse(text));
     if (!path && project.name === "Untitled") project.name = stripExtension(basename(file));
     store().loadProject(project, file);
+    rememberProject(file);
     backend.autosaveClear().catch(() => {});
     await reportMissing();
   } catch (e) {
+    if (path) forgetProject(path);
     store().toast(`Couldn't open project: ${e instanceof Error ? e.message : String(e)}`, "error");
   }
 }
@@ -194,6 +197,7 @@ export async function saveProject(saveAs = false): Promise<boolean> {
     await backend.writeText(path, JSON.stringify(snapshot, null, 2));
     // Edits made while writing keep the document dirty.
     useStore.setState({ savedProject: snapshot, filePath: path });
+    rememberProject(path);
     backend.autosaveClear().catch(() => {});
     s.toast(`Saved ${basename(path)}`, "success");
     return true;

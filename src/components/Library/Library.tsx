@@ -115,7 +115,25 @@ function MediaTab() {
           ]}
         />
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto p-2" onPointerDown={(e) => e.target === e.currentTarget && store().setSelectedMedia(null)}>
+      <div
+        className="min-h-0 flex-1 overflow-y-auto p-2"
+        onPointerDown={(e) => e.target === e.currentTarget && store().setSelectedMedia(null)}
+        onContextMenu={(e) => {
+          const unused = media.filter((m) => !usedSet.has(m.id)).length;
+          openMenu(e, [
+            { label: "Import media…", onSelect: () => void importViaDialog() },
+            { separator: true },
+            {
+              label: unused ? `Remove unused media (${unused})` : "Remove unused media",
+              disabled: !unused,
+              onSelect: () => {
+                const n = store().removeUnusedMedia();
+                store().toast(`Removed ${n} unused item${n > 1 ? "s" : ""} from the project. Files on disk are untouched.`, "success");
+              },
+            },
+          ]);
+        }}
+      >
         <div className="grid grid-cols-[repeat(auto-fill,minmax(118px,1fr))] gap-2">
           {shown.map((m) => (
             <MediaCard key={m.id} media={m} runtime={runtime[m.id]} selected={selected === m.id} used={usedSet.has(m.id)} />

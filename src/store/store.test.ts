@@ -178,6 +178,17 @@ describe("music and the video's length", () => {
   });
 });
 
+describe("library", () => {
+  it("removes only the media no clip uses, in one undo step", () => {
+    st().placeMedia("v", { at: 0 });
+    expect(st().removeUnusedMedia()).toBe(1); // the song
+    expect(st().project.media.map((m) => m.id)).toEqual(["v"]);
+    expect(st().removeUnusedMedia()).toBe(0);
+    st().undo();
+    expect(st().project.media).toHaveLength(2);
+  });
+});
+
 describe("reframing", () => {
   it("sets how picture clips fit, skipping titles, sound and locked tracks", () => {
     const a = st().placeMedia("v", { at: 0 })!;
