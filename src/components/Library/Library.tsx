@@ -27,6 +27,7 @@ import { titleImageUrl } from "../../lib/title";
 import { openMenu } from "../ui/Menu";
 import { Button, IconButton, Segmented } from "../ui/controls";
 import { cn } from "../../lib/cn";
+import { mergeRegions } from "../../lib/envelope";
 import { useLocal } from "../../lib/useLocal";
 
 type Tab = "media" | "titles";
@@ -63,12 +64,23 @@ function MediaTab() {
   const media = useStore((s) => s.project.media);
   const runtime = useStore((s) => s.runtime);
   const selected = useStore((s) => s.selectedMedia);
+  // Which parts of each file the timeline uses, as a string so it only changes when they do.
   const used = useStore((s) => {
-    const ids = new Set<string>();
-    for (const t of s.project.tracks) for (const c of t.clips) if (c.mediaId) ids.add(c.mediaId);
-    return [...ids].sort().join("|");
+    const parts: string[] = [];
+    for (const t of s.project.tracks)
+      for (const c of t.clips) if (c.mediaId) parts.push(`${c.mediaId}:${c.in.toFixed(2)}:${(c.freeze ? c.in + 0.05 : c.out).toFixed(2)}`);
+    return parts.sort().join("|");
   });
-  const usedSet = React.useMemo(() => new Set(used.split("|")), [used]);
+  const usedRanges = React.useMemo(() => {
+    const map = new Map<string, [number, number][]>();
+    for (const part of used ? used.split("|") : []) {
+      const [id, a, b] = part.split(":");
+      map.set(id, [...(map.get(id) ?? []), [+a, +b]]);
+    }
+    for (const [id, r] of map) map.set(id, mergeRegions(r));
+    return map;
+  }, [used]);
+  const usedSet = React.useMemo(() => new Set(usedRanges.keys()), [usedRanges]);
   const [query, setQuery] = React.useState("");
   const [filter, setFilter] = useLocal<"all" | "video" | "audio" | "image">("revind.libraryFilter", "all");
 
@@ -136,7 +148,7 @@ function MediaTab() {
       >
         <div className="grid grid-cols-[repeat(auto-fill,minmax(118px,1fr))] gap-2">
           {shown.map((m) => (
-            <MediaCard key={m.id} media={m} runtime={runtime[m.id]} selected={selected === m.id} used={usedSet.has(m.id)} />
+            <MediaCard key={m.id} media={m} runtime={runtime[m.id]} selected={selected === m.id} used={usedSet.has(m.id)} ranges={usedRanges.get(m.id)} />
           ))}
         </div>
         {!shown.length && <p className="mt-6 text-center text-xs text-ink-dim">Nothing matches.</p>}
@@ -186,7 +198,20 @@ function mediaMenu(m: MediaAsset, used: boolean) {
 
 const KIND_ICON = { video: Film, audio: Music, image: ImageIcon };
 
-const MediaCard = React.memo(function MediaCard({ media, runtime, selected, used }: { media: MediaAsset; runtime?: MediaRuntime; selected: boolean; used: boolean }) {
+const MediaCard = React.memo(function MediaCard({
+  media,
+  runtime,
+  selected,
+  used,
+  ranges,
+}: {
+  media: MediaAsset;
+  runtime?: MediaRuntime;
+  selected: boolean;
+  used: boolean;
+  /** Source ranges the timeline uses (seconds). */
+  ranges?: [number, number][];
+}) {
   const Icon = KIND_ICON[media.kind];
   const thumbs = runtime?.thumbs;
   const [hoverIdx, setHoverIdx] = React.useState<number | null>(null);
@@ -243,6 +268,14 @@ const MediaCard = React.memo(function MediaCard({ media, runtime, selected, used
           <span className="absolute bottom-1 right-1 rounded bg-black/70 px-1 font-mono text-2xs text-white tabular">{fmtDuration(media.duration)}</span>
         )}
         {used && <span className="absolute left-1 top-1 h-1.5 w-1.5 rounded-full bg-success shadow" title="Used in the timeline" />}
+        {ranges && media.duration > 0 && (
+          // The parts already on the timeline, as in Final Cut's library.
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-[3px] bg-black/40">
+            {ranges.map(([a, b]) => (
+              <span key={a} className="absolute inset-y-0 bg-title" style={{ left: `${(a / media.duration) * 100}%`, width: `${(Math.max(0.01, b - a) / media.duration) * 100}%` }} />
+            ))}
+          </div>
+        )}
       </div>
       <div className="flex items-center gap-1 px-1.5 py-1">
         <Icon className="h-3 w-3 shrink-0 text-ink-dim" />
