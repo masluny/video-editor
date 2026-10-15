@@ -4,7 +4,7 @@
 import { findClip, store } from "../store/store";
 import { clipEnd, EPS, videoEnd } from "./timeline";
 import { clipBefore } from "./transitions";
-import { addBeatMarkers, duckUnderVoice, evenOutVolume, exportCaptions, importViaDialog, splitAtShotChanges, newProject, openProject, saveProject } from "./actions";
+import { addBeatMarkers, duckUnderVoice, evenOutVolume, exportCaptions, importViaDialog, splitAtShotChanges, cutToBeat, newProject, openProject, saveProject } from "./actions";
 
 export interface Command {
   id: string;
@@ -73,6 +73,14 @@ export function commands(): Command[] {
       keywords: "scene detect cut detection edit shots auto",
       blocked: () => need(!!shotClip(), "Select a video clip"),
       run: () => void splitAtShotChanges(shotClip()!.clip.id),
+    },
+    {
+      id: "beat-cut",
+      label: "Cut to the beat",
+      group: "Timeline",
+      keywords: "music sync rhythm montage markers beats",
+      blocked: () => need(selected().some((h) => h.track.kind === "video"), "Select clips on a video track"),
+      run: () => void cutToBeat(s().selection),
     },
     { id: "lift", label: "Lift the In–Out range", group: "Timeline", shortcut: ";", keywords: "remove range gap", blocked: () => need(!!s().range, "Set a range with I and O first"), run: () => s().liftRange() },
     { id: "extract", label: "Extract the In–Out range", group: "Timeline", shortcut: "'", keywords: "remove range ripple close", blocked: () => need(!!s().range, "Set a range with I and O first"), run: () => s().extractRange() },

@@ -8,7 +8,7 @@ vi.mock("./backend", async (orig) => {
 
 import { useStore } from "../store/store";
 import { clipEnd } from "./timeline";
-import { splitAtShotChanges, SHOT_THRESHOLD } from "./actions";
+import { cutToBeat, splitAtShotChanges, SHOT_THRESHOLD } from "./actions";
 import type { MediaAsset } from "./types";
 
 const video: MediaAsset = {
@@ -59,5 +59,24 @@ describe("split at shot changes", () => {
     await splitAtShotChanges(id);
     expect(clips()).toHaveLength(1);
     expect(st().toasts.some((t) => t.kind === "error" && /ffmpeg went away/.test(t.message))).toBe(true);
+  });
+});
+
+describe("cut to the beat", () => {
+  it("explains what's missing when there are no markers and no music", async () => {
+    const id = st().placeMedia("v", { at: 0 })!;
+    await cutToBeat([id]);
+    expect(clips()[0].out).toBe(20);
+    expect(st().toasts[st().toasts.length - 1].message).toMatch(/needs beat markers/);
+  });
+
+  it("re-cuts with Undo in the toast", async () => {
+    const id = st().placeMedia("v", { at: 0 })!;
+    st().addMarkers([4.5, 9]);
+    await cutToBeat([id]);
+    expect(+clipEnd(clips()[0]).toFixed(6)).toBe(9);
+    const t = st().toasts[st().toasts.length - 1];
+    t.action!.run();
+    expect(clipEnd(clips()[0])).toBe(20);
   });
 });

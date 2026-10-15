@@ -125,6 +125,36 @@ export function insert(clips: Clip[], incoming: Clip): Clip[] {
   return sortClips(out);
 }
 
+/**
+ * Lay `clips` end to end from the first one's start so that every cut lands on a beat.
+ * Without `every`, each clip keeps as many beats as fit in its current length (it only
+ * grows when it's shorter than the next beat, and its source has room). With `every`,
+ * each clip runs exactly that many beats when its source allows. `room` gives a clip's
+ * longest possible timeline length from its in point. Returns the clips in order.
+ */
+export function cutToBeats(clips: Clip[], beats: number[], room: (c: Clip) => number, every?: number): Clip[] {
+  const marks = [...beats].sort((a, b) => a - b);
+  const out: Clip[] = [];
+  let cursor = clips.length ? Math.min(...clips.map((c) => c.start)) : 0;
+  for (const c of [...clips].sort((a, b) => a.start - b.start)) {
+    const dur = clipDuration(c);
+    const max = Math.max(dur, room(c));
+    const ahead = marks.filter((b) => b > cursor + MIN_CLIP);
+    const fits = ahead.filter((b) => b <= cursor + max + EPS);
+    let end: number | undefined;
+    if (every) end = ahead[every - 1] !== undefined && ahead[every - 1] <= cursor + max + EPS ? ahead[every - 1] : fits[fits.length - 1];
+    else end = ahead.filter((b) => b <= cursor + dur + EPS).pop() ?? fits[0];
+    const length = end !== undefined ? end - cursor : dur;
+    const moved = { ...c, start: cursor };
+    const next = length < dur - EPS ? cutTail(moved, cursor + length) : { ...moved, out: c.in + length * speedOf(c) };
+    next.fadeIn = Math.min(next.fadeIn, length);
+    next.fadeOut = Math.min(next.fadeOut, length - next.fadeIn);
+    out.push(next);
+    cursor += length;
+  }
+  return out;
+}
+
 /** Remove clips and close the gaps they leave. */
 export function rippleDelete(clips: Clip[], ids: Set<string>): Clip[] {
   const removed = clips.filter((c) => ids.has(c.id));

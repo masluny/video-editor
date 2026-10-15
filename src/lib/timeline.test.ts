@@ -11,6 +11,7 @@ import {
   overwrite,
   prevEditPoint,
   closeAllGaps,
+  cutToBeats,
   removeRange,
   rippleDelete,
   rippleTrim,
@@ -197,5 +198,52 @@ describe("videoEnd", () => {
     expect(videoEnd([track("video", [c("v", 0, 8.2), c("w", 9, 1)]), track("audio", [c("m", 0, 30)])])).toBeCloseTo(10);
     expect(videoEnd([track("video", [c("v", 0, 8.2), c("w", 9, 1)])], new Set(["w"]))).toBeCloseTo(8.2);
     expect(videoEnd([track("video", [c("v", 0, 5)], true), track("audio", [c("m", 0, 30)])])).toBe(0);
+  });
+});
+
+describe("cutToBeats", () => {
+  // A beat every half second (120 BPM) from 0.25s.
+  const beats = Array.from({ length: 40 }, (_, i) => 0.25 + i * 0.5);
+  const unlimited = () => Infinity;
+
+  it("trims each clip back to its last whole beat and closes the gaps", () => {
+    const out = cutToBeats([c("a", 0, 1.9), c("b", 3, 1.2, 5), c("c", 6, 2.2, 10)], beats, unlimited);
+    expect(spans(out)).toEqual([
+      [0, 1.75, 0], // ends on the beat at 1.75
+      [1.75, 2.75, 5], // 1.2s → the beat at 2.75
+      [2.75, 4.75, 10], // 2.2s → 4.75
+    ]);
+    expect(out.map((x) => x.id)).toEqual(["a", "b", "c"]);
+  });
+
+  it("grows a clip shorter than a beat to the next one when its source has room", () => {
+    const out = cutToBeats([c("a", 0.25, 0.3), c("b", 2, 0.2, 99.7)], beats, (x) => (media.duration - x.in) / 1);
+    // a: 0.25 + 0.3 = 0.55 is before the next beat (0.75) → grows to it.
+    // b: starts at 0.75, the next beat is 1.25 but its source ends 0.3s on → keeps 0.2s.
+    expect(spans(out)).toEqual([
+      [0.25, 0.75, 0],
+      [0.75, 0.95, 99.7],
+    ]);
+  });
+
+  it("gives every clip exactly N beats when asked", () => {
+    const out = cutToBeats([c("a", 0, 5), c("b", 5, 0.4, 20), c("c", 9, 3, 40)], beats, unlimited, 2);
+    expect(spans(out)).toEqual([
+      [0, 0.75, 0], // the 2nd beat after 0 is 0.75
+      [0.75, 1.75, 20],
+      [1.75, 2.75, 40],
+    ]);
+  });
+
+  it("keeps clip timing when there are no beats ahead", () => {
+    const out = cutToBeats([c("a", 50, 2)], beats, unlimited);
+    expect(spans(out)).toEqual([[50, 52, 0]]);
+  });
+
+  it("respects speed: a 2x clip needs twice the source", () => {
+    const fast = { ...c("a", 0, 4), speed: 2 }; // 2s on the timeline
+    const [out] = cutToBeats([fast], beats, unlimited);
+    expect(+clipEnd(out).toFixed(6)).toBe(1.75);
+    expect(+out.out.toFixed(6)).toBe(3.5);
   });
 });

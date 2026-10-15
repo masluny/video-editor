@@ -9,6 +9,7 @@ import {
   Repeat,
   Snowflake,
   Clapperboard,
+  Music2,
   Eye,
   EyeOff,
   Flag,
@@ -55,7 +56,7 @@ import { seconds, timecode } from "../../lib/format";
 import { cn } from "../../lib/cn";
 import { MARKER_COLORS } from "../../lib/defaults";
 import { clipAfter, clipBefore, DEFAULT_DISSOLVE, dissolveInto } from "../../lib/transitions";
-import { addBeatMarkers, duckUnderVoice, evenOutVolume, exportCaptions, splitAtShotChanges } from "../../lib/actions";
+import { addBeatMarkers, duckUnderVoice, evenOutVolume, exportCaptions, splitAtShotChanges, cutToBeat } from "../../lib/actions";
 
 interface Row {
   track: Track;
@@ -443,6 +444,7 @@ export function Timeline() {
             { label: "Split at shot changes", icon: <Clapperboard className="h-3.5 w-3.5" />, disabled: track.locked, onSelect: () => void splitAtShotChanges(clip.id) } as MenuItem,
           ]
         : []),
+      ...(track.kind === "video" ? [{ label: ids.length > 1 ? `Cut ${ids.length} clips to the beat` : "Cut to the beat", icon: <Music2 className="h-3.5 w-3.5" />, disabled: track.locked, onSelect: () => void cutToBeat(ids) } as MenuItem] : []),
       { label: "Duplicate", icon: <Copy className="h-3.5 w-3.5" />, shortcut: "⌘D", disabled: track.locked, onSelect: () => s.duplicateClips(ids) },
       { label: "Copy", shortcut: "⌘C", onSelect: () => s.copy() },
       { label: "Cut", shortcut: "⌘X", disabled: track.locked, onSelect: () => s.cut() },

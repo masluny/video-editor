@@ -33,7 +33,7 @@ import { clipBefore, dissolveInto } from "../../lib/transitions";
 import { DEFAULT_MOTION_AMOUNT, ENTRANCE_PRESETS, isEntrance, MOTION_PRESETS, motionAmount, motionPreset, type MotionPreset } from "../../lib/motion";
 import { cn } from "../../lib/cn";
 import { cornerLayout, type Corner } from "../../lib/visual";
-import { duckUnderVoice, evenOutVolume } from "../../lib/actions";
+import { cutToBeat, duckUnderVoice, evenOutVolume } from "../../lib/actions";
 import { useLocal } from "../../lib/useLocal";
 
 export function Inspector() {
@@ -198,6 +198,19 @@ function MultiInspector({ ids }: { ids: string[] }) {
               { value: "blur", label: "Blur", title: "A blurred, enlarged copy of each clip" },
             ]}
           />
+        </FieldRow>
+        <FieldRow label="Cut to beat" hint="Re-cut these clips so every cut lands on a beat marker (finds the music's beat first if there are none)">
+          <div className="flex flex-1 items-center gap-1">
+            <button className={chip(false)} title="Keep as many beats as fit in each clip" onClick={() => void cutToBeat(ids)}>
+              Fit
+            </button>
+            {[1, 2, 4].map((n) => (
+              <button key={n} className={chip(false)} title={`Every clip lasts exactly ${n} beat${n > 1 ? "s" : ""}`} onClick={() => void cutToBeat(ids, n)}>
+                {n}
+              </button>
+            ))}
+            <span className="pl-0.5 text-2xs text-ink-dim">beats each</span>
+          </div>
         </FieldRow>
         <SliderField label="Opacity" value={first.opacity} min={0} max={1} step={0.01} displayScale={100} suffix="%" defaultValue={1} onChange={(v, o) => upd((c) => void (c.opacity = v), o.live)} onCommit={commit} />
         <SliderField label="Volume" value={first.volume} min={0} max={2} step={0.01} displayScale={100} suffix="%" defaultValue={1} onChange={(v, o) => upd((c) => void (c.volume = v), o.live)} onCommit={commit} />

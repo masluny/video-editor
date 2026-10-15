@@ -121,18 +121,18 @@ export function evenOutVolume(ids: Id[]) {
 }
 
 /** Find the beat of a clip's sound and put a marker on every `every`-th beat. */
-export async function addBeatMarkers(clipId: Id, every = 1) {
+export async function addBeatMarkers(clipId: Id, every = 1): Promise<number> {
   const s = store();
   const hit = findClip(s.project, clipId);
   const media = hit?.clip.mediaId ? s.project.media.find((m) => m.id === hit.clip.mediaId) : undefined;
-  if (!hit || !media?.hasAudio) return;
+  if (!hit || !media?.hasAudio) return 0;
   const rt = s.runtime[media.id];
   const path = rt?.needsProxy ? rt.proxy : media.path;
   if (!path || rt?.missing) {
     s.toast("This clip's sound isn't available yet. Try again once its preview is ready.", "info");
-    return;
+    return 0;
   }
-  const busy = s.toast("Listening for the beat…", "info");
+  const busy = s.toast("Listening for the beat…", "busy");
   try {
     const c = hit.clip;
     const { bpm, times } = await clipBeats(c, media, path);
@@ -141,10 +141,48 @@ export async function addBeatMarkers(clipId: Id, every = 1) {
     s.dismissToast(busy);
     if (n) s.toast(`Added ${n} beat marker${n > 1 ? "s" : ""} at ${Math.round(bpm * speedOf(c))} BPM. Clip edges now snap to the beat.`, "success");
     else s.toast("Couldn't find a steady beat in this clip.", "info");
+    return n;
   } catch (e) {
     s.dismissToast(busy);
     s.toast(`Couldn't analyse the sound: ${e instanceof Error ? e.message : String(e)}`, "error");
+    return 0;
   }
+}
+
+/** The music under some clips: the audio-track clip with sound that overlaps them most. */
+function musicUnder(ids: Id[]) {
+  const { project } = store();
+  const picked = ids.map((id) => findClip(project, id)?.clip).filter((c): c is Clip => !!c);
+  if (!picked.length) return undefined;
+  const a = Math.min(...picked.map((c) => c.start));
+  const b = Math.max(...picked.map((c) => c.start + clipDuration(c)));
+  let best: { clip: Clip; overlap: number } | undefined;
+  for (const t of project.tracks)
+    for (const c of t.kind === "audio" ? t.clips : [])
+      if (project.media.find((m) => m.id === c.mediaId)?.hasAudio) {
+        const overlap = Math.min(b, c.start + clipDuration(c)) - Math.max(a, c.start);
+        if (overlap > 0 && overlap > (best?.overlap ?? 0)) best = { clip: c, overlap };
+      }
+  return best?.clip;
+}
+
+/**
+ * Re-cut clips so every cut lands on a beat marker (`every` beats per clip, or as many as
+ * fit). With no markers yet, finds the beat of the music under them first.
+ */
+export async function cutToBeat(ids: Id[], every?: number) {
+  let n = store().cutToBeat(ids, every);
+  if (n < 0) {
+    const music = musicUnder(ids);
+    if (!music) {
+      store().toast("Cutting to the beat needs beat markers. Put music on an audio track under these clips, or add markers (M) where the cuts should go.", "info");
+      return;
+    }
+    if (!(await addBeatMarkers(music.id))) return;
+    n = store().cutToBeat(ids, every);
+  }
+  if (n > 0) store().toast(`${n} clip${n > 1 ? "s" : ""} re-cut to the beat.`, "success", { label: "Undo", run: () => store().undo() });
+  else if (n === 0) store().toast("These clips already cut on the beat.", "info");
 }
 
 /** Scene-detection sensitivities (ffmpeg scdet scores): lower finds softer changes. */
@@ -160,7 +198,7 @@ export async function splitAtShotChanges(clipId: Id, threshold: number = SHOT_TH
     s.toast(`“${media.name}” is offline. Relink it to find its shots.`, "info");
     return;
   }
-  const busy = s.toast("Looking for shot changes…", "info");
+  const busy = s.toast("Looking for shot changes…", "busy");
   try {
     const c = hit.clip;
     const found = await backend.detectScenes(media.path, c.in, c.out, threshold);

@@ -422,3 +422,36 @@ describe("migration", () => {
     expect(p.tracks.some((t) => t.kind === "audio")).toBe(true);
   });
 });
+
+describe("cut to the beat", () => {
+  it("re-cuts the run between the first and last selected clip and ripples the rest", () => {
+    const a = st().placeMedia("v", { at: 0, range: { in: 0, out: 3 } })!;
+    st().placeMedia("v", { at: 3, range: { in: 3, out: 5 } }); // between: joins the run
+    const c = st().placeMedia("v", { at: 6, range: { in: 5, out: 8 } })!; // after a 1s gap
+    st().placeMedia("v", { at: 10, range: { in: 0, out: 1 } }); // after the run: ripples
+    st().placeMedia("s", { at: 0 });
+    expect(st().cutToBeat([a, c])).toBe(-1); // no markers yet
+    st().addMarkers([0.9, 1.8, 2.7, 3.6, 4.5, 5.4, 6.3, 7.2]);
+    expect(st().cutToBeat([a, c])).toBe(3);
+    expect(clipsOf("video").map((x) => [x.start, +clipEnd(x).toFixed(6), x.in])).toEqual([
+      [0, 2.7, 0],
+      [2.7, 4.5, 3],
+      [4.5, 7.2, 5],
+      [8.2, 9.2, 0], // was 1s after the run's end (9), still is
+    ]);
+    expect(clipsOf("audio")[0].start).toBe(0); // the music never moves
+    st().undo();
+    expect(clipsOf("video").map((x) => x.start)).toEqual([0, 3, 6, 10]);
+  });
+
+  it("gives every clip N beats, growing short ones from their source", () => {
+    const a = st().placeMedia("v", { at: 0, range: { in: 0, out: 0.3 } })!;
+    const b = st().placeMedia("v", { at: 0.3, range: { in: 2, out: 2.3 } })!;
+    st().addMarkers([0.5, 1, 1.5, 2, 2.5]);
+    st().cutToBeat([a, b], 2);
+    expect(clipsOf("video").map((x) => [x.start, +clipEnd(x).toFixed(6)])).toEqual([
+      [0, 1],
+      [1, 2],
+    ]);
+  });
+});

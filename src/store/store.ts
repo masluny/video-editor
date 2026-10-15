@@ -6,6 +6,8 @@ import {
   clipDuration,
   clipEnd,
   closeAllGaps,
+  cutToBeats,
+  isUnbounded,
   EPS,
   gapAt,
   closeGap,
@@ -48,7 +50,8 @@ export interface MediaRuntime {
 
 export interface Toast {
   id: Id;
-  kind: "info" | "success" | "error";
+  /** "busy" shows a spinner and stays until dismissed (work in progress). */
+  kind: "info" | "success" | "error" | "busy";
   message: string;
   action?: { label: string; run: () => void };
   /** A second, alternative action shown after the first. */
@@ -174,6 +177,13 @@ interface State {
   replaceWithRanges: (id: Id, ranges: [number, number][]) => number;
   closeGapAt: (trackId: Id, time: number) => void;
   closeTrackGaps: (trackId: Id) => void;
+  /**
+   * Re-cut the run of clips from the first to the last of `ids` (per track) so every cut
+   * lands on a marker, packing them end to end; later clips on the track ripple along.
+   * `every` gives each clip that many beats. Returns how many clips changed, or -1 when
+   * there's no marker after the run's start.
+   */
+  cutToBeat: (ids: Id[], every?: number) => number;
   /** Set how picture clips (all, or just `ids`) fit the frame. Returns how many changed. */
   fitClips: (fit: Clip["transform"]["fit"], ids?: Id[]) => number;
   /** Fill the bars behind picture clips (all, or `ids`) with their blurred copy, or not. */
@@ -1033,6 +1043,42 @@ export const useStore = create<State>()((set, get) => ({
     get().apply((p) => void (p.tracks.find((x) => x.id === trackId)!.clips = packed as Draft<Clip>[]));
   },
 
+  cutToBeat: (ids, every) => {
+    const { project } = get();
+    const fps = project.settings.fps;
+    const beats = [...new Set(project.markers.map((m) => snapToFrame(m.time, fps)))];
+    const want = new Set(ids);
+    const plans: { trackId: Id; clips: Clip[] }[] = [];
+    let changed = 0;
+    let anyBeats = false;
+    for (const t of project.tracks) {
+      const sel = t.locked ? [] : t.clips.filter((c) => want.has(c.id));
+      if (!sel.length) continue;
+      const first = Math.min(...sel.map((c) => c.start));
+      const last = Math.max(...sel.map((c) => c.start));
+      if (!beats.some((b) => b > first + MIN_CLIP)) continue;
+      anyBeats = true;
+      const run = sortClips(t.clips.filter((c) => c.start >= first - EPS && c.start <= last + EPS));
+      const room = (c: Clip) => {
+        const m = project.media.find((x) => x.id === c.mediaId);
+        return isUnbounded(c, m) ? Infinity : (m!.duration - c.in) / speedOf(c);
+      };
+      const laid = cutToBeats(run, beats, room, every);
+      const oldEnd = Math.max(...run.map(clipEnd));
+      const shift = clipEnd(laid[laid.length - 1]) - oldEnd;
+      const inRun = new Set(run.map((c) => c.id));
+      const rest = t.clips.filter((c) => !inRun.has(c.id)).map((c) => (c.start >= oldEnd - EPS && Math.abs(shift) > EPS ? { ...c, start: c.start + shift } : c));
+      changed += laid.filter((c, i) => Math.abs(c.start - run[i].start) > EPS || Math.abs(c.out - run[i].out) > EPS).length;
+      plans.push({ trackId: t.id, clips: sortClips([...rest, ...laid]) });
+    }
+    if (!anyBeats) return -1;
+    if (!changed) return 0;
+    get().apply((p) => {
+      for (const plan of plans) p.tracks.find((x) => x.id === plan.trackId)!.clips = plan.clips as Draft<Clip>[];
+    });
+    return changed;
+  },
+
   // ------------------------------------------------------------------ tracks
   addTrack: (kind) => get().apply((p) => insertTrack(p, newTrack(kind, nextTrackName(p as Project, kind)))),
 
@@ -1129,7 +1175,12 @@ export const useStore = create<State>()((set, get) => ({
 
   toast: (message, kind = "info", action, secondary) => {
     const t: Toast = { id: uid(), kind, message, action, secondary };
-    set((s) => ({ toasts: [...s.toasts.slice(-4), t] }));
+    // A few at a time: older ones make way (work in progress is kept while it runs).
+    set((s) => {
+      const busy = s.toasts.filter((x) => x.kind === "busy");
+      const rest = s.toasts.filter((x) => x.kind !== "busy").slice(-Math.max(0, 2 - busy.length));
+      return { toasts: [...s.toasts.filter((x) => busy.includes(x) || rest.includes(x)), t] };
+    });
     return t.id;
   },
   dismissToast: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
