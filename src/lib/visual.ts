@@ -46,3 +46,20 @@ export function fadeFactor(c: Clip, local: number): number {
 export function isDefaultColor(c: ColorAdjust): boolean {
   return cssFilter(c) === "none";
 }
+
+export type Corner = "top-left" | "top-right" | "bottom-left" | "bottom-right";
+
+/**
+ * Picture-in-picture: the clip (fitted whole) at `size` of its full-frame size, tucked into
+ * a corner with a margin of 4 % of the frame's short side. Returns its transform.
+ */
+export function cornerLayout(corner: Corner, mw: number, mh: number, W: number, H: number, size = 0.35): { scale: number; x: number; y: number } {
+  const box = fitBox(mw, mh, W, H, "contain");
+  const m = 0.04 * Math.min(W, H);
+  const [w, h] = [box.width * size, box.height * size];
+  return {
+    scale: size,
+    x: Math.round((W / 2 - w / 2 - m) * (corner.endsWith("left") ? -1 : 1)),
+    y: Math.round((H / 2 - h / 2 - m) * (corner.startsWith("top") ? -1 : 1)),
+  };
+}

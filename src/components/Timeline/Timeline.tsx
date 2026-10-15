@@ -640,10 +640,11 @@ function dissolveItems(clip: Clip, track: Track): MenuItem[] {
   const next = clipAfter(track, clip);
   if (!prev && !next) return [];
   const has = (c: Clip) => (c.transitionIn ?? 0) > 0;
+  const name = track.kind === "audio" ? "Crossfade" : "Cross dissolve";
   const toggle = (c: Clip) => () => s.setDissolve(c.id, has(c) ? 0 : DEFAULT_DISSOLVE);
   return [
-    ...(prev ? [{ label: has(clip) ? "Remove dissolve at start" : "Cross dissolve at start", icon: <Blend className="h-3.5 w-3.5" />, disabled: track.locked, onSelect: toggle(clip) }] : []),
-    ...(next ? [{ label: has(next) ? "Remove dissolve at end" : "Cross dissolve at end", icon: <Blend className="h-3.5 w-3.5" />, disabled: track.locked, onSelect: toggle(next) }] : []),
+    ...(prev ? [{ label: has(clip) ? `Remove ${name.toLowerCase()} at start` : `${name} at start`, icon: <Blend className="h-3.5 w-3.5" />, disabled: track.locked, onSelect: toggle(clip) }] : []),
+    ...(next ? [{ label: has(next) ? `Remove ${name.toLowerCase()} at end` : `${name} at end`, icon: <Blend className="h-3.5 w-3.5" />, disabled: track.locked, onSelect: toggle(next) }] : []),
   ];
 }
 
@@ -652,12 +653,13 @@ const DISSOLVE_LENGTHS = [0.25, 0.5, 1, 1.5, 2];
 /** Transition handles on the cuts of a track: a badge per dissolve, a "+" on plain cuts. */
 function Cuts({ track, zoom, height, viewStart, viewEnd }: { track: Track; zoom: number; height: number; viewStart: number; viewEnd: number }) {
   const s = store;
+  const name = track.kind === "audio" ? "Crossfade" : "Cross dissolve";
   const menu = (e: React.MouseEvent, to: Clip) => {
     const len = to.transitionIn ?? 0;
     openMenu(e, [
-      ...DISSOLVE_LENGTHS.map((d): MenuItem => ({ label: `Cross dissolve ${d}s`, checked: Math.abs(len - d) < 1e-3, onSelect: () => s().setDissolve(to.id, d) })),
+      ...DISSOLVE_LENGTHS.map((d): MenuItem => ({ label: `${name} ${d}s`, checked: Math.abs(len - d) < 1e-3, onSelect: () => s().setDissolve(to.id, d) })),
       { separator: true },
-      { label: "Dip to black instead", onSelect: () => s().dipToBlack(to.id, len || DEFAULT_DISSOLVE) },
+      { label: track.kind === "audio" ? "Fade out and in instead" : "Dip to black instead", onSelect: () => s().dipToBlack(to.id, len || DEFAULT_DISSOLVE) },
       { label: "Remove transition", danger: true, disabled: !(len > 0), onSelect: () => s().setDissolve(to.id, 0) },
     ]);
   };
@@ -676,7 +678,7 @@ function Cuts({ track, zoom, height, viewStart, viewEnd }: { track: Track; zoom:
               key={to.id}
               className="absolute z-[6] flex items-center justify-center rounded-md border border-black/30 bg-white/85 text-black shadow hover:bg-white"
               style={{ left: x - w / 2, width: w, top: (height - size) / 2, height: size }}
-              title={`Cross dissolve ${seconds(2 * d.half)} · click to change`}
+              title={`${name} ${seconds(2 * d.half)} · click to change`}
               onPointerDown={stop}
               onClick={(e) => menu(e, to)}
               onContextMenu={(e) => menu(e, to)}
@@ -690,7 +692,7 @@ function Cuts({ track, zoom, height, viewStart, viewEnd }: { track: Track; zoom:
             key={to.id}
             className="absolute z-[6] flex items-center justify-center rounded-full border border-black/30 bg-white/90 text-black opacity-0 shadow transition-opacity hover:opacity-100 group-hover/lane:opacity-70"
             style={{ left: x - size / 2, width: size, top: (height - size) / 2, height: size }}
-            title="Add a cross dissolve (T) · right-click for options"
+            title={`Add a ${name.toLowerCase()} (T) · right-click for options`}
             onPointerDown={stop}
             onClick={() => s().setDissolve(to.id, DEFAULT_DISSOLVE)}
             onContextMenu={(e) => menu(e, to)}

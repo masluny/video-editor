@@ -32,6 +32,7 @@ import { projectDuration } from "../../lib/timeline";
 import { clipBefore, dissolveInto } from "../../lib/transitions";
 import { DEFAULT_MOTION_AMOUNT, ENTRANCE_PRESETS, isEntrance, MOTION_PRESETS, motionAmount, motionPreset, type MotionPreset } from "../../lib/motion";
 import { cn } from "../../lib/cn";
+import { cornerLayout, type Corner } from "../../lib/visual";
 import { duckUnderVoice } from "../../lib/actions";
 import { useLocal } from "../../lib/useLocal";
 
@@ -315,6 +316,36 @@ function ClipInspector({ clip, track, media }: { clip: Clip; track: Track; media
               />
             </FieldRow>
           )}
+          {!isTitle && media && (
+            <FieldRow label="Place" hint="Picture-in-picture corners, or back to full frame">
+              <div className="flex flex-1 gap-1">
+                {(
+                  [
+                    ["top-left", "↖"],
+                    ["top-right", "↗"],
+                    ["bottom-left", "↙"],
+                    ["bottom-right", "↘"],
+                  ] as [Corner, string][]
+                ).map(([corner, arrow]) => (
+                  <button
+                    key={corner}
+                    className={chip(false)}
+                    title={`Small, ${corner.replace("-", " ")}`}
+                    onClick={() => {
+                      const { width: W, height: H } = store().project.settings;
+                      const l = cornerLayout(corner, media.width || W, media.height || H, W, H);
+                      upd((c) => void Object.assign(c.transform, { fit: "contain", scale: l.scale, x: l.x, y: l.y }));
+                    }}
+                  >
+                    {arrow}
+                  </button>
+                ))}
+                <button className={chip(false)} title="Full frame" onClick={() => upd((c) => void Object.assign(c.transform, { scale: 1, x: 0, y: 0 }))}>
+                  Full
+                </button>
+              </div>
+            </FieldRow>
+          )}
           <FieldRow label="Position">
             <NumberField label="X" {...num((c) => c.transform.x, (c, v) => void (c.transform.x = v))} suffix="px" className="flex-1" />
             <NumberField label="Y" {...num((c) => c.transform.y, (c, v) => void (c.transform.y = v))} suffix="px" className="flex-1" />
@@ -478,7 +509,7 @@ function TransitionSection({ clip, track }: { clip: Clip; track: Track }) {
   return (
     <Section id="transition" title="Transition in">
       <SliderField
-        label="Dissolve"
+        label={track.kind === "audio" ? "Crossfade" : "Dissolve"}
         value={len}
         min={0}
         max={10}
@@ -494,7 +525,7 @@ function TransitionSection({ clip, track }: { clip: Clip; track: Track }) {
       )}
       {len === 0 && (
         <Button size="sm" variant="ghost" onClick={() => store().dipToBlack(clip.id, 1)} title="Fade the previous clip out and this one in">
-          Dip to black
+          {track.kind === "audio" ? "Fade out and in" : "Dip to black"}
         </Button>
       )}
     </Section>
