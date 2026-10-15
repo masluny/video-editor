@@ -120,6 +120,10 @@ export function useShortcuts() {
           return handled(() => s.setTool("select"));
         case "n":
           return handled(() => s.toggleSnapping());
+        case "p": {
+          const on = !s.rippleMain;
+          return handled(() => (s.toggleRippleMain(), s.toast(on ? "Magnetic main track on: trims and deletes on V1 close up." : "Magnetic main track off: trims and deletes leave gaps.", "info")));
+        }
         case "m":
           return handled(() => s.addMarker());
         case "i":

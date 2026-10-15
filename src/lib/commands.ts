@@ -95,6 +95,7 @@ export function commands(): Command[] {
     { id: "marker", label: "Add marker", group: "Timeline", shortcut: "M", keywords: "flag", run: () => s().addMarker() },
     { id: "clear-markers", label: "Clear all markers", group: "Timeline", blocked: () => need(s().project.markers.length > 0, "No markers"), run: () => s().clearMarkers() },
     { id: "snapping", label: "Toggle snapping", group: "Timeline", shortcut: "N", keywords: "magnet magnetic snap", run: () => s().toggleSnapping() },
+    { id: "ripple-main", label: "Toggle magnetic main track", group: "Timeline", shortcut: "P", keywords: "ripple gaps close magnet primary storyline", run: () => s().toggleRippleMain() },
     // ---------------------------------------------------------------- audio
     {
       id: "match-video",

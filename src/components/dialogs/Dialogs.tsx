@@ -61,6 +61,8 @@ const SHORTCUTS: [string, [string, string][]][] = [
     [
       ["S  or  ⌘B", "Split at playhead"],
       ["Q / W", "Trim clip start / end to playhead (ripple)"],
+      ["⌘-drag edge", "Ripple trim (on V1: plain trim when magnetic)"],
+      ["⌥-drag cut", "Roll the cut between two clips"],
       ["⌥← / ⌥→", "Nudge selection one frame (Shift: ten)"],
       ["T", "Cross dissolve at the nearest cut"],
       ["⌥F", "Freeze the frame under the playhead (2s)"],
@@ -79,6 +81,7 @@ const SHORTCUTS: [string, [string, string][]][] = [
     [
       ["V / B", "Select / blade tool"],
       ["N", "Toggle snapping"],
+      ["P", "Magnetic main track (trims & deletes on V1 close gaps)"],
       ["M", "Add marker"],
       ["I / O", "Set range in / out"],
       ["⌥X", "Clear range"],

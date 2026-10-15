@@ -518,3 +518,19 @@ describe("keyframes", () => {
     expect(clip().keyframes!.opacity).toHaveLength(3);
   });
 });
+
+describe("magnetic main track", () => {
+  it("closes gaps when deleting on V1 only, unless turned off", () => {
+    const ids = [0, 2, 4].map((at) => st().placeMedia("v", { at, range: { in: 0, out: 2 } })!);
+    const over = st().placeTitle({ text: "Hi" }, { at: 0 })!;
+    st().placeTitle({ text: "Later" }, { at: 6 });
+    expect(st().rippleMain).toBe(true);
+    st().deleteClips([ids[0], over], false);
+    expect(clipsOf("video").filter((c) => c.type === "media").map((c) => c.start)).toEqual([0, 2]);
+    expect(clipsOf("video").filter((c) => c.type === "title").map((c) => c.start)).toEqual([6]); // titles lift
+    st().toggleRippleMain();
+    st().deleteClips([ids[1]], false);
+    expect(clipsOf("video").filter((c) => c.type === "media").map((c) => c.start)).toEqual([2]);
+    st().toggleRippleMain();
+  });
+});

@@ -9,6 +9,7 @@ import {
   Repeat,
   Snowflake,
   Clapperboard,
+  AlignHorizontalJustifyStart,
   Music2,
   Eye,
   EyeOff,
@@ -32,7 +33,8 @@ import {
   Type,
 } from "lucide-react";
 import type { Clip, Id, Track, TrackKind } from "../../lib/types";
-import { findClip, store, useStore, ZOOM_MAX, ZOOM_MIN } from "../../store/store";
+import type { Draft } from "immer";
+import { findClip, mainTrackId, store, useStore, ZOOM_MAX, ZOOM_MIN } from "../../store/store";
 import { useDrag } from "../../store/drag";
 import {
   clipDuration,
@@ -223,7 +225,9 @@ export function Timeline() {
         } else s.splitClipAt(clip.id, t);
         return;
       }
-      if (e.shiftKey || mod(e)) {
+      // Modifier-clicks on a clip's body add to the selection; on its edges they shape the
+      // trim (⌘ ripple, ⌥ roll, Shift no snapping).
+      if ((e.shiftKey || mod(e)) && grab === "move") {
         s.toggleSelect(clip.id);
         return;
       }
@@ -347,56 +351,84 @@ export function Timeline() {
     );
   }
 
+  /**
+   * Drag a clip edge. Plain: trim into empty space, stopping at neighbours. Ripple (the
+   * main track with its magnet on, or ⌘ elsewhere; ⌘ on the main track turns it off):
+   * later clips on the track move with the edge, so no gap opens. ⌥ on a cut between two
+   * clips: roll it, trimming both sides at once.
+   */
   function startTrim(clip: Clip, track: Track, left: boolean) {
     const s0 = store();
     const media = s0.project.media.find((m) => m.id === clip.mediaId);
     const b = sourceBounds(clip, media);
     const sp = speedOf(clip);
     const end = clipEnd(clip);
-    const others = track.clips.filter((c) => c.id !== clip.id);
+    const base = track.clips;
+    const others = base.filter((c) => c.id !== clip.id);
     const prevEnd = Math.max(0, ...others.filter((c) => clipEnd(c) <= clip.start + EPS).map(clipEnd));
     const nextStart = Math.min(Infinity, ...others.filter((c) => c.start >= end - EPS).map((c) => c.start));
+    // The clip across the cut, for a roll.
+    const partner = left ? others.find((c) => Math.abs(clipEnd(c) - clip.start) < EPS) : others.find((c) => Math.abs(c.start - end) < EPS);
+    const isMain = s0.rippleMain && track.id === mainTrackId(s0.project);
     // Trimming a tail (e.g. music down to the video's length): the end of the picture pulls hardest.
     const magnet = left ? undefined : videoEnd(s0.project.tracks, new Set([clip.id]));
+    // Fades never outlast the trimmed clip.
+    const fit = (c: Clip): Clip => {
+      const d = clipDuration(c);
+      const fadeIn = Math.min(c.fadeIn, d);
+      return { ...c, fadeIn, fadeOut: Math.min(c.fadeOut, d - fadeIn) };
+    };
+    // Every move restates the track from its state at the start of the drag.
+    const lay = (fn: (c: Clip) => Clip) =>
+      store().apply((p) => void (p.tracks.find((x) => x.id === track.id)!.clips = base.map(fn) as Draft<Clip>[]), { live: true });
     document.body.style.cursor = "ew-resize";
     trackDrag(
       (ev) => {
         const { time, guide } = snap(timeAt(ev.clientX), new Set([clip.id]), { disabled: ev.shiftKey, magnet });
+        const roll = ev.altKey && partner;
+        const ripple = !roll && isMain !== mod(ev);
         let edge: number;
-        if (left) {
-          const lo = Math.max(prevEnd, clip.start - (clip.in - b.min) / sp);
-          const t = Math.min(end - MIN_CLIP, Math.max(lo, time));
+        let label = "";
+        if (roll) {
+          // The outgoing clip's out and the incoming clip's in move together.
+          const [a, z] = left ? [partner, clip] : [clip, partner];
+          const ma = s0.project.media.find((m) => m.id === a.mediaId);
+          const mz = s0.project.media.find((m) => m.id === z.mediaId);
+          const [ba, bz] = [sourceBounds(a, ma), sourceBounds(z, mz)];
+          const lo = Math.max(a.start + MIN_CLIP, z.start - (z.in - bz.min) / speedOf(z));
+          const hi = Math.min(clipEnd(z) - MIN_CLIP, a.start + (ba.max - a.in) / speedOf(a));
+          const t = Math.min(hi, Math.max(lo, time));
           edge = t;
-          store().updateClip(
-            clip.id,
-            (c) => {
-              c.start = t;
-              c.in = clip.in + (t - clip.start) * sp;
-              const d = clipDuration(c as Clip);
-              c.fadeIn = Math.min(c.fadeIn, d);
-              c.fadeOut = Math.min(c.fadeOut, d - c.fadeIn);
-            },
-            { live: true },
+          label = "roll · ";
+          lay((c) =>
+            c.id === a.id ? fit({ ...c, out: a.in + (t - a.start) * speedOf(a) }) : c.id === z.id ? fit({ ...c, in: z.in + (t - z.start) * speedOf(z), start: t }) : c,
           );
+        } else if (ripple) {
+          // The clip keeps its start; everything after it on the track follows the change.
+          const t = left
+            ? Math.min(Math.max(time, clip.start - (clip.in - b.min) / sp), end - MIN_CLIP)
+            : Math.max(clip.start + MIN_CLIP, Math.min(clip.start + (b.max - clip.in) / sp, time));
+          const delta = left ? clip.start - t : t - end;
+          edge = left ? clip.start : t;
+          label = "ripple · ";
+          lay((c) => {
+            if (c.id === clip.id) return fit(left ? { ...c, in: clip.in + (t - clip.start) * sp } : { ...c, out: clip.in + (t - clip.start) * sp });
+            return c.start >= end - EPS ? { ...c, start: c.start + delta } : c;
+          });
+        } else if (left) {
+          const t = Math.min(end - MIN_CLIP, Math.max(prevEnd, clip.start - (clip.in - b.min) / sp, time));
+          edge = t;
+          lay((c) => (c.id === clip.id ? fit({ ...c, start: t, in: clip.in + (t - clip.start) * sp }) : c));
         } else {
-          const hi = Math.min(nextStart, clip.start + (b.max - clip.in) / sp);
-          const t = Math.max(clip.start + MIN_CLIP, Math.min(hi, time));
+          const t = Math.max(clip.start + MIN_CLIP, Math.min(nextStart, clip.start + (b.max - clip.in) / sp, time));
           edge = t;
-          store().updateClip(
-            clip.id,
-            (c) => {
-              c.out = clip.in + (t - clip.start) * sp;
-              const d = clipDuration(c as Clip);
-              c.fadeOut = Math.min(c.fadeOut, d);
-              c.fadeIn = Math.min(c.fadeIn, d - c.fadeOut);
-            },
-            { live: true },
-          );
+          lay((c) => (c.id === clip.id ? fit({ ...c, out: clip.in + (t - clip.start) * sp }) : c));
         }
         setGuide(guide);
-        const match = magnet != null && magnet > 0 && Math.abs(edge - magnet) < EPS;
-        const len = seconds(left ? end - edge : edge - clip.start);
-        setHint({ time: edge, trackId: track.id, text: match ? `${len} · ends with the video` : len, match });
+        const now = findClip(store().project, clip.id)?.clip;
+        const match = !roll && magnet != null && magnet > 0 && Math.abs(edge - magnet) < EPS;
+        const len = seconds(now ? clipDuration(now) : 0);
+        setHint({ time: edge, trackId: track.id, text: match ? `${len} · ends with the video` : label + len, match });
       },
       (_ev, cancelled) => {
         setGuide(null);
@@ -604,7 +636,7 @@ export function Timeline() {
                     />
                   );
                 })}
-                {!row.track.locked && tool !== "blade" && <Cuts track={row.track} zoom={zoom} height={row.height} viewStart={viewStart} viewEnd={viewEnd} />}
+                {!row.track.locked && tool !== "blade" && <Cuts track={row.track} zoom={zoom} viewStart={viewStart} viewEnd={viewEnd} />}
               </div>
             </div>
           ))}
@@ -658,7 +690,7 @@ function dissolveItems(clip: Clip, track: Track): MenuItem[] {
 const DISSOLVE_LENGTHS = [0.25, 0.5, 1, 1.5, 2];
 
 /** Transition handles on the cuts of a track: a badge per dissolve, a "+" on plain cuts. */
-function Cuts({ track, zoom, height, viewStart, viewEnd }: { track: Track; zoom: number; height: number; viewStart: number; viewEnd: number }) {
+function Cuts({ track, zoom, viewStart, viewEnd }: { track: Track; zoom: number; viewStart: number; viewEnd: number }) {
   const s = store;
   const name = track.kind === "audio" ? "Crossfade" : "Cross dissolve";
   const menu = (e: React.MouseEvent, to: Clip) => {
@@ -671,7 +703,9 @@ function Cuts({ track, zoom, height, viewStart, viewEnd }: { track: Track; zoom:
     ]);
   };
   const stop = (e: React.PointerEvent) => e.stopPropagation();
-  const size = Math.min(18, height - 12);
+  // On the clips' header strip, so the edges below stay free for trimming.
+  const size = 14;
+  const top = 5;
   return (
     <>
       {track.clips.map((to) => {
@@ -684,13 +718,13 @@ function Cuts({ track, zoom, height, viewStart, viewEnd }: { track: Track; zoom:
             <button
               key={to.id}
               className="absolute z-[6] flex items-center justify-center rounded-md border border-black/30 bg-white/85 text-black shadow hover:bg-white"
-              style={{ left: x - w / 2, width: w, top: (height - size) / 2, height: size }}
+              style={{ left: x - w / 2, width: w, top, height: size }}
               title={`${name} ${seconds(2 * d.half)} · click to change`}
               onPointerDown={stop}
               onClick={(e) => menu(e, to)}
               onContextMenu={(e) => menu(e, to)}
             >
-              <Blend className="h-3 w-3" />
+              <Blend className="h-2.5 w-2.5" />
             </button>
           );
         }
@@ -698,13 +732,13 @@ function Cuts({ track, zoom, height, viewStart, viewEnd }: { track: Track; zoom:
           <button
             key={to.id}
             className="absolute z-[6] flex items-center justify-center rounded-full border border-black/30 bg-white/90 text-black opacity-0 shadow transition-opacity hover:opacity-100 group-hover/lane:opacity-70"
-            style={{ left: x - size / 2, width: size, top: (height - size) / 2, height: size }}
+            style={{ left: x - size / 2, width: size, top, height: size }}
             title={`Add a ${name.toLowerCase()} (T) · right-click for options`}
             onPointerDown={stop}
             onClick={() => s().setDissolve(to.id, DEFAULT_DISSOLVE)}
             onContextMenu={(e) => menu(e, to)}
           >
-            <Plus className="h-3 w-3" />
+            <Plus className="h-2.5 w-2.5" />
           </button>
         );
       })}
@@ -755,6 +789,7 @@ function EdgeHint({ hint, rows, zoom }: { hint: Hint; rows: Row[]; zoom: number 
 function Toolbar({ size, onSize, onFit }: { size: TrackSize; onSize: (s: TrackSize) => void; onFit: () => void }) {
   const tool = useStore((s) => s.tool);
   const snapping = useStore((s) => s.snapping);
+  const ripple = useStore((s) => s.rippleMain);
   const zoom = useStore((s) => s.zoom);
   const hasSel = useStore((s) => s.selection.length > 0);
   const s = store;
@@ -773,6 +808,14 @@ function Toolbar({ size, onSize, onFit }: { size: TrackSize; onSize: (s: TrackSi
       <div className="mx-1 h-4 w-px bg-line" />
       <IconButton size="sm" title="Snapping (N)" active={snapping} onClick={() => s().toggleSnapping()}>
         <Magnet className="h-3.5 w-3.5" />
+      </IconButton>
+      <IconButton
+        size="sm"
+        title={`Magnetic main track (P): ${ripple ? "on" : "off"}. Trims and deletes on V1 close up instead of leaving gaps. While trimming, ⌘ flips this for any track and ⌥ rolls a cut.`}
+        active={ripple}
+        onClick={() => s().toggleRippleMain()}
+      >
+        <AlignHorizontalJustifyStart className="h-3.5 w-3.5" />
       </IconButton>
       <IconButton size="sm" title="Split at playhead (S)" onClick={() => s().splitAtPlayhead()}>
         <Scissors className="h-3.5 w-3.5" />

@@ -95,6 +95,8 @@ interface State {
   selectedMedia: Id | null;
   tool: Tool;
   snapping: boolean;
+  /** Magnetic main track: trims and deletes on V1 close up instead of leaving gaps. */
+  rippleMain: boolean;
   /** Pixels per second. */
   zoom: number;
   /** The viewer fills the window (F). */
@@ -238,6 +240,7 @@ interface State {
   setSelectedMedia: (id: Id | null) => void;
   setTool: (t: Tool) => void;
   toggleSnapping: () => void;
+  toggleRippleMain: () => void;
   setZoom: (z: number) => void;
   setFullscreen: (on: boolean) => void;
 
@@ -257,6 +260,11 @@ export const ZOOM_MAX = 600;
 const HISTORY_LIMIT = 200;
 
 const initial = newProject();
+
+/** The main (lowest) video track, V1. */
+export function mainTrackId(p: Project): Id | null {
+  return p.tracks.find((t) => t.kind === "video")?.id ?? null;
+}
 
 /** Whether any clip shows real footage (video or stills), not just titles. */
 function hasFootage(p: Project): boolean {
@@ -330,6 +338,7 @@ export const useStore = create<State>()((set, get) => ({
   selectedMedia: null,
   tool: "select",
   snapping: true,
+  rippleMain: true,
   zoom: 60,
   fullscreen: false,
   formatChosen: false,
@@ -639,11 +648,12 @@ export const useStore = create<State>()((set, get) => ({
   deleteClips: (ids, ripple) => {
     if (!ids.length) return;
     const del = new Set(ids);
+    const main = get().rippleMain ? mainTrackId(get().project) : null;
     get().apply((p) => {
       for (const t of p.tracks) {
         if (t.locked || !t.clips.some((c) => del.has(c.id))) continue;
         const all = plain(t.clips) as Clip[];
-        t.clips = (ripple ? rippleDelete(all, del) : all.filter((c) => !del.has(c.id))) as Draft<Clip>[];
+        t.clips = (ripple || t.id === main ? rippleDelete(all, del) : all.filter((c) => !del.has(c.id))) as Draft<Clip>[];
       }
     });
     pruneSelection();
@@ -1275,6 +1285,7 @@ export const useStore = create<State>()((set, get) => ({
   setSelectedMedia: (id) => set({ selectedMedia: id }),
   setTool: (t) => set({ tool: t }),
   toggleSnapping: () => set((s) => ({ snapping: !s.snapping })),
+  toggleRippleMain: () => set((s) => ({ rippleMain: !s.rippleMain })),
   setZoom: (z) => set({ zoom: Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z)) }),
   setFullscreen: (on) => set({ fullscreen: on }),
 
