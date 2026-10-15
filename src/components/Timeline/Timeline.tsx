@@ -2,6 +2,7 @@ import * as React from "react";
 import {
   ArrowLeftToLine,
   ArrowRightToLine,
+  AudioLines,
   Blend,
   Copy,
   FoldHorizontal,
@@ -52,7 +53,7 @@ import { seconds, timecode } from "../../lib/format";
 import { cn } from "../../lib/cn";
 import { MARKER_COLORS } from "../../lib/defaults";
 import { clipAfter, clipBefore, DEFAULT_DISSOLVE, dissolveInto } from "../../lib/transitions";
-import { addBeatMarkers, exportCaptions } from "../../lib/actions";
+import { addBeatMarkers, duckUnderVoice, exportCaptions } from "../../lib/actions";
 
 interface Row {
   track: Track;
@@ -439,7 +440,13 @@ export function Timeline() {
       { label: "Cut", shortcut: "⌘X", disabled: track.locked, onSelect: () => s.cut() },
       { separator: true },
     ];
-    if (track.kind === "audio") items.push(...videoLengthItems(clip, ids, track), { separator: true });
+    if (track.kind === "audio")
+      items.push(
+        ...videoLengthItems(clip, ids, track),
+        { label: "Duck under voice", icon: <AudioLines className="h-3.5 w-3.5" />, disabled: track.locked, onSelect: () => duckUnderVoice(ids) },
+        ...(clip.volumePoints ? [{ label: "Clear volume changes", disabled: track.locked, onSelect: () => s.clearVolumeChanges(ids) } as MenuItem] : []),
+        { separator: true },
+      );
     if (hasAudio)
       items.push(
         { label: "Add beat markers", icon: <Flag className="h-3.5 w-3.5" />, onSelect: () => void addBeatMarkers(clip.id) },

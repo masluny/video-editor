@@ -174,6 +174,8 @@ pub struct Clip {
     pub transition_in: f64,
     /// Zoom / pan across the clip (src/lib/motion.ts).
     pub motion: Option<Motion>,
+    /// Volume envelope in source time (src/lib/envelope.ts).
+    pub volume_points: Vec<VolumePoint>,
 }
 
 impl Default for Clip {
@@ -196,6 +198,7 @@ impl Default for Clip {
             fade_out: 0.0,
             transition_in: 0.0,
             motion: None,
+            volume_points: vec![],
         }
     }
 }
@@ -222,6 +225,20 @@ pub enum Fit {
     Contain,
     Cover,
     Stretch,
+}
+
+/// A gain at a source (media) time; linear in between, held outside.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VolumePoint {
+    pub t: f64,
+    pub gain: f64,
+}
+
+impl Default for VolumePoint {
+    fn default() -> Self {
+        Self { t: 0.0, gain: 1.0 }
+    }
 }
 
 /// One end of a clip's motion: multiplies its scale and offsets it (project pixels).

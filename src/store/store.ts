@@ -29,6 +29,7 @@ import type { Waveform } from "../lib/backend";
 import { seconds, stripExtension } from "../lib/format";
 import { clipBefore, DEFAULT_DISSOLVE } from "../lib/transitions";
 import type { Cue } from "../lib/subtitles";
+import { DUCK_DEFAULTS, duckingPoints, speechRegions } from "../lib/envelope";
 
 export type Tool = "select" | "blade";
 export type PlaceMode = "overwrite" | "insert";
@@ -139,6 +140,12 @@ interface State {
   matchVideoLength: (ids: Id[], fadeOut?: number) => number;
   /** Repeat an audio clip until it reaches the end of the picture. Returns the copies added. */
   loopToVideoLength: (id: Id) => number;
+  /**
+   * Lower audio-track clips wherever other audible clips have sound (dialogue, voice-over),
+   * from their waveforms. Returns how many clips got ducked, or -1 while waveforms load.
+   */
+  duckUnderVoice: (ids: Id[]) => number;
+  clearVolumeChanges: (ids: Id[]) => void;
   /** Cross-dissolve into a clip from the one before it (0 removes it). */
   setDissolve: (id: Id, seconds: number) => void;
   /** Turn the cut into a clip into a dip to black: fade out, then in. */
@@ -686,6 +693,45 @@ export const useStore = create<State>()((set, get) => ({
     set({ selection: [id, ...copies.map((x) => x.id)] });
     return copies.length;
   },
+
+  duckUnderVoice: (ids) => {
+    const { project, runtime } = get();
+    const targets = ids.map((id) => findClip(project, id)).filter((h): h is NonNullable<typeof h> => !!h && h.track.kind === "audio" && !h.track.locked);
+    if (!targets.length) return 0;
+    // Speech is whatever other audible clips play: everything off the music's own tracks.
+    const musicTracks = new Set(targets.map((h) => h.track.id));
+    const anySolo = project.tracks.some((t) => t.solo);
+    const speech: [number, number][] = [];
+    for (const t of project.tracks) {
+      if (musicTracks.has(t.id) || t.muted || (anySolo && !t.solo)) continue;
+      for (const c of t.clips) {
+        const m = c.type === "media" ? project.media.find((x) => x.id === c.mediaId) : undefined;
+        if (!m?.hasAudio || m.kind === "image" || c.muted || c.volume <= 0) continue;
+        const wf = runtime[m.id]?.waveform;
+        if (!wf) return -1;
+        const first = Math.floor(c.in * wf.rate);
+        const levels = wf.peaks.slice(first, Math.ceil(c.out * wf.rate)).map((v) => v / 255);
+        const toTimeline = (s: number) => c.start + (Math.min(c.out, Math.max(c.in, s)) - c.in) / speedOf(c);
+        for (const [a, b] of speechRegions(levels, wf.rate)) speech.push([toTimeline(first / wf.rate + a), toTimeline(first / wf.rate + b)]);
+      }
+    }
+    const want = new Set(targets.map((h) => h.clip.id));
+    let ducked = 0;
+    get().apply((p) => {
+      for (const t of p.tracks)
+        for (const c of t.clips) {
+          if (!want.has(c.id)) continue;
+          const pts = duckingPoints(speech, [c.start, clipEnd(c as Clip)], (x) => c.in + (x - c.start) * speedOf(c as Clip), DUCK_DEFAULTS);
+          if (pts.length) {
+            c.volumePoints = pts;
+            ducked++;
+          } else delete c.volumePoints;
+        }
+    });
+    return ducked;
+  },
+
+  clearVolumeChanges: (ids) => get().updateClips(ids, (c) => void delete c.volumePoints),
 
   setDissolve: (id, seconds) =>
     get().updateClip(id, (c) => {

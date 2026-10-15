@@ -3,6 +3,7 @@ import { AlertTriangle, Gauge, Move, Type, VolumeX } from "lucide-react";
 import type { Clip, MediaAsset, Track } from "../../lib/types";
 import type { MediaRuntime } from "../../store/store";
 import { clipDuration, speedOf } from "../../lib/timeline";
+import { gainAt } from "../../lib/envelope";
 import { fileUrl, type Waveform } from "../../lib/backend";
 import { isDefaultColor } from "../../lib/visual";
 import { cn } from "../../lib/cn";
@@ -96,6 +97,7 @@ export const ClipView = React.memo(function ClipView({
           dim={clip.muted || track.muted}
         />
       )}
+      {clip.volumePoints && <VolumeLine clip={clip} zoom={zoom} width={width} height={height} />}
       {missing && <div className="absolute inset-0 bg-[repeating-linear-gradient(45deg,rgba(239,91,91,0.25)_0_6px,transparent_6px_12px)]" />}
 
       {/* Fades */}
@@ -288,5 +290,25 @@ function WaveformView({
       className={cn("pointer-events-none absolute", className, dim && "opacity-40")}
       style={{ left, width, height }}
     />
+  );
+}
+
+/** The clip's volume envelope (e.g. ducking) as a line: top = full volume, bottom = silent. */
+function VolumeLine({ clip, zoom, width, height }: { clip: Clip; zoom: number; width: number; height: number }) {
+  const pts = clip.volumePoints!;
+  const sp = speedOf(clip);
+  const [top, bottom] = [18, height - 8];
+  const y = (g: number) => top + (1 - Math.min(1, Math.max(0, g))) * (bottom - top);
+  const x = (s: number) => ((s - clip.in) / sp) * zoom;
+  const inside = pts.filter((p) => p.t > clip.in && p.t < clip.out);
+  const line = [
+    [0, y(gainAt(pts, clip.in))],
+    ...inside.map((p) => [x(p.t), y(p.gain)]),
+    [width, y(gainAt(pts, clip.out))],
+  ];
+  return (
+    <svg className="pointer-events-none absolute left-0 top-0" width={width} height={height}>
+      <polyline points={line.map(([a, b]) => `${a.toFixed(1)},${b.toFixed(1)}`).join(" ")} fill="none" stroke="#ffd84f" strokeWidth={1.5} strokeLinejoin="round" />
+    </svg>
   );
 }

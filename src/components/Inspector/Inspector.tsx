@@ -9,6 +9,7 @@ import {
   FlipVertical2,
   Image as ImageIcon,
   ArrowRightToLine,
+  AudioLines,
   Italic,
   Music,
   Repeat,
@@ -31,6 +32,7 @@ import { projectDuration } from "../../lib/timeline";
 import { clipBefore, dissolveInto } from "../../lib/transitions";
 import { DEFAULT_MOTION_AMOUNT, MOTION_PRESETS, motionAmount, motionPreset, type MotionPreset } from "../../lib/motion";
 import { cn } from "../../lib/cn";
+import { duckUnderVoice } from "../../lib/actions";
 import { useLocal } from "../../lib/useLocal";
 
 export function Inspector() {
@@ -335,6 +337,20 @@ function ClipInspector({ clip, track, media }: { clip: Clip; track: Track; media
             <Switch checked={clip.muted} onChange={(m) => upd((c) => void (c.muted = m))} />
           </FieldRow>
           {track.kind === "audio" && <VideoLength clip={clip} />}
+          {track.kind === "audio" && (
+            <FieldRow label="Voice">
+              <div className="flex flex-1 flex-wrap items-center gap-1.5">
+                <Button size="sm" onClick={() => duckUnderVoice([id])} title="Lower this clip wherever other tracks have speech or sound">
+                  <AudioLines className="h-3.5 w-3.5" /> {clip.volumePoints ? "Duck again" : "Duck under voice"}
+                </Button>
+                {clip.volumePoints && (
+                  <Button size="sm" variant="ghost" onClick={() => store().clearVolumeChanges([id])}>
+                    Clear
+                  </Button>
+                )}
+              </div>
+            </FieldRow>
+          )}
           <div className="flex flex-wrap gap-2 pt-1">
             <Button size="sm" onClick={() => store().openDialog({ kind: "silence", clipId: id })} title="Find pauses in the audio and cut them out">
               <Wand2 className="h-3.5 w-3.5 text-accent-ink" /> Remove silences…

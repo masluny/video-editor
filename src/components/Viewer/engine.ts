@@ -19,7 +19,8 @@ import { cssClipPath, cssFilter, fadeFactor, fitBox } from "../../lib/visual";
 import { titleImageUrl } from "../../lib/title";
 import { dissolveAt, dissolveGain, dissolveMix } from "../../lib/transitions";
 import { motionAt } from "../../lib/motion";
-import { Slot, Transport, type Voice } from "./playback";
+import { gainAt } from "../../lib/envelope";
+import { mediaTime, Slot, Transport, type Voice } from "./playback";
 
 export interface EngineHost {
   project(): Project;
@@ -258,7 +259,7 @@ export class Engine {
 
   private gain(track: Track, clip: Clip, t: number, audible: boolean): number {
     if (!audible || clip.muted || this.master.muted) return 0;
-    const g = this.master.volume * track.volume * clip.volume * fadeFactor(clip, t - clip.start) * dissolveGain(track, clip, t);
+    const g = this.master.volume * track.volume * clip.volume * fadeFactor(clip, t - clip.start) * dissolveGain(track, clip, t) * gainAt(clip.volumePoints, mediaTime(clip, t));
     return Math.max(0, Math.min(1, g));
   }
 

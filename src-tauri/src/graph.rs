@@ -13,12 +13,14 @@
 //!   runs on holding its last frame underneath, and the sound dips across the cut.
 //!   Mirrors `src/lib/transitions.ts`;
 //! * motion (Ken Burns) rescales the finished layer every frame and moves it in the
-//!   overlay, both linear in the progress through the clip (`src/lib/motion.ts`).
+//!   overlay, both linear in the progress through the clip (`src/lib/motion.ts`);
+//! * a volume envelope (source-time gain points, e.g. from ducking) becomes a
+//!   piecewise-linear `volume` expression (`src/lib/envelope.ts`).
 //!
 //! No user-provided strings ever end up inside the filtergraph: media is passed
 //! with `-i`, titles arrive as pre-rendered PNGs, and numbers are formatted here.
 
-use crate::model::{Clip, ClipKind, Fit, MediaKind, Project, TrackKind};
+use crate::model::{Clip, ClipKind, Fit, MediaKind, Project, TrackKind, VolumePoint};
 use crate::util::f;
 use anyhow::{anyhow, Result};
 use serde::Deserialize;
@@ -154,6 +156,30 @@ fn dissolve_half(track: &[Clip], clip: &Clip) -> f64 {
 fn dissolves(track: &[Clip], clip: &Clip) -> (f64, f64) {
     let next = track.iter().find(|c| !std::ptr::eq(*c, clip) && (c.start - clip.end()).abs() < CUT_EPS);
     (dissolve_half(track, clip), next.map_or(0.0, |n| dissolve_half(track, n)))
+}
+
+/// `volume` expression for a clip's envelope over its rendered span: `t` runs from 0 at
+/// the span start, which is source time `src_in`. None when it leaves the gain at 1.
+fn envelope(points: &[VolumePoint], src_in: f64, speed: f64, dur: f64) -> Option<String> {
+    let mut pts: Vec<(f64, f64)> = points.iter().filter(|p| p.t.is_finite()).map(|p| ((p.t - src_in) / speed, p.gain.clamp(0.0, 4.0))).collect();
+    pts.sort_by(|a, b| a.0.total_cmp(&b.0));
+    // Only the points that shape [0, dur]: the last one before it, those inside, the first after.
+    let first = pts.iter().rposition(|p| p.0 <= 0.0).unwrap_or(0);
+    let last = pts.iter().position(|p| p.0 >= dur).unwrap_or(pts.len().saturating_sub(1));
+    let pts = pts.get(first..=last)?;
+    if pts.iter().all(|p| (p.1 - 1.0).abs() < 1e-4) {
+        return None;
+    }
+    let mut terms = vec![format!("{}*lt(t,{})", f(pts[0].1), f(pts[0].0))];
+    for w in pts.windows(2) {
+        let ((a, ga), (b, gb)) = (w[0], w[1]);
+        if b - a > 1e-6 {
+            terms.push(format!("gte(t,{})*lt(t,{})*({}{}*(t{})/{})", f(a), f(b), f(ga), signed(gb - ga), signed(-a), f(b - a)));
+        }
+    }
+    let end = pts[pts.len() - 1];
+    terms.push(format!("{}*gte(t,{})", f(end.1), f(end.0)));
+    Some(terms.join("+"))
 }
 
 fn even(v: f64) -> u32 {
@@ -513,6 +539,11 @@ pub fn build(
                 chain.push(format!("atrim=duration={}", f(sp.dur)));
                 if (gain - 1.0).abs() > 1e-4 {
                     chain.push(format!("volume={}", f(gain)));
+                }
+                if let Some(expr) = envelope(&clip.volume_points, sp.src_in, clip.speed(), sp.dur) {
+                    // Small frames so the gain moves in 5 ms steps, not 20 ms ones.
+                    chain.push("asetnsamples=n=256:p=0".into());
+                    chain.push(format!("volume='{expr}':eval=frame"));
                 }
                 let fade_in = (clip.fade_in - sp.head).max(0.0).min(sp.dur);
                 let fade_out = (clip.fade_out - sp.tail).max(0.0).min(sp.dur);
@@ -1025,6 +1056,42 @@ mod tests {
         run(&p, &ExportSettings::default(), Some((3.0, 4.0)), &half);
         assert!(pixel(&half, 0.02, 80, 45)[0] > 200, "range starts with the square centred");
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn volume_envelope_ducks_music_on_its_own_clock() {
+        if !ffmpeg_ok() { return; }
+        let d = tmpdir();
+        let music = d.join("music.mp4");
+        solid(&music, "black", 160, 90, 12.0, Some(440));
+        let mut p = project(160, 90);
+        p.media = vec![media("m", &music, 160, 90, 12.0, true)];
+        // Ducked to 1/4 between source 4s and 6s (ramps 3.5-4 and 6-6.5), and the clip
+        // uses source 2s.. from timeline 1s, so the dip lands at timeline 3s-5s.
+        let mut c = clip("c", "m", 1.0, 2.0, 8.0);
+        c.volume_points = vec![
+            VolumePoint { t: 3.5, gain: 1.0 },
+            VolumePoint { t: 4.0, gain: 0.25 },
+            VolumePoint { t: 6.0, gain: 0.25 },
+            VolumePoint { t: 6.5, gain: 1.0 },
+        ];
+        p.tracks[2].clips.push(c);
+        let out = d.join("duck.mp4");
+        run(&p, &ExportSettings::default(), None, &out);
+        let (full, ducked, after) = (mean_volume(&out, 1.5, 0.5), mean_volume(&out, 3.5, 1.0), mean_volume(&out, 6.0, 0.5));
+        assert!((full - ducked - 12.0).abs() < 1.5, "ducked by ~12 dB: {full} -> {ducked}");
+        assert!((full - after).abs() < 1.0, "back up after: {full} vs {after}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn envelope_expression_keeps_only_what_shapes_the_span() {
+        let pts = |v: &[(f64, f64)]| v.iter().map(|&(t, gain)| VolumePoint { t, gain }).collect::<Vec<_>>();
+        assert_eq!(envelope(&pts(&[(0.0, 1.0), (9.0, 1.0)]), 0.0, 1.0, 5.0), None);
+        assert_eq!(envelope(&[], 0.0, 1.0, 5.0), None);
+        // Only (4, 0.5) and (20, 1) matter for source 5..10 at 2x speed (t = 0..2.5).
+        let e = envelope(&pts(&[(1.0, 1.0), (4.0, 0.5), (20.0, 1.0), (30.0, 0.0)]), 5.0, 2.0, 2.5).unwrap();
+        assert_eq!(e, "0.5*lt(t,-0.5)+gte(t,-0.5)*lt(t,7.5)*(0.5+0.5*(t+0.5)/8)+1*gte(t,7.5)");
     }
 
     #[test]

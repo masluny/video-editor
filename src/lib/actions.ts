@@ -78,6 +78,15 @@ export async function exportCaptions(trackId: Id) {
   }
 }
 
+/** Lower music under the speech on other tracks, with feedback. */
+export function duckUnderVoice(ids: Id[]) {
+  const s = store();
+  const n = s.duckUnderVoice(ids);
+  if (n < 0) s.toast("Still reading the sound of your clips. Try again in a moment.", "info");
+  else if (n === 0) s.toast("No speech or other sound found on the other tracks to duck under.", "info");
+  else s.toast(`Lowered ${n > 1 ? `${n} clips` : "the music"} under speech. The line on the clip shows its volume.`, "success");
+}
+
 /** Find the beat of a clip's sound and put a marker on every `every`-th beat. */
 export async function addBeatMarkers(clipId: Id, every = 1) {
   const s = store();

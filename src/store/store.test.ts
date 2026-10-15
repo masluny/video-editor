@@ -217,6 +217,23 @@ describe("captions", () => {
   });
 });
 
+describe("ducking", () => {
+  it("lowers music under the sound of the other tracks, once their waveforms are known", () => {
+    st().placeMedia("v", { at: 0, range: { in: 0, out: 6 } }); // talking head on V1
+    const song = st().placeMedia("s", { at: 0, range: { in: 10, out: 20 } })!; // music from source 10s
+    expect(st().duckUnderVoice([song])).toBe(-1); // waveform of the talk not read yet
+    const peaks = new Array(1000).fill(3);
+    for (let i = 200; i < 400; i++) peaks[i] = 180; // the talk speaks from 2s to 4s
+    st().setRuntime("v", { waveform: { rate: 100, peaks } });
+    expect(st().duckUnderVoice([song])).toBe(1);
+    const pts = findClip(st().project, song)!.clip.volumePoints!;
+    // Timeline 2s..4s is source 12s..14s of the song.
+    expect(pts.map((p) => [+p.t.toFixed(2), p.gain])).toEqual([[11.7, 1], [12, 0.25], [14, 0.25], [14.6, 1]]);
+    st().clearVolumeChanges([song]);
+    expect(findClip(st().project, song)!.clip.volumePoints).toBeUndefined();
+  });
+});
+
 describe("pro edits", () => {
   it("ripple-trims the clip under the playhead (Q / W)", () => {
     const a = st().placeMedia("v", { at: 0 })!;

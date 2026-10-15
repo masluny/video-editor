@@ -1,6 +1,7 @@
 // Project document (v2). Mirrored in src-tauri/src/model.rs — keep in sync.
 
 import type { Motion } from "./motion";
+import type { VolumePoint } from "./envelope";
 
 export type Id = string;
 
@@ -154,6 +155,8 @@ export interface Clip {
   transitionIn?: number;
   /** Zoom / pan across the clip (see lib/motion.ts). */
   motion?: Motion;
+  /** Volume envelope in source time, e.g. from ducking (see lib/envelope.ts). */
+  volumePoints?: VolumePoint[];
   title?: TitleStyle;
   /** Optional user label shown on the clip. */
   label?: string;

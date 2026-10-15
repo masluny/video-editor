@@ -6,6 +6,7 @@ import { defaultColor, defaultCrop, defaultTitleStyle, defaultTransform, newProj
 import { uid } from "./uid";
 import { basename } from "./format";
 import type { Motion, MotionPreset } from "./motion";
+import type { VolumePoint } from "./envelope";
 
 type Json = Record<string, any>;
 
@@ -67,6 +68,15 @@ function motion(m: Json | undefined): Motion | undefined {
   const point = (p: Json) => ({ scale: num(p.scale, 1, 0.05, 20), x: num(p.x, 0), y: num(p.y, 0) });
   const presets: MotionPreset[] = ["zoom-in", "zoom-out", "pan-left", "pan-right", "pan-up", "pan-down"];
   return { preset: presets.includes(m.preset) ? m.preset : undefined, from: point(m.from), to: point(m.to) };
+}
+
+function volumePoints(v: Json | undefined): VolumePoint[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  const pts = v
+    .filter((p: Json) => p && Number.isFinite(p.t))
+    .map((p: Json) => ({ t: p.t as number, gain: num(p.gain, 1, 0, 4) }))
+    .sort((a: VolumePoint, b: VolumePoint) => a.t - b.t);
+  return pts.length ? pts : undefined;
 }
 
 function crop(c: Json | undefined): Crop {
@@ -139,6 +149,7 @@ function clip(c: Json, mediaIds: Set<string>): Clip | null {
     fadeOut: num(c.fadeOut, 0, 0),
     transitionIn: num(c.transitionIn, 0, 0, 10) || undefined,
     motion: motion(c.motion),
+    volumePoints: volumePoints(c.volumePoints),
     title: type === "title" ? titleStyle(c.title) : undefined,
     label: typeof c.label === "string" && c.label ? c.label : undefined,
   };
