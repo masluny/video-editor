@@ -318,7 +318,32 @@ function scaledTitleStyle(style: Partial<TitleStyle> | undefined, settings: Proj
 function clipsUnder(p: Project, t: number, selection: Id[]): Clip[] {
   const sel = new Set(selection);
   const targets = p.tracks.flatMap((tr) => (tr.locked ? [] : tr.clips.filter((c) => t > c.start + EPS && t < clipEnd(c) - EPS)));
-  return sel.size && targets.some((c) => sel.has(c.id)) ? targets.filter((c) => sel.has(c.id)) : targets;
+  if (!sel.size || !targets.some((c) => sel.has(c.id))) return targets;
+  // A video and its detached audio are cut together.
+  const picked = targets.filter((c) => sel.has(c.id));
+  const ids = new Set(picked.map((c) => c.id));
+  return targets.filter((c) => ids.has(c.id) || (c.link && ids.has(c.link)) || picked.some((x) => x.link === c.id));
+}
+
+/**
+ * Split `ids` at `t` on every unlocked track, in a draft. Detached audio cut together with
+ * its video links its right half to the video's right half. Returns old id → right half id.
+ */
+function splitInDraft(p: Draft<Project>, ids: Set<Id>, t: number): Map<Id, Id> {
+  const right = new Map<Id, Id>();
+  for (const tr of p.tracks) {
+    if (tr.locked) continue;
+    const out: Clip[] = [];
+    for (const c of plain(tr.clips) as Clip[]) {
+      const parts = ids.has(c.id) ? split(c, t) : null;
+      if (parts) right.set(c.id, parts[1].id);
+      out.push(...(parts ?? [c]));
+    }
+    tr.clips = out as Draft<Clip>[];
+  }
+  for (const tr of p.tracks)
+    for (const c of tr.clips) if (c.link && [...right.values()].includes(c.id) && right.has(c.link)) c.link = right.get(c.link);
+  return right;
 }
 
 /** First track of `kind` that is unlocked and has room for [start, start+len). */
@@ -717,38 +742,24 @@ export const useStore = create<State>()((set, get) => ({
 
   splitAtPlayhead: () => {
     const { playhead, selection, project } = get();
-    const sel = new Set(selection);
     const chosen = clipsUnder(project, playhead, selection);
     if (!chosen.length) return;
     const ids = new Set(chosen.map((c) => c.id));
-    const newSel: Id[] = [];
-    get().apply((p) => {
-      for (const t of p.tracks) {
-        if (t.locked) continue;
-        const out: Clip[] = [];
-        for (const c of plain(t.clips) as Clip[]) {
-          const parts = ids.has(c.id) ? split(c, playhead) : null;
-          if (parts) {
-            out.push(...parts);
-            if (sel.has(c.id)) newSel.push(parts[1].id);
-          } else out.push(c);
-        }
-        t.clips = out as Draft<Clip>[];
-      }
-    });
+    let right = new Map<Id, Id>();
+    get().apply((p) => void (right = splitInDraft(p, ids, playhead)));
+    const newSel = selection.filter((id) => right.has(id)).map((id) => right.get(id)!);
     if (newSel.length) set({ selection: newSel });
   },
 
   splitClipAt: (id, time) => {
-    get().apply((p) => {
-      for (const t of p.tracks) {
-        if (t.locked) continue;
-        const i = t.clips.findIndex((c) => c.id === id);
-        if (i < 0) continue;
-        const parts = split(plain(t.clips[i]) as Clip, time);
-        if (parts) t.clips.splice(i, 1, ...(parts as Draft<Clip>[]));
-      }
-    });
+    const { project } = get();
+    const hit = findClip(project, id);
+    if (!hit) return;
+    // The blade cuts a video and its detached audio together.
+    const ids = new Set([id]);
+    for (const t of project.tracks)
+      for (const c of t.clips) if ((c.link === id || hit.clip.link === c.id) && time > c.start + EPS && time < clipEnd(c) - EPS) ids.add(c.id);
+    get().apply((p) => void splitInDraft(p, ids, time));
   },
 
   splitClipAtTimes: (id, times) => {

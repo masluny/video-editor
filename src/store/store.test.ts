@@ -630,3 +630,21 @@ describe("detached audio stays in sync", () => {
     expect(findClip(st().project, st().selection[0])!.clip.link).toBeUndefined();
   });
 });
+
+describe("splitting linked clips", () => {
+  it("cuts a video and its detached audio together and links the halves", () => {
+    const a = st().placeMedia("v", { at: 0, range: { in: 0, out: 4 } })!;
+    st().detachAudio(a);
+    st().select([a]);
+    st().seek(1.5);
+    st().splitAtPlayhead();
+    const audio = st().project.tracks.filter((t) => t.kind === "audio").flatMap((t) => t.clips);
+    const video = clipsOf("video");
+    expect(audio.map((c) => c.start)).toEqual([0, 1.5]);
+    expect(audio.map((c) => c.link)).toEqual(video.map((c) => c.id));
+    // The blade does the same from the audio side.
+    st().splitClipAt(audio[1].id, 3);
+    const after = st().project.tracks.filter((t) => t.kind === "audio").flatMap((t) => t.clips);
+    expect(after.map((c) => c.link)).toEqual(clipsOf("video").map((c) => c.id));
+  });
+});
