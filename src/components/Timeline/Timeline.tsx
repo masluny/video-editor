@@ -52,6 +52,7 @@ import { seconds, timecode } from "../../lib/format";
 import { cn } from "../../lib/cn";
 import { MARKER_COLORS } from "../../lib/defaults";
 import { clipAfter, clipBefore, DEFAULT_DISSOLVE, dissolveInto } from "../../lib/transitions";
+import { exportCaptions } from "../../lib/actions";
 
 interface Row {
   track: Track;
@@ -816,6 +817,7 @@ function trackMenu(track: Track): MenuItem[] {
     { label: "Add audio track", onSelect: () => s.addTrack("audio") },
     { separator: true },
     { label: track.locked ? "Unlock track" : "Lock track", onSelect: () => s.updateTrack(track.id, { locked: !track.locked }) },
+    ...(track.clips.some((c) => c.type === "title") ? [{ label: "Export titles as captions (.srt)…", onSelect: () => void exportCaptions(track.id) } as MenuItem] : []),
     { label: `Delete ${track.name}`, danger: true, onSelect: () => s.removeTrack(track.id) },
   ];
 }
@@ -848,11 +850,11 @@ const TrackHeader = React.memo(function TrackHeader({ track, height }: { track: 
             }}
           />
         ) : (
-          <span className="w-10 truncate text-xs font-semibold text-ink" onDoubleClick={() => setEditing(true)} title="Double-click to rename">
+          <span className="min-w-0 flex-1 truncate text-xs font-semibold text-ink" onDoubleClick={() => setEditing(true)} title={`${track.name} · double-click to rename`}>
             {track.name}
           </span>
         )}
-        <div className="ml-auto flex items-center">
+        <div className="ml-auto flex shrink-0 items-center">
           {isVideo && (
             <IconButton size="xs" title={track.hidden ? "Show track" : "Hide track"} active={track.hidden} tone="danger" onClick={() => s().updateTrack(track.id, { hidden: !track.hidden })}>
               {track.hidden ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}

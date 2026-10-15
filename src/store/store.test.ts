@@ -178,6 +178,30 @@ describe("music and the video's length", () => {
   });
 });
 
+describe("captions", () => {
+  it("puts cues on a new captions track on top, styled as subtitles, in one undo step", () => {
+    st().placeMedia("v", { at: 0 }); // 1080×1920 project
+    st().placeMedia("v", { at: 0 });
+    const before = st().past.length;
+    const n = st().addCaptions([
+      { start: 1, end: 3, text: "Hello" },
+      { start: 2.5, end: 4, text: "Overlaps the first" },
+      { start: 5, end: 5.01, text: "too short" },
+    ], 0.5);
+    expect(n).toBe(2);
+    expect(st().past.length).toBe(before + 1);
+    const videos = st().project.tracks.filter((t) => t.kind === "video");
+    const captions = videos[videos.length - 1];
+    expect(captions.name).toBe("Captions");
+    expect(captions.clips.map((c) => [c.start, +clipEnd(c).toFixed(6), c.title!.text, c.fadeIn])).toEqual([
+      [1.5, 3, "Hello", 0],
+      [3, 4.5, "Overlaps the first", 0],
+    ]);
+    // The 1080p subtitle preset, scaled to the 1080-wide frame, sits at the bottom.
+    expect(captions.clips[0].title).toMatchObject({ fontSize: 56, y: 88, box: true });
+  });
+});
+
 describe("pro edits", () => {
   it("ripple-trims the clip under the playhead (Q / W)", () => {
     const a = st().placeMedia("v", { at: 0 })!;

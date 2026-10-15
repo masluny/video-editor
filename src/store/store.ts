@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { current, isDraft, produce, type Draft } from "immer";
-import type { Clip, Id, MediaAsset, Project, ProjectSettings, Track, TrackKind } from "../lib/types";
-import { mediaClip, newProject, newTrack, titleClip, MARKER_COLORS } from "../lib/defaults";
+import type { Clip, Id, MediaAsset, Project, ProjectSettings, TitleStyle, Track, TrackKind } from "../lib/types";
+import { mediaClip, newProject, newTrack, titleClip, MARKER_COLORS, TITLE_PRESETS } from "../lib/defaults";
 import {
   clipDuration,
   clipEnd,
@@ -28,6 +28,7 @@ import { uid } from "../lib/uid";
 import type { Waveform } from "../lib/backend";
 import { seconds, stripExtension } from "../lib/format";
 import { clipBefore, DEFAULT_DISSOLVE } from "../lib/transitions";
+import type { Cue } from "../lib/subtitles";
 
 export type Tool = "select" | "blade";
 export type PlaceMode = "overwrite" | "insert";
@@ -113,6 +114,8 @@ interface State {
   /** Put media on the timeline. Returns the new clip id. */
   placeMedia: (mediaId: Id, opts?: { trackId?: Id; at?: number; mode?: PlaceMode; range?: { in: number; out: number } }) => Id | null;
   placeTitle: (style: Partial<Clip["title"]> | undefined, opts?: { trackId?: Id; at?: number }) => Id | null;
+  /** Put subtitle cues on a new captions track on top (shifted by `offset`). Returns the count. */
+  addCaptions: (cues: Cue[], offset?: number) => number;
 
   // --- clips -----------------------------------------------------------------
   updateClip: (id: Id, fn: (c: Draft<Clip>) => void, opts?: { live?: boolean }) => void;
@@ -205,6 +208,17 @@ export function findClip(p: Project, id: Id): { track: Track; clip: Clip; index:
     if (index >= 0) return { track, clip: track.clips[index], index };
   }
   return null;
+}
+
+/** Presets are authored for 1080p; scale their sizes to the project frame. */
+function scaledTitleStyle(style: Partial<TitleStyle> | undefined, settings: ProjectSettings): Partial<TitleStyle> {
+  const k = Math.min(settings.width, settings.height) / 1080;
+  const s = { ...style };
+  if (s.fontSize) s.fontSize = Math.round(s.fontSize * k);
+  if (s.boxPadding) s.boxPadding = Math.round(s.boxPadding * k);
+  if (s.boxRadius) s.boxRadius = Math.round(s.boxRadius * k);
+  if (s.strokeWidth) s.strokeWidth = Math.max(1, Math.round(s.strokeWidth * k));
+  return s;
 }
 
 /** Clips strictly under the playhead: the selected ones if any are, else every unlocked one. */
@@ -421,14 +435,7 @@ export const useStore = create<State>()((set, get) => ({
 
   placeTitle: (style, opts = {}) => {
     const st = get();
-    const { width, height } = st.project.settings;
-    // Presets are authored for 1080p; scale sizes to the project frame.
-    const k = Math.min(width, height) / 1080;
-    const s = { ...style };
-    if (s.fontSize) s.fontSize = Math.round(s.fontSize * k);
-    if (s.boxPadding) s.boxPadding = Math.round(s.boxPadding * k);
-    if (s.boxRadius) s.boxRadius = Math.round(s.boxRadius * k);
-    if (s.strokeWidth) s.strokeWidth = Math.max(1, Math.round(s.strokeWidth * k));
+    const s = scaledTitleStyle(style, st.project.settings);
     const at = snapToEdit(opts.at ?? st.playhead, st.project.tracks, st.project.settings.fps);
     const clip = titleClip(at, s);
     const len = clipDuration(clip);
@@ -454,6 +461,26 @@ export const useStore = create<State>()((set, get) => ({
     });
     if (placed) set({ selection: [clip.id] });
     return placed ? clip.id : null;
+  },
+
+  addCaptions: (cues, offset = 0) => {
+    const usable = cues.filter((c) => c.end - c.start >= MIN_CLIP && c.start + offset >= 0);
+    if (!usable.length) return 0;
+    const style = scaledTitleStyle(TITLE_PRESETS.find((x) => x.id === "subtitle")?.style, get().project.settings);
+    let trackId: Id = "";
+    get().apply((p) => {
+      const t = newTrack("video", "Captions");
+      if (p.tracks.some((x) => x.name === t.name)) t.name = nextTrackName(p as Project, "video");
+      // Overlapping cues: the later one wins, as `overwrite` does for any clip.
+      t.clips = usable.reduce<Clip[]>((clips, cue) => {
+        const c = { ...titleClip(cue.start + offset, { ...style, text: cue.text }, cue.end - cue.start), fadeIn: 0, fadeOut: 0 };
+        return overwrite(clips, c);
+      }, []);
+      insertTrack(p, t);
+      trackId = t.id;
+    });
+    set({ selection: [] });
+    return get().project.tracks.find((t) => t.id === trackId)?.clips.length ?? 0;
   },
 
   // ------------------------------------------------------------------- clips

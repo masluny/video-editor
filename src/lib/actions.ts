@@ -7,8 +7,13 @@ import { uid } from "./uid";
 import { basename, stripExtension } from "./format";
 import { clipDuration } from "./timeline";
 import { isDirty, store, findClip, useStore } from "../store/store";
+import { captionsOf, isSubtitlePath, parseSubtitles, toSrt } from "./subtitles";
 
 export async function importFiles(paths: string[], place?: { trackId?: Id; at: number }): Promise<MediaAsset[]> {
+  // Subtitle files become a captions track; everything else is probed as media.
+  const subs = paths.filter(isSubtitlePath);
+  for (const path of subs) await importCaptions(path, place?.at ?? 0);
+  paths = paths.filter((p) => !isSubtitlePath(p));
   if (!paths.length) return [];
   const s = store();
   let outcomes;
@@ -37,6 +42,37 @@ export async function importFiles(paths: string[], place?: { trackId?: Id; at: n
     s.toast(`Imported ${assets.length} item${assets.length > 1 ? "s" : ""}. Drag to the timeline or press ⏎ to add at the playhead.`, "success");
   }
   return assets;
+}
+
+async function importCaptions(path: string, offset: number) {
+  const s = store();
+  try {
+    const n = s.addCaptions(parseSubtitles(await backend.readText(path)), offset);
+    if (n) s.toast(`Added ${n} caption${n > 1 ? "s" : ""} from “${basename(path)}” on a new Captions track. Select one to restyle it.`, "success");
+    else s.toast(`No captions found in “${basename(path)}”.`, "error");
+  } catch (e) {
+    s.toast(`Couldn't read ${basename(path)}: ${e instanceof Error ? e.message : String(e)}`, "error");
+  }
+}
+
+/** Save the titles on a track as an .srt file (for YouTube, players, translators). */
+export async function exportCaptions(trackId: Id) {
+  const s = store();
+  const track = s.project.tracks.find((t) => t.id === trackId);
+  const cues = track ? captionsOf(track) : [];
+  if (!cues.length) {
+    s.toast("This track has no titles to save as captions.", "info");
+    return;
+  }
+  const path = await pickSavePath("Export captions", `${stripExtension(s.project.name || "Captions")}.srt`, "SubRip subtitles", ["srt"]);
+  if (!path) return;
+  const out = /\.srt$/i.test(path) ? path : `${path}.srt`;
+  try {
+    await backend.writeText(out, toSrt(cues));
+    s.toast(`Saved ${cues.length} caption${cues.length > 1 ? "s" : ""} to ${basename(out)}.`, "success");
+  } catch (e) {
+    s.toast(`Couldn't save captions: ${e instanceof Error ? e.message : String(e)}`, "error");
+  }
 }
 
 export async function importViaDialog() {
