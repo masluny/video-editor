@@ -1049,6 +1049,7 @@ function Ruler({ width, viewLeft, viewWidth, timeAt }: { width: number; viewLeft
       { label: "Set range out here", shortcut: "O", onSelect: () => s.setRangeOut(t) },
       { label: "Clear range", shortcut: "⌥X", disabled: !s.range, onSelect: () => s.setRange(null) },
       { label: "Clear all markers", disabled: !s.project.markers.length, onSelect: () => s.clearMarkers() },
+      { label: "YouTube chapters from markers…", disabled: !s.project.markers.length, onSelect: () => s.openDialog({ kind: "chapters" }) },
       { separator: true },
       { label: "Lift range", shortcut: ";", disabled: !s.range, onSelect: () => s.liftRange() },
       { label: "Extract range (close the gap)", shortcut: "'", disabled: !s.range, onSelect: () => s.extractRange() },

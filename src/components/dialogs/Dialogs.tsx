@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Keyboard, Pause, Play, Settings2, Film } from "lucide-react";
+import { AlertTriangle, Check, Copy, Keyboard, ListOrdered, Pause, Play, Settings2, Film } from "lucide-react";
 import { Modal } from "../ui/Modal";
 import { Button, Kbd } from "../ui/controls";
 import { store, useStore } from "../../store/store";
@@ -9,7 +9,8 @@ import { SilenceDialog } from "./SilenceDialog";
 import { ProjectSettingsForm } from "../Inspector/ProjectSettingsForm";
 import { fileUrl } from "../../lib/backend";
 import { keyLabel, timecode, seconds } from "../../lib/format";
-import { MIN_CLIP } from "../../lib/timeline";
+import { MIN_CLIP, projectDuration } from "../../lib/timeline";
+import { youtubeChapters } from "../../lib/chapters";
 import type { Id } from "../../lib/types";
 
 export function DialogHost() {
@@ -28,6 +29,8 @@ export function DialogHost() {
       return <SourceDialog mediaId={dialog.mediaId} />;
     case "commands":
       return <CommandPalette />;
+    case "chapters":
+      return <ChaptersDialog />;
   }
 }
 
@@ -125,6 +128,47 @@ function ShortcutsDialog() {
           </div>
         ))}
       </div>
+    </Modal>
+  );
+}
+
+/** Markers as YouTube chapters, ready to paste into the video's description. */
+function ChaptersDialog() {
+  const project = useStore((s) => s.project);
+  const { text, problems } = youtubeChapters(project.markers, projectDuration(project));
+  const [copied, setCopied] = React.useState(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+    } catch {
+      document.querySelector<HTMLTextAreaElement>("[data-chapters]")?.select();
+    }
+  };
+  return (
+    <Modal
+      title="YouTube chapters"
+      subtitle="Paste into the video's description; YouTube turns them into chapters"
+      icon={<ListOrdered className="h-4 w-4" />}
+      onClose={close}
+      width={460}
+      footer={
+        <>
+          <span className="mr-auto text-2xs text-ink-dim">Named markers become chapters. Double-click a marker to name it.</span>
+          <Button variant="primary" onClick={copy}>
+            {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+            {copied ? "Copied" : "Copy"}
+          </Button>
+        </>
+      }
+    >
+      <textarea data-chapters readOnly value={text} rows={Math.min(12, text.split("\n").length + 1)} className="field h-auto w-full resize-none p-2 font-mono text-sm leading-relaxed" />
+      {problems.map((p) => (
+        <p key={p} className="mt-2 flex items-start gap-2 text-xs leading-relaxed text-ink-muted">
+          <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0 text-warning" />
+          {p}
+        </p>
+      ))}
     </Modal>
   );
 }
