@@ -156,7 +156,7 @@ pub(crate) fn parse_stats(log: &str) -> Option<PictureStats> {
             counts[i] += 1;
         }
     }
-    if counts.iter().any(|&n| n == 0) {
+    if counts.contains(&0) {
         return None;
     }
     let mean = |i: usize| sums[i] / counts[i] as f64;
