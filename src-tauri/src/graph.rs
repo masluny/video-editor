@@ -149,7 +149,7 @@ const CUT_EPS: f64 = 1e-3;
 /// Half the effective length of the dissolve into `clip` from the clip that ends where it
 /// starts on the same track; 0 when there is none.
 fn dissolve_half(track: &[Clip], clip: &Clip) -> f64 {
-    if !(clip.transition_in > 0.0) {
+    if clip.transition_in.is_nan() || clip.transition_in <= 0.0 {
         return 0.0;
     }
     let Some(from) = track.iter().find(|c| !std::ptr::eq(*c, clip) && (c.end() - clip.start).abs() < CUT_EPS) else {

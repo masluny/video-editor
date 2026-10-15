@@ -90,7 +90,7 @@ fn parse_scenes(log: &str, offset: f64, len: f64) -> Vec<f64> {
             continue;
         };
         // Ignore a "change" on the very first frames (scdet compares against nothing there).
-        if t > 0.05 && t < len - 0.01 && out.last().map_or(true, |&last| offset + t - last > 0.1) {
+        if t > 0.05 && t < len - 0.01 && out.last().is_none_or(|&last| offset + t - last > 0.1) {
             out.push(offset + t);
         }
     }

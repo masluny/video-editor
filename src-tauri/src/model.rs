@@ -279,12 +279,6 @@ pub struct Keyframes {
     pub opacity: Vec<Key>,
 }
 
-impl Keyframes {
-    pub fn is_empty(&self) -> bool {
-        self.x.is_empty() && self.y.is_empty() && self.scale.is_empty() && self.rotation.is_empty() && self.opacity.is_empty()
-    }
-}
-
 /// One end of a clip's motion: multiplies its scale and offsets it (project pixels).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
