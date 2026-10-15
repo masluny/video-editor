@@ -61,6 +61,7 @@ export type Dialog =
   | { kind: "shortcuts" }
   | { kind: "silence"; clipId: Id }
   | { kind: "source"; mediaId: Id }
+  | { kind: "commands" }
   | null;
 
 interface ClipboardEntry {

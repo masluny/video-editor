@@ -27,6 +27,7 @@ export function useShortcuts() {
         if (k === "n") return run(() => newProject());
         if (k === "i") return run(() => importViaDialog());
         if (k === "e") return run(() => s.openDialog({ kind: "export" }));
+        if (k === "k") return run(() => s.openDialog({ kind: "commands" }));
       }
       if (s.dialog || typing(e)) return;
 

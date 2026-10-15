@@ -1,5 +1,5 @@
 import * as React from "react";
-import { ChevronDown, CircleHelp, Clapperboard, Clock, Loader2, Redo2, Undo2 } from "lucide-react";
+import { ChevronDown, CircleHelp, Clapperboard, Clock, Loader2, Redo2, Search, Undo2 } from "lucide-react";
 import { isDirty, store, useStore } from "../store/store";
 import { Button, IconButton } from "./ui/controls";
 import { openMenu, type MenuItem } from "./ui/Menu";
@@ -86,6 +86,15 @@ export function TopBar() {
         )}
       </div>
 
+      <button
+        onClick={() => store().openDialog({ kind: "commands" })}
+        className="mr-1 flex h-7 items-center gap-2 rounded-md border border-line px-2 text-xs text-ink-dim transition-colors hover:border-line-strong hover:text-ink"
+        title="Find any action by name"
+      >
+        <Search className="h-3.5 w-3.5" />
+        Search actions
+        <span className="kbd">{cmd}K</span>
+      </button>
       <IconButton title="Keyboard shortcuts (?)" onClick={() => store().openDialog({ kind: "shortcuts" })}>
         <CircleHelp className="h-4 w-4" />
       </IconButton>

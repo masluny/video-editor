@@ -4,10 +4,11 @@ import { Modal } from "../ui/Modal";
 import { Button, Kbd } from "../ui/controls";
 import { store, useStore } from "../../store/store";
 import { ExportDialog } from "./ExportDialog";
+import { CommandPalette } from "./CommandPalette";
 import { SilenceDialog } from "./SilenceDialog";
 import { ProjectSettingsForm } from "../Inspector/ProjectSettingsForm";
 import { fileUrl } from "../../lib/backend";
-import { timecode, seconds } from "../../lib/format";
+import { keyLabel, timecode, seconds } from "../../lib/format";
 import { MIN_CLIP } from "../../lib/timeline";
 import type { Id } from "../../lib/types";
 
@@ -25,6 +26,8 @@ export function DialogHost() {
       return <SilenceDialog clipId={dialog.clipId} />;
     case "source":
       return <SourceDialog mediaId={dialog.mediaId} />;
+    case "commands":
+      return <CommandPalette />;
   }
 }
 
@@ -93,14 +96,14 @@ const SHORTCUTS: [string, [string, string][]][] = [
       ["⌘I", "Import media"],
       ["⌘E", "Export"],
       ["⌘Z / ⇧⌘Z", "Undo / redo"],
+      ["⌘K", "Search every action"],
       ["?", "This list"],
     ],
   ],
 ];
 
 function ShortcutsDialog() {
-  const isMac = /Mac/i.test(navigator.platform);
-  const fix = (k: string) => (isMac ? k : k.replace(/⌘/g, "Ctrl+").replace(/⌥/g, "Alt+").replace(/⇧/g, "Shift+"));
+  const fix = keyLabel;
   return (
     <Modal title="Keyboard shortcuts" icon={<Keyboard className="h-4 w-4" />} onClose={close} width={720}>
       <div className="grid grid-cols-2 gap-x-8 gap-y-5">
