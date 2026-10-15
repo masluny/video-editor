@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const detectScenes = vi.fn<(path: string, from: number, to: number, threshold: number) => Promise<number[]>>();
 const pictureStats = vi.fn<(path: string, from: number, to: number) => Promise<PictureStats>>();
+const cleanVoice = vi.fn<(path: string, from: number, to: number) => Promise<string>>();
+const probe = vi.fn<(paths: string[]) => Promise<{ path: string; info?: Omit<MediaAsset, "id"> | null; error?: string | null }[]>>();
 vi.mock("./backend", async (orig) => {
   const real = await orig<typeof import("./backend")>();
   return {
@@ -10,13 +12,15 @@ vi.mock("./backend", async (orig) => {
       ...real.backend,
       detectScenes: (...a: [string, number, number, number]) => detectScenes(...a),
       pictureStats: (...a: [string, number, number]) => pictureStats(...a),
+      cleanVoice: (...a: [string, number, number]) => cleanVoice(...a),
+      probe: (paths: string[]) => probe(paths),
     },
   };
 });
 
 import { useStore } from "../store/store";
 import { clipEnd } from "./timeline";
-import { autoColorClips, cutToBeat, matchColorTo, splitAtShotChanges, SHOT_THRESHOLD } from "./actions";
+import { autoColorClips, cleanUpVoice, cutToBeat, matchColorTo, splitAtShotChanges, SHOT_THRESHOLD } from "./actions";
 import type { PictureStats } from "./autocolor";
 import type { MediaAsset } from "./types";
 
@@ -115,5 +119,21 @@ describe("auto and matched colour", () => {
     expect(ca.sepia).toBe(0.3);
     expect(ca.contrast).toBeGreaterThan(1.5);
     expect(cr.contrast).toBe(1); // the reference itself is untouched
+  });
+});
+
+describe("clean up voice", () => {
+  it("cleans the detached audio of a video, and the result plays from the copy", async () => {
+    const v = st().placeMedia("v", { at: 0, range: { in: 3, out: 7 } })!;
+    st().detachAudio(v);
+    cleanVoice.mockResolvedValue("/data/processed/abc.m4a");
+    probe.mockResolvedValue([{ path: "/data/processed/abc.m4a", info: { path: "/data/processed/abc.m4a", name: "abc.m4a", kind: "audio", duration: 4, width: 0, height: 0, fps: 0, hasVideo: false, hasAudio: true } }]);
+    await cleanUpVoice(v);
+    expect(cleanVoice).toHaveBeenCalledWith("/clip.mov", 3, 7);
+    const audio = st().project.tracks.filter((t) => t.kind === "audio").flatMap((t) => t.clips);
+    expect(audio).toHaveLength(1); // the detached clip was re-pointed, not duplicated
+    const m = st().project.media.find((x) => x.id === audio[0].mediaId)!;
+    expect(m.name).toBe("clip (clean voice)");
+    expect(audio[0]).toMatchObject({ in: 0, out: 4, link: v });
   });
 });

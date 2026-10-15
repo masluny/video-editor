@@ -18,6 +18,7 @@ import {
   Repeat,
   RotateCcw,
   SlidersHorizontal,
+  Sparkles,
   Type,
   Unlink,
   Wand2,
@@ -37,7 +38,7 @@ import { clipBefore, dissolveInto } from "../../lib/transitions";
 import { DEFAULT_MOTION_AMOUNT, ENTRANCE_PRESETS, isEntrance, MOTION_PRESETS, motionAmount, motionPreset, type MotionPreset } from "../../lib/motion";
 import { cn } from "../../lib/cn";
 import { cornerLayout, type Corner } from "../../lib/visual";
-import { autoColorClips, cutToBeat, duckUnderVoice, evenOutVolume } from "../../lib/actions";
+import { autoColorClips, cleanUpVoice, cutToBeat, duckUnderVoice, evenOutVolume } from "../../lib/actions";
 import { useLocal } from "../../lib/useLocal";
 import { GROUP_PROPS, hasKeyAt, isAnimated, keyClock, keyTimes, keyTolerance, posed, type KeyGroup, type KeyProp } from "../../lib/keyframes";
 
@@ -498,6 +499,15 @@ function ClipInspector({ clip, track, media }: { clip: Clip; track: Track; media
           {!visual && <FadeFields clip={clip} upd={upd} />}
           <FieldRow label="Mute">
             <Switch checked={clip.muted} onChange={(m) => upd((c) => void (c.muted = m))} />
+          </FieldRow>
+          <FieldRow label="Clean up" hint="A processed copy of this clip's sound: less background noise and hum, an even speaking level">
+            {media?.name.endsWith("(clean voice)") ? (
+              <span className="text-xs text-ink-dim">Voice cleaned up</span>
+            ) : (
+              <Button size="sm" onClick={() => void cleanUpVoice(id)}>
+                <Sparkles className="h-3.5 w-3.5" /> Clean up voice
+              </Button>
+            )}
           </FieldRow>
           {track.kind === "audio" && <VideoLength clip={clip} />}
           {track.kind === "audio" && (

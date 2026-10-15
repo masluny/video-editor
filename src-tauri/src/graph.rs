@@ -1319,6 +1319,26 @@ mod tests {
     }
 
     #[test]
+    fn clean_voice_lowers_the_noise_between_words() {
+        if !ffmpeg_ok() { return; }
+        let d = tmpdir();
+        // "Speech": a 220 Hz buzz with harmonics, 1 s on / 1 s off, over steady hiss and hum.
+        let noisy = d.join("noisy.mp4");
+        ff(&["-f", "lavfi", "-i", "aevalsrc='(0.5*sin(2*PI*220*t)+0.25*sin(2*PI*440*t)+0.12*sin(2*PI*660*t))*lt(mod(t,2),1)':s=48000:d=8",
+             "-f", "lavfi", "-i", "anoisesrc=c=pink:a=0.03:d=8:r=48000", "-f", "lavfi", "-i", "sine=frequency=50:duration=8:sample_rate=48000",
+             "-filter_complex", "[0][1][2]amix=inputs=3:normalize=0[a]", "-map", "[a]", "-c:a", "aac", "-b:a", "192k", noisy.to_str().unwrap()]);
+        let clean = d.join("clean.m4a");
+        let o = Command::new("ffmpeg").args(crate::analysis::clean_voice_args(noisy.to_str().unwrap(), 2.0, 6.0, clean.to_str().unwrap())).output().unwrap();
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        assert!((duration(&clean) - 6.0).abs() < 0.1);
+        // Speech vs the gap after it, before and after (the clean copy starts 2 s in).
+        let snr = |file: &PathBuf, t: f64| mean_volume(file, t + 0.2, 0.6) - mean_volume(file, t + 1.3, 0.5);
+        let (before, after) = (snr(&noisy, 4.0), snr(&clean, 2.0));
+        assert!(after > before + 8.0, "speech-to-noise {before:.1} dB -> {after:.1} dB");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
     fn volume_envelope_ducks_music_on_its_own_clock() {
         if !ffmpeg_ok() { return; }
         let d = tmpdir();

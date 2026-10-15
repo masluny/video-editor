@@ -4,7 +4,7 @@
 import { findClip, store } from "../store/store";
 import { clipEnd, EPS, videoEnd } from "./timeline";
 import { clipBefore } from "./transitions";
-import { addBeatMarkers, duckUnderVoice, evenOutVolume, exportCaptions, importViaDialog, splitAtShotChanges, cutToBeat, pasteLook, autoColorClips, newProject, openProject, saveProject } from "./actions";
+import { addBeatMarkers, duckUnderVoice, evenOutVolume, exportCaptions, importViaDialog, splitAtShotChanges, cutToBeat, pasteLook, autoColorClips, cleanUpVoice, newProject, openProject, saveProject } from "./actions";
 
 export interface Command {
   id: string;
@@ -131,6 +131,7 @@ export function commands(): Command[] {
       run: () => void (s().loopToVideoLength(audioClips()[0].clip.id) || s().toast("This clip is too short to loop, or already reaches the end of the video.", "info")),
     },
     { id: "duck", label: "Duck under voice", group: "Audio", keywords: "lower music speech dialogue ducking", blocked: () => need(audioClips().length > 0, "Select music on an audio track"), run: () => duckUnderVoice(s().selection) },
+    { id: "clean-voice", label: "Clean up voice", group: "Audio", keywords: "noise reduction denoise hum enhance speech podcast", blocked: () => need(withSound().length > 0, "Select a clip with sound"), run: () => void cleanUpVoice(withSound()[0].clip.id) },
     { id: "even-out", label: "Even out volume", group: "Audio", keywords: "loudness level normalize match", blocked: () => need(withSound().length > 1, "Select two or more clips with sound"), run: () => evenOutVolume(s().selection) },
     { id: "beats", label: "Add beat markers", group: "Audio", keywords: "music rhythm tempo bpm", blocked: () => need(withSound().length > 0, "Select a clip with sound"), run: () => void addBeatMarkers(withSound()[0].clip.id) },
     { id: "detach", label: "Detach audio", group: "Audio", keywords: "separate unlink", blocked: () => need(selected().some((h) => h.track.kind === "video"), "Select a video clip"), run: () => selected().forEach((h) => h.track.kind === "video" && s().detachAudio(h.clip.id)) },

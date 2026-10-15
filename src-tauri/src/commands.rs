@@ -94,6 +94,30 @@ pub async fn picture_stats(path: String, from: f64, to: f64) -> CmdResult<analys
     analysis::picture_stats(&path, from, to).await.map_err(err)
 }
 
+/// "Clean up voice": a processed copy of `[from, to]` of a file's sound, kept with the app's
+/// data (not the cache, which the system may clear) and reused when asked again.
+#[tauri::command]
+pub async fn clean_voice(app: AppHandle, path: String, from: f64, to: f64) -> CmdResult<String> {
+    let run = async {
+        let dir = util::data_dir(&app)?.join("processed");
+        std::fs::create_dir_all(&dir)?;
+        let out = dir.join(format!("{}.m4a", util::media_key(&path, &format!("clean-voice-v1 {from} {to}"))));
+        if out.is_file() {
+            return Ok(out.to_string_lossy().into_owned());
+        }
+        let tmp = out.with_extension("part.m4a");
+        let bin = ffmpeg::resolve(ffmpeg::Tool::Ffmpeg).await?;
+        let args = analysis::clean_voice_args(&path, from, (to - from).max(0.05), &tmp.to_string_lossy());
+        if let Err(e) = ffmpeg::run(&bin, &args).await {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e);
+        }
+        std::fs::rename(&tmp, &out)?;
+        anyhow::Ok(out.to_string_lossy().into_owned())
+    };
+    run.await.map_err(err)
+}
+
 #[tauri::command]
 pub async fn export_start(app: AppHandle, request: export::ExportRequest) -> CmdResult<String> {
     export::start(&app, request).await.map_err(err)

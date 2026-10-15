@@ -197,6 +197,12 @@ interface State {
    */
   pasteLook: (ids: Id[]) => number;
   detachAudio: (id: Id) => void;
+  /**
+   * Play a clip's sound from `asset` instead (a processed copy of its source range, starting
+   * at 0): an audio clip switches media; a video clip gets it as linked audio (replacing
+   * audio already detached from it). One undo step.
+   */
+  swapAudio: (id: Id, asset: MediaAsset) => void;
   replaceWithRanges: (id: Id, ranges: [number, number][]) => number;
   closeGapAt: (trackId: Id, time: number) => void;
   closeTrackGaps: (trackId: Id) => void;
@@ -1090,6 +1096,35 @@ export const useStore = create<State>()((set, get) => ({
       }
     });
     if (created.length) set({ selection: created });
+  },
+
+  swapAudio: (id, asset) => {
+    const hit = findClip(get().project, id);
+    if (!hit) return;
+    const c = hit.clip;
+    // Source time in the copy is source time in the original minus the clip's in point.
+    const moved = (x: Clip): Partial<Clip> => ({
+      mediaId: asset.id,
+      in: x.in - c.in,
+      out: x.out - c.in,
+      volumePoints: x.volumePoints?.map((p) => ({ t: p.t - c.in, gain: p.gain })),
+    });
+    get().apply((p) => {
+      if (!p.media.some((m) => m.id === asset.id)) p.media.push(asset);
+      const all = p.tracks.flatMap((t) => t.clips);
+      const linked = all.find((x) => x.link === id && x.mediaId === c.mediaId);
+      if (hit.track.kind === "audio") return void Object.assign(all.find((x) => x.id === id)!, moved(c));
+      if (linked) return void Object.assign(linked, moved(plain(linked) as Clip));
+      const audio: Clip = { ...structuredClone(c), id: uid(), opacity: 1, label: undefined, link: id, transitionIn: undefined, ...moved(c) };
+      let track = pickTrack(p, "audio", audio.start, clipDuration(audio)) as Draft<Track> | null;
+      if (!track || track.clips.some((x) => clipEnd(x) > audio.start + EPS && x.start < clipEnd(audio) - EPS)) {
+        const t = newTrack("audio", nextTrackName(p as Project, "audio"));
+        insertTrack(p, t);
+        track = p.tracks.find((x) => x.id === t.id)!;
+      }
+      track.clips = overwrite(plain(track.clips) as Clip[], audio) as Draft<Clip>[];
+      all.find((x) => x.id === id)!.muted = true;
+    });
   },
 
   detachAudio: (id) => {

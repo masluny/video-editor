@@ -664,3 +664,24 @@ describe("splitting linked clips", () => {
     expect(findClip(st().project, music)!.clip.start).toBe(6);
   });
 });
+
+describe("swapping in cleaned-up sound", () => {
+  const clean = (id: string, duration: number): MediaAsset => ({ id, path: `/clean-${id}.m4a`, name: "x (clean voice)", kind: "audio", duration, width: 0, height: 0, fps: 0, hasVideo: false, hasAudio: true });
+
+  it("re-points an audio clip at the copy of its range, envelope included", () => {
+    const id = st().placeMedia("s", { at: 1, range: { in: 5, out: 9 } })!;
+    st().updateClip(id, (c) => void (c.volumePoints = [{ t: 6, gain: 0.5 }]));
+    st().swapAudio(id, clean("c1", 4));
+    expect(findClip(st().project, id)!.clip).toMatchObject({ mediaId: "c1", in: 0, out: 4, start: 1, volumePoints: [{ t: 1, gain: 0.5 }] });
+    st().undo();
+    expect(st().project.media.some((m) => m.id === "c1")).toBe(false); // one undo step
+  });
+
+  it("gives a video clip the copy as linked audio and mutes its own", () => {
+    const v = st().placeMedia("v", { at: 0, range: { in: 2, out: 5 } })!;
+    st().swapAudio(v, clean("c2", 3));
+    const audio = st().project.tracks.filter((t) => t.kind === "audio").flatMap((t) => t.clips);
+    expect(audio[0]).toMatchObject({ mediaId: "c2", in: 0, out: 3, start: 0, link: v });
+    expect(findClip(st().project, v)!.clip.muted).toBe(true);
+  });
+});

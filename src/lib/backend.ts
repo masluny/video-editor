@@ -80,6 +80,8 @@ export const backend = {
     call<[number, number][]>("detect_silence", { path, from, to, noiseDb, minSilence }),
   /** Shot changes (source seconds) inside `from..to`; `threshold` 1..100, ~10 for plain cuts. */
   detectScenes: (path: string, from: number, to: number, threshold: number) => call<number[]>("detect_scenes", { path, from, to, threshold }),
+  /** A cleaned-up copy (noise, rumble, level) of `from..to` of a file's sound; returns its path. */
+  cleanVoice: (path: string, from: number, to: number) => call<string>("clean_voice", { path, from, to }),
   /** Tonal range and colourfulness of a stretch of picture (see lib/autocolor.ts). */
   pictureStats: (path: string, from: number, to: number) => call<PictureStats>("picture_stats", { path, from, to }),
   exportStart: (request: {

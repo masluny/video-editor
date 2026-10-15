@@ -288,6 +288,35 @@ export async function matchColorTo(ids: Id[], refId: Id) {
   );
 }
 
+/**
+ * "Clean up voice": swap a clip's sound for a processed copy of its source range (rumble
+ * and steady noise removed, level evened out), so the preview and export both use it.
+ */
+export async function cleanUpVoice(clipId: Id) {
+  const s = store();
+  let hit = findClip(s.project, clipId);
+  // A video whose sound was detached: clean that audio clip.
+  const linked = s.project.tracks.flatMap((t) => t.clips).find((c) => c.link === clipId);
+  if (hit && linked) hit = findClip(s.project, linked.id);
+  const media = hit?.clip.mediaId ? s.project.media.find((m) => m.id === hit!.clip.mediaId) : undefined;
+  if (!hit || !media?.hasAudio || hit.clip.freeze) return void s.toast("This clip has no sound to clean up.", "info");
+  if (s.runtime[media.id]?.missing) return void s.toast(`“${media.name}” is offline. Relink it first.`, "info");
+  const c = hit.clip;
+  const busy = s.toast("Cleaning up the voice…", "busy");
+  try {
+    const path = await backend.cleanVoice(media.path, c.in, c.out);
+    const [probe] = await backend.probe([path]);
+    store().dismissToast(busy);
+    if (!probe?.info) throw new Error(probe?.error ?? "the cleaned file couldn't be read");
+    const asset: MediaAsset = { ...probe.info, id: uid(), name: `${stripExtension(media.name)} (clean voice)`, kind: "audio", hasVideo: false };
+    store().swapAudio(c.id, asset);
+    store().toast("Voice cleaned up: less background noise and an even level.", "success", { label: "Undo", run: () => store().undo() });
+  } catch (e) {
+    store().dismissToast(busy);
+    store().toast(`Couldn't clean up the sound: ${e instanceof Error ? e.message : String(e)}`, "error");
+  }
+}
+
 export async function importViaDialog() {
   const paths = await pickMedia();
   if (paths.length) await importFiles(paths);

@@ -13,6 +13,7 @@ import {
   Music2,
   Paintbrush,
   Palette,
+  Sparkles,
   Eye,
   EyeOff,
   Flag,
@@ -61,7 +62,7 @@ import { keyLabel, seconds, timecode } from "../../lib/format";
 import { cn } from "../../lib/cn";
 import { MARKER_COLORS } from "../../lib/defaults";
 import { clipAfter, clipBefore, DEFAULT_DISSOLVE, dissolveInto } from "../../lib/transitions";
-import { addBeatMarkers, duckUnderVoice, evenOutVolume, exportCaptions, splitAtShotChanges, cutToBeat, pasteLook, autoColorClips, matchColorTo } from "../../lib/actions";
+import { addBeatMarkers, duckUnderVoice, evenOutVolume, exportCaptions, splitAtShotChanges, cutToBeat, pasteLook, autoColorClips, matchColorTo, cleanUpVoice } from "../../lib/actions";
 
 interface Row {
   track: Track;
@@ -526,6 +527,7 @@ export function Timeline() {
       );
     if (hasAudio) {
       items.push(
+        { label: "Clean up voice", icon: <Sparkles className="h-3.5 w-3.5" />, disabled: track.locked || !!media?.name.endsWith("(clean voice)"), onSelect: () => void cleanUpVoice(clip.id) },
         { label: "Remove silences…", icon: <Wand2 className="h-3.5 w-3.5" />, disabled: track.locked, onSelect: () => s.openDialog({ kind: "silence", clipId: clip.id }) },
         {
           label: clip.muted ? "Unmute clip audio" : "Mute clip audio",

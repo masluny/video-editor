@@ -27,6 +27,7 @@ pub fn run() {
             commands::detect_silence,
             commands::detect_scenes,
             commands::picture_stats,
+            commands::clean_voice,
             commands::export_start,
             commands::export_cancel,
             commands::read_text_file,

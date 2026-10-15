@@ -1,5 +1,6 @@
 //! Media analysis: silences (for "Remove silences"), shot changes (for "Split at shot
-//! changes") and picture statistics (for "Auto colour" and "Match colour").
+//! changes") and picture statistics (for "Auto colour" and "Match colour"); plus the
+//! cleaned-up copy of a voice recording made by "Clean up voice".
 
 use crate::ffmpeg::{self, Tool};
 use crate::util::f;
@@ -96,6 +97,41 @@ fn parse_scenes(log: &str, offset: f64, len: f64) -> Vec<f64> {
         }
     }
     out
+}
+
+/// Filters for "Clean up voice": rumble cut, adaptive noise reduction, de-essing-free
+/// brightening of the top end left alone, and a steady spoken level (−16 LUFS).
+pub const CLEAN_VOICE: &str = "highpass=f=80,afftdn=nr=18:tn=1,lowpass=f=14000,loudnorm=I=-16:TP=-1.5:LRA=11";
+
+/// Arguments that write the cleaned-up sound of `[from, from + len]` of `path` to `out` (AAC).
+pub fn clean_voice_args(path: &str, from: f64, len: f64, out: &str) -> Vec<String> {
+    vec![
+        "-hide_banner".into(),
+        "-nostats".into(),
+        "-y".into(),
+        "-ss".into(),
+        f(from),
+        "-t".into(),
+        f(len),
+        "-i".into(),
+        path.into(),
+        "-vn".into(),
+        "-sn".into(),
+        "-dn".into(),
+        "-map".into(),
+        "0:a:0".into(),
+        "-af".into(),
+        CLEAN_VOICE.into(),
+        "-ar".into(),
+        "48000".into(),
+        "-c:a".into(),
+        "aac".into(),
+        "-b:a".into(),
+        "192k".into(),
+        "-f".into(),
+        "mp4".into(),
+        out.into(),
+    ]
 }
 
 /// Tonal range and colourfulness of a stretch of picture: luma at the 10th and 90th
