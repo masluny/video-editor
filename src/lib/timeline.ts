@@ -80,7 +80,7 @@ export function overwrite(clips: Clip[], incoming: Clip): Clip[] {
     else if (xs >= s - EPS && xe <= e + EPS) continue; // fully covered
     else if (xs < s && xe > e) {
       const head = cutTail(x, s);
-      const tail = { ...cutHead(x, e), id: uid(), fadeIn: 0 };
+      const tail = { ...cutHead(x, e), id: uid(), fadeIn: 0, transitionIn: undefined };
       if (hasLength(head)) out.push({ ...head, fadeOut: 0 });
       if (hasLength(tail)) out.push(tail);
     } else if (xs < s) {
@@ -111,7 +111,7 @@ export function insert(clips: Clip[], incoming: Clip): Clip[] {
     else if (xs >= s - EPS) out.push({ ...x, start: xs + d });
     else {
       const head = cutTail(x, s);
-      const tail = { ...cutHead(x, s), id: uid(), start: s + d, fadeIn: 0 };
+      const tail = { ...cutHead(x, s), id: uid(), start: s + d, fadeIn: 0, transitionIn: undefined };
       if (hasLength(head)) out.push({ ...head, fadeOut: 0 });
       if (hasLength(tail)) out.push(tail);
     }
@@ -138,7 +138,7 @@ export function rippleDelete(clips: Clip[], ids: Set<string>): Clip[] {
 export function split(c: Clip, t: number): [Clip, Clip] | null {
   if (t <= c.start + EPS || t >= clipEnd(c) - EPS) return null;
   const left = { ...cutTail(c, t), fadeOut: 0 };
-  const right = { ...cutHead(c, t), id: uid(), fadeIn: 0 };
+  const right = { ...cutHead(c, t), id: uid(), fadeIn: 0, transitionIn: undefined };
   left.fadeIn = Math.min(left.fadeIn, clipDuration(left));
   right.fadeOut = Math.min(right.fadeOut, clipDuration(right));
   return [left, right];
@@ -164,7 +164,7 @@ export function removeRange(clips: Clip[], a: number, b: number, ripple: boolean
         out.push({ ...head, fadeIn: Math.min(head.fadeIn, clipDuration(head)) });
       }
       if (xe > b + EPS) {
-        const tail = { ...cutHead(x, b), id: xs < a - EPS ? uid() : x.id, start: b - shift, fadeIn: 0 };
+        const tail = { ...cutHead(x, b), id: xs < a - EPS ? uid() : x.id, start: b - shift, fadeIn: 0, transitionIn: undefined };
         out.push({ ...tail, fadeOut: Math.min(tail.fadeOut, clipDuration(tail)) });
       }
     }
@@ -236,7 +236,7 @@ export function keepSourceRanges(c: Clip, ranges: [number, number][]): Clip[] {
     const lo = Math.max(a, c.in);
     const hi = Math.min(b, c.out);
     if (hi - lo <= MIN_CLIP * sp) continue;
-    const piece: Clip = { ...c, id: out.length === 0 ? c.id : uid(), in: lo, out: hi, start: at, fadeIn: 0, fadeOut: 0 };
+    const piece: Clip = { ...c, id: out.length === 0 ? c.id : uid(), in: lo, out: hi, start: at, fadeIn: 0, fadeOut: 0, transitionIn: out.length === 0 ? c.transitionIn : undefined };
     out.push(piece);
     at += (hi - lo) / sp;
   }

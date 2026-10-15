@@ -5,6 +5,9 @@
 // next clip, for gapless cuts) and one <img> (stills & titles). Audio tracks own two
 // <audio> elements. Geometry and colour mirror the export engine (graph.rs).
 //
+// A cross-dissolve shows the clip we're not playing in the track's other element (or
+// second <img>), held on its first / last frame, exactly as graph.rs renders it.
+//
 // Timing lives in playback.ts: while playing, the topmost video (else audible audio) is
 // the master clock and the other elements follow it; the wall clock only covers gaps,
 // titles and stills. A clip that becomes active without being ready (start, seek, cut)
@@ -14,6 +17,7 @@ import type { Clip, Id, MediaAsset, Project, Track } from "../../lib/types";
 import { clipAt, clipEnd, EPS, projectDuration, speedOf } from "../../lib/timeline";
 import { cssClipPath, cssFilter, fadeFactor, fitBox } from "../../lib/visual";
 import { titleImageUrl } from "../../lib/title";
+import { dissolveAt, dissolveGain, dissolveMix } from "../../lib/transitions";
 import { Slot, Transport, type Voice } from "./playback";
 
 export interface EngineHost {
@@ -31,8 +35,9 @@ interface Layer {
   root: HTMLDivElement | null;
   slots: [Slot, Slot];
   current: Slot | null;
-  img: HTMLImageElement | null;
-  imgKey: string;
+  /** Stills & titles: the active clip, and the other side of a dissolve. */
+  imgs: [HTMLImageElement, HTMLImageElement] | null;
+  imgKeys: [string, string];
 }
 
 function newVideo(): HTMLVideoElement {
@@ -191,20 +196,24 @@ export class Engine {
         this.stage.appendChild(a);
         return new Slot(a);
       };
-      return { track: track.id, kind: "audio", root: null, slots: [mk(), mk()], current: null, img: null, imgKey: "" };
+      return { track: track.id, kind: "audio", root: null, slots: [mk(), mk()], current: null, imgs: null, imgKeys: ["", ""] };
     }
     const root = document.createElement("div");
     Object.assign(root.style, { position: "absolute", inset: "0", pointerEvents: "none" });
     root.dataset.track = track.id;
     const a = newVideo();
     const b = newVideo();
-    const img = document.createElement("img");
-    img.decoding = "sync";
-    img.draggable = false;
-    Object.assign(img.style, { position: "absolute", visibility: "hidden", transformOrigin: "50% 50%", pointerEvents: "none" });
-    root.append(a, b, img);
+    const mkImg = () => {
+      const img = document.createElement("img");
+      img.decoding = "sync";
+      img.draggable = false;
+      Object.assign(img.style, { position: "absolute", visibility: "hidden", transformOrigin: "50% 50%", pointerEvents: "none" });
+      return img;
+    };
+    const imgs: [HTMLImageElement, HTMLImageElement] = [mkImg(), mkImg()];
+    root.append(a, b, ...imgs);
     this.stage.appendChild(root);
-    return { track: track.id, kind: "video", root, slots: [new Slot(a), new Slot(b)], current: null, img, imgKey: "" };
+    return { track: track.id, kind: "video", root, slots: [new Slot(a), new Slot(b)], current: null, imgs, imgKeys: ["", ""] };
   }
 
   private disposeLayer(l: Layer) {
@@ -248,12 +257,12 @@ export class Engine {
 
   private gain(track: Track, clip: Clip, t: number, audible: boolean): number {
     if (!audible || clip.muted || this.master.muted) return 0;
-    const g = this.master.volume * track.volume * clip.volume * fadeFactor(clip, t - clip.start);
+    const g = this.master.volume * track.volume * clip.volume * fadeFactor(clip, t - clip.start) * dissolveGain(track, clip, t);
     return Math.max(0, Math.min(1, g));
   }
 
   /** Position/transform/colour an element like graph.rs does; geometry writes are cached. */
-  private place(el: HTMLElement, clip: Clip, mw: number, mh: number, W: number, H: number, t: number) {
+  private place(el: HTMLElement, clip: Clip, mw: number, mh: number, W: number, H: number, t: number, alpha = 1, z = 1) {
     const tf = clip.transform;
     const box = fitBox(mw, mh, W, H, tf.fit);
     const sx = tf.scale * (tf.flipH ? -1 : 1);
@@ -272,8 +281,9 @@ export class Engine {
       s.filter = filter;
       s.clipPath = clipPath;
     }
-    const opacity = String(Math.max(0, Math.min(1, clip.opacity * fadeFactor(clip, t - clip.start))));
+    const opacity = String(Math.max(0, Math.min(1, clip.opacity * fadeFactor(clip, t - clip.start) * alpha)));
     if (s.opacity !== opacity) s.opacity = opacity;
+    if (s.zIndex !== String(z)) s.zIndex = String(z);
     if (s.visibility !== "visible") s.visibility = "visible";
   }
 
@@ -286,27 +296,59 @@ export class Engine {
     const clip = clipAt(track, t);
     const media = this.mediaFor(p, clip);
     let videoSlot: Slot | null = null;
-    let showImg = false;
+    const showImg = [false, false];
+
+    // Mid-dissolve the incoming clip sits on top: fading in over the frozen outgoing one
+    // (second half, while it plays), or frozen itself over the playing outgoing one.
+    const dz = clip ? dissolveAt(track, t) : null;
+    const mix = dz ? dissolveMix(dz, t) : 1;
+    const incoming = !!dz && clip === dz.to;
 
     if (clip && media && media.kind === "video") {
       const url = this.host.source(media);
       if (url) {
         videoSlot = this.acquire(layer, clip.id, url);
         const el = videoSlot.el as HTMLVideoElement;
-        this.place(el, clip, media.width, media.height, W, H, t);
+        this.place(el, clip, media.width, media.height, W, H, t, incoming ? mix : 1, incoming ? 2 : 1);
         this.voices.push({ slot: videoSlot, clip, video: true, lead: !track.hidden });
         const g = this.gain(track, clip, t, audible && media.hasAudio);
         el.muted = g <= 0;
         if (g > 0 && Math.abs(el.volume - g) > 0.005) el.volume = g;
       }
     } else if (clip && (clip.type === "title" || media?.kind === "image")) {
-      showImg = this.renderStill(layer, clip, media, W, H, t);
+      showImg[0] = this.renderStill(layer, 0, clip, media, W, H, t, incoming ? mix : 1, incoming ? 2 : 1);
     }
 
-    // Preload the next clip into the idle element.
-    const next = this.upcoming(track, t, clip);
+    let held: Slot | null = null;
+    if (dz) {
+      const other = incoming ? dz.from : dz.to;
+      const om = this.mediaFor(p, other);
+      // Evaluate its own fades at the frame it holds.
+      const at = incoming ? clipEnd(other) - EPS : other.start;
+      const [alpha, z] = incoming ? [1, 1] : [mix, 2];
+      if (om?.kind === "video") {
+        const url = this.host.source(om);
+        if (url) {
+          held = layer.slots.find((s) => s !== videoSlot)!;
+          if (held.clipId !== other.id || held.url !== url) {
+            held.clipId = other.id;
+            held.load(url);
+          }
+          if (!held.el.paused) held.el.pause();
+          held.el.muted = true;
+          held.activeClip = null; // not a voice: re-cue it like a new clip if it plays again
+          held.seek(incoming ? other.out - (0.5 / (fps || 30)) * speedOf(other) : other.in, 0.01);
+          this.place(held.el as HTMLVideoElement, other, om.width, om.height, W, H, at, alpha, z);
+        }
+      } else if (other.type === "title" || om?.kind === "image") {
+        showImg[1] = this.renderStill(layer, 1, other, om, W, H, at, alpha, z);
+      }
+    }
+
+    // Preload the next clip into the idle element (busy holding a frame mid-dissolve).
+    const next = incoming ? undefined : this.upcoming(track, t, clip);
     const nextMedia = this.mediaFor(p, next);
-    if (next && nextMedia?.kind === "video") {
+    if (next && nextMedia?.kind === "video" && !held) {
       const url = this.host.source(nextMedia);
       const continuous =
         clip && media && url && videoSlot && videoSlot.url === url && Math.abs(clip.out - next.in) < 0.5 / (fps || 30) && speedOf(clip) === speedOf(next) && Math.abs(clipEnd(clip) - next.start) < 1e-3;
@@ -322,8 +364,10 @@ export class Engine {
       this.titleUrl(next, W, H); // warm the title cache
     }
 
-    for (const s of layer.slots) if (s !== videoSlot) s.hide();
-    if (!showImg && layer.img && layer.img.style.visibility !== "hidden") layer.img.style.visibility = "hidden";
+    for (const s of layer.slots) if (s !== videoSlot && s !== held) s.hide();
+    layer.imgs!.forEach((img, i) => {
+      if (!showImg[i] && img.style.visibility !== "hidden") img.style.visibility = "hidden";
+    });
   }
 
   private titleUrl(clip: Clip, W: number, H: number): string | null {
@@ -342,8 +386,8 @@ export class Engine {
     return entry.url;
   }
 
-  private renderStill(layer: Layer, clip: Clip, media: MediaAsset | undefined, W: number, H: number, t: number): boolean {
-    const img = layer.img!;
+  private renderStill(layer: Layer, which: 0 | 1, clip: Clip, media: MediaAsset | undefined, W: number, H: number, t: number, alpha: number, z: number): boolean {
+    const img = layer.imgs![which];
     let url: string | null;
     let mw = W;
     let mh = H;
@@ -354,11 +398,11 @@ export class Engine {
       mh = media?.height || H;
     }
     if (!url) return false;
-    if (layer.imgKey !== url) {
-      layer.imgKey = url;
+    if (layer.imgKeys[which] !== url) {
+      layer.imgKeys[which] = url;
       img.src = url;
     }
-    this.place(img, clip, mw, mh, W, H, t);
+    this.place(img, clip, mw, mh, W, H, t, alpha, z);
     return true;
   }
 

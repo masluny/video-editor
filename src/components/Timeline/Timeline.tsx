@@ -2,6 +2,7 @@ import * as React from "react";
 import {
   ArrowLeftToLine,
   ArrowRightToLine,
+  Blend,
   Copy,
   FoldHorizontal,
   Repeat,
@@ -50,6 +51,7 @@ import { useLocal } from "../../lib/useLocal";
 import { seconds, timecode } from "../../lib/format";
 import { cn } from "../../lib/cn";
 import { MARKER_COLORS } from "../../lib/defaults";
+import { clipAfter, clipBefore, DEFAULT_DISSOLVE, dissolveInto } from "../../lib/transitions";
 
 interface Row {
   track: Track;
@@ -430,6 +432,7 @@ export function Timeline() {
       { label: "Split at playhead", icon: <Scissors className="h-3.5 w-3.5" />, shortcut: "S", disabled: !under || track.locked, onSelect: () => s.splitClipAt(clip.id, s.playhead) },
       { label: "Trim start to playhead", icon: <ArrowLeftToLine className="h-3.5 w-3.5" />, shortcut: "Q", disabled: !under || track.locked, onSelect: () => (s.select([clip.id]), s.rippleTrimToPlayhead("head")) },
       { label: "Trim end to playhead", icon: <ArrowRightToLine className="h-3.5 w-3.5" />, shortcut: "W", disabled: !under || track.locked, onSelect: () => (s.select([clip.id]), s.rippleTrimToPlayhead("tail")) },
+      ...dissolveItems(clip, track),
       { label: "Duplicate", icon: <Copy className="h-3.5 w-3.5" />, shortcut: "⌘D", disabled: track.locked, onSelect: () => s.duplicateClips(ids) },
       { label: "Copy", shortcut: "⌘C", onSelect: () => s.copy() },
       { label: "Cut", shortcut: "⌘X", disabled: track.locked, onSelect: () => s.cut() },
@@ -543,7 +546,7 @@ export function Timeline() {
                 data-lane={row.track.id}
                 data-kind={row.track.kind}
                 className={cn(
-                  "relative border-b border-line-soft",
+                  "group/lane relative border-b border-line-soft",
                   row.track.kind === "audio" ? "bg-[#0f1211]" : "bg-[#0f0f13]",
                   row.track.locked && "bg-[repeating-linear-gradient(135deg,transparent_0_8px,rgba(255,255,255,0.025)_8px_16px)]",
                   row.track.hidden && "opacity-50",
@@ -574,6 +577,7 @@ export function Timeline() {
                     />
                   );
                 })}
+                {!row.track.locked && tool !== "blade" && <Cuts track={row.track} zoom={zoom} height={row.height} viewStart={viewStart} viewEnd={viewEnd} />}
               </div>
             </div>
           ))}
@@ -606,6 +610,76 @@ export function Timeline() {
         </div>
       </div>
     </div>
+  );
+}
+
+/** Add / remove the dissolves at either end of a clip. */
+function dissolveItems(clip: Clip, track: Track): MenuItem[] {
+  const s = store();
+  const prev = clipBefore(track, clip);
+  const next = clipAfter(track, clip);
+  if (!prev && !next) return [];
+  const has = (c: Clip) => (c.transitionIn ?? 0) > 0;
+  const toggle = (c: Clip) => () => s.setDissolve(c.id, has(c) ? 0 : DEFAULT_DISSOLVE);
+  return [
+    ...(prev ? [{ label: has(clip) ? "Remove dissolve at start" : "Cross dissolve at start", icon: <Blend className="h-3.5 w-3.5" />, disabled: track.locked, onSelect: toggle(clip) }] : []),
+    ...(next ? [{ label: has(next) ? "Remove dissolve at end" : "Cross dissolve at end", icon: <Blend className="h-3.5 w-3.5" />, disabled: track.locked, onSelect: toggle(next) }] : []),
+  ];
+}
+
+const DISSOLVE_LENGTHS = [0.25, 0.5, 1, 1.5, 2];
+
+/** Transition handles on the cuts of a track: a badge per dissolve, a "+" on plain cuts. */
+function Cuts({ track, zoom, height, viewStart, viewEnd }: { track: Track; zoom: number; height: number; viewStart: number; viewEnd: number }) {
+  const s = store;
+  const menu = (e: React.MouseEvent, to: Clip) => {
+    const len = to.transitionIn ?? 0;
+    openMenu(e, [
+      ...DISSOLVE_LENGTHS.map((d): MenuItem => ({ label: `Cross dissolve ${d}s`, checked: Math.abs(len - d) < 1e-3, onSelect: () => s().setDissolve(to.id, d) })),
+      { separator: true },
+      { label: "Dip to black instead", onSelect: () => s().dipToBlack(to.id, len || DEFAULT_DISSOLVE) },
+      { label: "Remove transition", danger: true, disabled: !(len > 0), onSelect: () => s().setDissolve(to.id, 0) },
+    ]);
+  };
+  const stop = (e: React.PointerEvent) => e.stopPropagation();
+  const size = Math.min(18, height - 12);
+  return (
+    <>
+      {track.clips.map((to) => {
+        if (to.start < viewStart - 2 || to.start > viewEnd + 2 || !clipBefore(track, to)) return null;
+        const d = dissolveInto(track, to);
+        const x = to.start * zoom;
+        if (d) {
+          const w = Math.max(14, 2 * d.half * zoom);
+          return (
+            <button
+              key={to.id}
+              className="absolute z-[6] flex items-center justify-center rounded-md border border-black/30 bg-white/85 text-black shadow hover:bg-white"
+              style={{ left: x - w / 2, width: w, top: (height - size) / 2, height: size }}
+              title={`Cross dissolve ${seconds(2 * d.half)} · click to change`}
+              onPointerDown={stop}
+              onClick={(e) => menu(e, to)}
+              onContextMenu={(e) => menu(e, to)}
+            >
+              <Blend className="h-3 w-3" />
+            </button>
+          );
+        }
+        return (
+          <button
+            key={to.id}
+            className="absolute z-[6] flex items-center justify-center rounded-full border border-black/30 bg-white/90 text-black opacity-0 shadow transition-opacity hover:opacity-100 group-hover/lane:opacity-70"
+            style={{ left: x - size / 2, width: size, top: (height - size) / 2, height: size }}
+            title="Add a cross dissolve (T) · right-click for options"
+            onPointerDown={stop}
+            onClick={() => s().setDissolve(to.id, DEFAULT_DISSOLVE)}
+            onContextMenu={(e) => menu(e, to)}
+          >
+            <Plus className="h-3 w-3" />
+          </button>
+        );
+      })}
+    </>
   );
 }
 

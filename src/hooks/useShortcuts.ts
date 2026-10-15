@@ -96,6 +96,10 @@ export function useShortcuts() {
       switch (k) {
         case "s":
           return handled(() => s.splitAtPlayhead());
+        case "t":
+          return handled(() => {
+            if (!s.dissolveAtPlayhead()) s.toast("No cut without a transition within a second of the playhead.", "info");
+          });
         case "q":
           return handled(() => s.rippleTrimToPlayhead("head"));
         case "w":

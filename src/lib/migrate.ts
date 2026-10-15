@@ -129,6 +129,7 @@ function clip(c: Json, mediaIds: Set<string>): Clip | null {
     color: colorAdjust(c.color),
     fadeIn: num(c.fadeIn, 0, 0),
     fadeOut: num(c.fadeOut, 0, 0),
+    transitionIn: num(c.transitionIn, 0, 0, 10) || undefined,
     title: type === "title" ? titleStyle(c.title) : undefined,
     label: typeof c.label === "string" && c.label ? c.label : undefined,
   };

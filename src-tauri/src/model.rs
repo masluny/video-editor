@@ -170,6 +170,8 @@ pub struct Clip {
     pub color: ColorAdjust,
     pub fade_in: f64,
     pub fade_out: f64,
+    /// Cross-dissolve (seconds) from the clip that ends where this one starts.
+    pub transition_in: f64,
 }
 
 impl Default for Clip {
@@ -190,6 +192,7 @@ impl Default for Clip {
             color: ColorAdjust::default(),
             fade_in: 0.0,
             fade_out: 0.0,
+            transition_in: 0.0,
         }
     }
 }

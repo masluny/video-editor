@@ -148,6 +148,8 @@ export interface Clip {
   color: ColorAdjust;
   fadeIn: number;
   fadeOut: number;
+  /** Cross-dissolve (seconds) from the clip that ends where this one starts. */
+  transitionIn?: number;
   title?: TitleStyle;
   /** Optional user label shown on the clip. */
   label?: string;

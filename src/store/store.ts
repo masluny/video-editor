@@ -27,6 +27,7 @@ import {
 import { uid } from "../lib/uid";
 import type { Waveform } from "../lib/backend";
 import { seconds, stripExtension } from "../lib/format";
+import { clipBefore, DEFAULT_DISSOLVE } from "../lib/transitions";
 
 export type Tool = "select" | "blade";
 export type PlaceMode = "overwrite" | "insert";
@@ -133,6 +134,12 @@ interface State {
   matchVideoLength: (ids: Id[], fadeOut?: number) => number;
   /** Repeat an audio clip until it reaches the end of the picture. Returns the copies added. */
   loopToVideoLength: (id: Id) => number;
+  /** Cross-dissolve into a clip from the one before it (0 removes it). */
+  setDissolve: (id: Id, seconds: number) => void;
+  /** Turn the cut into a clip into a dip to black: fade out, then in. */
+  dipToBlack: (id: Id, seconds: number) => void;
+  /** T: add a dissolve at the cut nearest the playhead (on every track cut there). Returns how many. */
+  dissolveAtPlayhead: () => number;
   duplicateClips: (ids: Id[]) => void;
   copy: () => void;
   cut: () => void;
@@ -643,6 +650,39 @@ export const useStore = create<State>()((set, get) => ({
     });
     set({ selection: [id, ...copies.map((x) => x.id)] });
     return copies.length;
+  },
+
+  setDissolve: (id, seconds) =>
+    get().updateClip(id, (c) => {
+      if (seconds > 0) c.transitionIn = Math.min(10, seconds);
+      else delete c.transitionIn;
+    }),
+
+  dipToBlack: (id, seconds) => {
+    const hit = findClip(get().project, id);
+    const prev = hit && clipBefore(hit.track, hit.clip);
+    if (!hit || !prev || hit.track.locked) return;
+    const half = Math.min(seconds / 2, clipDuration(prev), clipDuration(hit.clip));
+    get().apply((p) => {
+      for (const c of p.tracks.find((t) => t.id === hit.track.id)!.clips) {
+        if (c.id === prev.id) c.fadeOut = Math.min(half, clipDuration(c as Clip) - c.fadeIn);
+        if (c.id === id) {
+          c.fadeIn = Math.min(half, clipDuration(c as Clip) - c.fadeOut);
+          delete c.transitionIn;
+        }
+      }
+    });
+  },
+
+  dissolveAtPlayhead: () => {
+    const { project, playhead } = get();
+    // Cuts on unlocked tracks within a second of the playhead; take the nearest time.
+    const cuts = project.tracks.flatMap((t) => (t.locked ? [] : t.clips.filter((c) => clipBefore(t, c) && Math.abs(c.start - playhead) <= 1)));
+    if (!cuts.length) return 0;
+    const at = cuts.reduce((best, c) => (Math.abs(c.start - playhead) < Math.abs(best - playhead) ? c.start : best), cuts[0].start);
+    const ids = cuts.filter((c) => Math.abs(c.start - at) < 1e-3 && !(c.transitionIn && c.transitionIn > 0)).map((c) => c.id);
+    if (ids.length) get().updateClips(ids, (c) => void (c.transitionIn = DEFAULT_DISSOLVE));
+    return ids.length;
   },
 
   duplicateClips: (ids) => {

@@ -7,7 +7,11 @@
 //!   adjusted, scaled, rotated, faded (alpha) and offset to its timeline position,
 //!   then `overlay`ed onto the canvas;
 //! * every audible clip contributes an audio stream that is time-stretched,
-//!   gain-adjusted, faded and delayed to its timeline position, then mixed.
+//!   gain-adjusted, faded and delayed to its timeline position, then mixed;
+//! * a cross-dissolve (`transition_in`) is centred on a cut: the incoming layer starts
+//!   half the dissolve early holding its first frame and fades in, the outgoing layer
+//!   runs on holding its last frame underneath, and the sound dips across the cut.
+//!   Mirrors `src/lib/transitions.ts`.
 //!
 //! No user-provided strings ever end up inside the filtergraph: media is passed
 //! with `-i`, titles arrive as pre-rendered PNGs, and numbers are formatted here.
@@ -126,6 +130,28 @@ fn span(clip: &Clip, r0: f64, r1: f64) -> Option<Span> {
     }
     let speed = clip.speed();
     Some(Span { at: cs + head - r0, dur, src_in: clip.source_in + head * speed, src_len: dur * speed, head, tail })
+}
+
+/// Clips closer than this count as butted together (transitions.ts: CUT_EPS).
+const CUT_EPS: f64 = 1e-3;
+
+/// Half the effective length of the dissolve into `clip` from the clip that ends where it
+/// starts on the same track; 0 when there is none.
+fn dissolve_half(track: &[Clip], clip: &Clip) -> f64 {
+    if !(clip.transition_in > 0.0) {
+        return 0.0;
+    }
+    let Some(from) = track.iter().find(|c| !std::ptr::eq(*c, clip) && (c.end() - clip.start).abs() < CUT_EPS) else {
+        return 0.0;
+    };
+    let half = (clip.transition_in / 2.0).min(from.duration() / 2.0).min(clip.duration() / 2.0);
+    if half > EPS { half } else { 0.0 }
+}
+
+/// (into, out of) dissolve halves at the two ends of `clip`.
+fn dissolves(track: &[Clip], clip: &Clip) -> (f64, f64) {
+    let next = track.iter().find(|c| !std::ptr::eq(*c, clip) && (c.start - clip.end()).abs() < CUT_EPS);
+    (dissolve_half(track, clip), next.map_or(0.0, |n| dissolve_half(track, n)))
 }
 
 fn even(v: f64) -> u32 {
@@ -299,10 +325,15 @@ pub fn build(
             clips.sort_by(|a, b| a.start.total_cmp(&b.start));
             for clip in clips {
                 let Some(sp) = span(clip, r0, r1) else { continue };
+                // Dissolves extend the layer: `pre` before the clip holding its first frame,
+                // `post` after it holding its last (only the parts inside the range).
+                let (x_in, x_out) = dissolves(&track.clips, clip);
+                let pre = if sp.head > 0.0 { 0.0 } else { x_in.min(clip.start - r0).max(0.0) };
+                let post = if sp.tail > 0.0 { 0.0 } else { x_out.min(r1 - clip.end()).max(0.0) };
                 let (input, mw, mh, is_video, has_alpha) = match clip.kind {
                     ClipKind::Title => {
                         let Some(png) = titles.get(&clip.id) else { continue };
-                        (still_input(png.to_string_lossy().as_ref(), fps, sp.dur), pw, ph, false, true)
+                        (still_input(png.to_string_lossy().as_ref(), fps, sp.dur + pre + post), pw, ph, false, true)
                     }
                     ClipKind::Media => {
                         let Some(m) = clip.media_id.as_deref().and_then(|id| project.media(id)) else { continue };
@@ -311,7 +342,7 @@ pub fn build(
                         }
                         let (mw, mh) = if m.width > 0 && m.height > 0 { (m.width as f64, m.height as f64) } else { (pw, ph) };
                         if m.kind == MediaKind::Image {
-                            (still_input(&m.path, fps, sp.dur), mw, mh, false, true)
+                            (still_input(&m.path, fps, sp.dur + pre + post), mw, mh, false, true)
                         } else {
                             (seek_input(&m.path, sp.src_in, sp.src_len), mw, mh, true, false)
                         }
@@ -338,7 +369,14 @@ pub fn build(
                 let rotation = t.rotation % 360.0;
                 let colors = color_filters(&clip.color);
                 let rgb = !colors.is_empty() || opacity < 0.999;
-                let alpha = has_alpha || opacity < 0.999 || fade_in > 0.0 || fade_out > 0.0 || rotation.abs() > 1e-3 || clip.crop.is_active();
+                // The incoming side of a dissolve ramps 0 → 1 over [start - x_in, start + x_in].
+                let ramp = (x_in > 0.0).then(|| {
+                    let layer_start = clip.start + sp.head - pre;
+                    let (a, b) = (clip.start - x_in - layer_start, clip.start + x_in - layer_start);
+                    (a.max(0.0), b - a.max(0.0))
+                });
+                let ramp = ramp.filter(|&(_, d)| d > EPS);
+                let alpha = has_alpha || opacity < 0.999 || fade_in > 0.0 || fade_out > 0.0 || rotation.abs() > 1e-3 || clip.crop.is_active() || ramp.is_some();
 
                 let mut chain: Vec<String> = vec![];
                 chain.push(if is_video {
@@ -347,6 +385,9 @@ pub fn build(
                     "setpts=PTS-STARTPTS".into()
                 });
                 chain.push(format!("trim=duration={}", f(sp.dur)));
+                if pre > 0.0 || post > 0.0 {
+                    chain.push(format!("tpad=start_mode=clone:start_duration={}:stop_mode=clone:stop_duration={}", f(pre), f(post)));
+                }
                 chain.push(format!("scale={lw}:{lh}:flags=bicubic"));
                 if t.flip_h {
                     chain.push("hflip".into());
@@ -381,17 +422,20 @@ pub fn build(
                     chain.push(format!("colorchannelmixer=aa={}", f(opacity)));
                 }
                 if fade_in > 0.0 {
-                    chain.push(format!("fade=t=in:st=0:d={}:alpha=1", f(fade_in)));
+                    chain.push(format!("fade=t=in:st={}:d={}:alpha=1", f(pre), f(fade_in)));
                 }
                 if fade_out > 0.0 {
-                    chain.push(format!("fade=t=out:st={}:d={}:alpha=1", f(sp.dur - fade_out), f(fade_out)));
+                    chain.push(format!("fade=t=out:st={}:d={}:alpha=1", f(pre + sp.dur - fade_out), f(fade_out)));
+                }
+                if let Some((st, d)) = ramp {
+                    chain.push(format!("fade=t=in:st={}:d={}:alpha=1", f(st), f(d)));
                 }
                 if rotation.abs() > 1e-3 {
                     let a = f(rotation.to_radians());
                     chain.push(format!("rotate=a={a}:ow=rotw({a}):oh=roth({a}):c=black@0"));
                 }
-                if sp.at > 0.0 {
-                    chain.push(format!("setpts=PTS+{}/TB", f(sp.at)));
+                if sp.at - pre > 0.0 {
+                    chain.push(format!("setpts=PTS+{}/TB", f(sp.at - pre)));
                 }
                 graph.push(format!("[{idx}:v]{}[l{n}]", chain.join(",")));
                 graph.push(format!(
@@ -460,6 +504,15 @@ pub fn build(
                 }
                 if fade_out > 0.0 {
                     chain.push(format!("afade=t=out:st={}:d={}", f(sp.dur - fade_out), f(fade_out)));
+                }
+                // Sound dips across a dissolved cut: out over the half before it, in over the half after.
+                let (x_in, x_out) = dissolves(&track.clips, clip);
+                let (dip_in, dip_out) = ((x_in - sp.head).max(0.0).min(sp.dur), (x_out - sp.tail).max(0.0).min(sp.dur));
+                if dip_in > 0.0 {
+                    chain.push(format!("afade=t=in:st=0:d={}", f(dip_in)));
+                }
+                if dip_out > 0.0 {
+                    chain.push(format!("afade=t=out:st={}:d={}", f(sp.dur - dip_out), f(dip_out)));
                 }
                 let delay = (sp.at * sr as f64).round() as u64;
                 if delay > 0 {
@@ -878,6 +931,49 @@ mod tests {
             run(&p, &s, None, &out);
             assert!(std::fs::metadata(&out).map(|m| m.len() > 0).unwrap_or(false), "{name} not written");
         }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Two solid colours back to back (first for `a` seconds, then the second for `b`).
+    fn two_colors(path: &PathBuf, c1: &str, a: f64, c2: &str, b: f64, tone: u32) {
+        ff(&["-f", "lavfi", "-i", &format!("color=c={c1}:s=160x90:r=30:d={a}"), "-f", "lavfi", "-i", &format!("color=c={c2}:s=160x90:r=30:d={b}"),
+             "-f", "lavfi", "-i", &format!("sine=frequency={tone}:duration={}", a + b),
+             "-filter_complex", "[0:v][1:v]concat=n=2:v=1:a=0[v]", "-map", "[v]", "-map", "2:a",
+             "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", path.to_str().unwrap()]);
+    }
+
+    #[test]
+    fn dissolve_blends_held_frames_across_the_cut() {
+        if !ffmpeg_ok() { return; }
+        let d = tmpdir();
+        // A is red, but its source turns green right after the out point; B is blue, but its
+        // source is yellow right before the in point: a dissolve must never show either.
+        let (src_a, src_b) = (d.join("a.mp4"), d.join("b.mp4"));
+        two_colors(&src_a, "red", 2.0, "green", 2.0, 440);
+        two_colors(&src_b, "yellow", 1.0, "blue", 3.0, 660);
+        let mut p = project(160, 90);
+        p.media = vec![media("a", &src_a, 160, 90, 4.0, true), media("b", &src_b, 160, 90, 4.0, true)];
+        p.tracks[0].clips.push(clip("ca", "a", 0.0, 0.0, 2.0));
+        let mut b = clip("cb", "b", 2.0, 1.0, 2.0);
+        b.transition_in = 1.0; // 1.5s .. 2.5s
+        p.tracks[0].clips.push(b);
+        let out = d.join("dissolve.mp4");
+        let plan = run(&p, &ExportSettings::default(), None, &out);
+        assert!((plan.duration - 4.0).abs() < 1e-6, "a dissolve doesn't change the length");
+
+        let (red, blue) = ([254, 0, 0], [0, 0, 254]);
+        let mix = |k: f64| [(254.0 * (1.0 - k)) as u8, 0, (254.0 * k) as u8];
+        assert!(near(pixel(&out, 1.2, 80, 45), red, 24), "before: {:?}", pixel(&out, 1.2, 80, 45));
+        // First half: B held on its first (blue) frame, fading in over A.
+        let early = pixel(&out, 1.8, 80, 45);
+        assert!(near(early, mix(0.3), 40) && early[1] < 40, "30% in: {early:?}");
+        // Second half: A held on its last (red) frame under B.
+        let late = pixel(&out, 2.2, 80, 45);
+        assert!(near(late, mix(0.7), 40) && late[1] < 40, "70% in: {late:?}");
+        assert!(near(pixel(&out, 2.8, 80, 45), blue, 24), "after: {:?}", pixel(&out, 2.8, 80, 45));
+        // The sound dips across the cut.
+        assert!(mean_volume(&out, 1.97, 0.06) < mean_volume(&out, 1.0, 0.3) - 12.0, "audio dip at the cut");
+        assert!(mean_volume(&out, 3.0, 0.3) > -40.0, "B audible after the dissolve");
         let _ = std::fs::remove_dir_all(&d);
     }
 

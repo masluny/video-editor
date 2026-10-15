@@ -28,6 +28,7 @@ import { Button, ColorInput, FieldRow, IconButton, Segmented, Select, Switch } f
 import { ProjectSettingsForm } from "./ProjectSettingsForm";
 import { bytes, duration as fmtDuration, fpsLabel, seconds, timecode } from "../../lib/format";
 import { projectDuration } from "../../lib/timeline";
+import { clipBefore, dissolveInto } from "../../lib/transitions";
 import { cn } from "../../lib/cn";
 import { useLocal } from "../../lib/useLocal";
 
@@ -319,6 +320,8 @@ function ClipInspector({ clip, track, media }: { clip: Clip; track: Track; media
         </Section>
       )}
 
+      {clipBefore(track, clip) && <TransitionSection clip={clip} track={track} />}
+
       {visual && !isTitle && <ColorSection clip={clip} upd={upd} />}
 
       {hasAudio && (
@@ -370,6 +373,35 @@ function VideoLength({ clip }: { clip: Clip }) {
         )}
       </div>
     </FieldRow>
+  );
+}
+
+function TransitionSection({ clip, track }: { clip: Clip; track: Track }) {
+  const d = dissolveInto(track, clip);
+  const len = clip.transitionIn ?? 0;
+  return (
+    <Section id="transition" title="Transition in">
+      <SliderField
+        label="Dissolve"
+        value={len}
+        min={0}
+        max={10}
+        sliderMax={3}
+        step={0.05}
+        suffix="s"
+        defaultValue={0}
+        onChange={(v, o) => store().updateClip(clip.id, (c) => void (v > 0 ? (c.transitionIn = v) : delete c.transitionIn), { live: o.live })}
+        onCommit={() => store().commit()}
+      />
+      {d && Math.abs(2 * d.half - len) > 0.01 && (
+        <p className="text-2xs text-ink-dim">Limited to {seconds(2 * d.half)}: a dissolve takes at most half of each clip.</p>
+      )}
+      {len === 0 && (
+        <Button size="sm" variant="ghost" onClick={() => store().dipToBlack(clip.id, 1)} title="Fade the previous clip out and this one in">
+          Dip to black
+        </Button>
+      )}
+    </Section>
   );
 }
 

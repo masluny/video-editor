@@ -225,6 +225,29 @@ describe("pro edits", () => {
     expect(findClip(st().project, id)!.clip.start).toBe(0);
   });
 
+  it("adds dissolves at the nearest cut on every track, and turns one into a dip to black", () => {
+    st().placeMedia("v", { at: 0, range: { in: 0, out: 4 } });
+    st().placeMedia("v", { at: 4, range: { in: 5, out: 9 } });
+    st().detachAudio(clipsOf("video")[0].id);
+    st().detachAudio(clipsOf("video")[1].id);
+    st().seek(4.6);
+    expect(st().dissolveAtPlayhead()).toBe(2); // the video cut and the detached audio cut
+    expect(clipsOf("video")[1].transitionIn).toBe(1);
+    expect(clipsOf("audio")[1].transitionIn).toBe(1);
+    expect(st().dissolveAtPlayhead()).toBe(0); // already there
+    st().seek(8);
+    expect(st().dissolveAtPlayhead()).toBe(0);
+
+    const b = clipsOf("video")[1].id;
+    st().dipToBlack(b, 1);
+    const [va, vb] = clipsOf("video");
+    expect([va.fadeOut, vb.fadeIn, vb.transitionIn]).toEqual([0.5, 0.5, undefined]);
+    st().setDissolve(b, 0.75);
+    expect(clipsOf("video")[1].transitionIn).toBe(0.75);
+    st().setDissolve(b, 0);
+    expect("transitionIn" in clipsOf("video")[1]).toBe(false);
+  });
+
   it("closes every gap on a track", () => {
     st().placeMedia("v", { at: 0, range: { in: 0, out: 2 } });
     st().placeMedia("v", { at: 5, range: { in: 0, out: 2 } });
