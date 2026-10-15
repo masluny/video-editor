@@ -8,21 +8,26 @@ A simple, fast, nice-looking video editor built with Tauri 2 (Rust backend + Rea
 
 ## Features (v2)
 
-- **Import** video, audio and images by drag-and-drop (files or whole folders) or the file picker. Formats the webview can't play (MKV, AVI, MPEG-2, …) get a preview proxy automatically.
-- **Multi-track timeline**: any number of video and audio tracks; move, trim, split, ripple-delete, blade tool, marquee selection, Alt-drag to duplicate, copy/paste, snapping to clips, playhead, markers and range.
-- **Preview == export**: the real-time compositor and the ffmpeg export share the same geometry, colour and fade maths, and titles are rasterised once and overlaid identically in both.
-- **Per-clip controls**: position, scale, rotation, flip, fit/fill/stretch, crop, opacity, fades, colour (with one-click looks), volume, speed (0.1×–16×, pitch kept), detach audio.
-- **Titles** with presets (headline, lower third, subtitle, …), fonts, outline, shadow and background box; drag them straight on the canvas.
-- **Remove silences** (new): finds pauses in a clip's audio and cuts them out in one step — instant jump cuts for talking-head videos and voice-overs.
-- **Source viewer**: preview any library item and mark in/out before adding it.
-- **Export** to MP4/MOV (H.264, HEVC, ProRes), WebM, GIF, MP3/M4A/WAV, or a single PNG frame; any resolution/frame rate, loudness normalisation, export just the in/out range, live progress with cancel.
-- **Projects**: `.vproj` JSON (v1 projects open and migrate automatically), autosave with crash recovery, missing-media detection and relinking, unlimited undo/redo.
+- **Import** video, audio, images and subtitles (.srt / .vtt) by drag-and-drop (files or whole folders) or the file picker. Formats the webview can't play (MKV, AVI, MPEG-2, …) get a preview proxy automatically. Pick the video's shape up front (16:9, 9:16, 1:1, 4:5) or let the first clip decide.
+- **Multi-track timeline**: any number of video and audio tracks; move, trim, split, blade, marquee selection, Alt-drag to duplicate, copy/paste, snapping (with a magnetic pull to the end of the picture), markers and range (lift / extract).
+- **Magnetic main track**: on V1, dragging reorders clips, drops from the library slot in at the nearest cut, and trims and deletes close up instead of leaving gaps. ⌘ flips it; ⌥ on a cut rolls it. The viewer shows the frame at the edge while trimming.
+- **Preview == export**: the real-time compositor and the ffmpeg export share the same geometry, colour, motion, keyframe, transition and fade maths, and titles are rasterised once and overlaid identically in both.
+- **Per-clip controls**: position, scale, rotation, flip, fit/fill/stretch, blurred bars, picture-in-picture corners, crop, rounded corners and circle face-cams, opacity, fades, colour (one-click looks, Auto colour, Match colour to another clip), volume, speed (0.1×–16×, pitch kept, or type a length), freeze frames.
+- **Keyframes** for position, scale, rotation and opacity (linear or smooth), plus Ken Burns zoom/pan presets and title entrances (Pop, Rise, Slide).
+- **Transitions**: cross dissolve, push, slide and zoom (T at the nearest cut), dip to black, audio crossfades.
+- **Titles** with presets (headline, lower third, subtitle, …), fonts, outline, shadow and background box; drag them straight on the canvas; Paste look copies a title's style onto others. Captions import from and export to .srt.
+- **Music & sound**: trim music to the video's length (or loop it), duck it under speech automatically, even out the volume of several clips, clean up a voice (noise, hum, level), remove silences, volume envelopes, detached audio that stays in sync with its video.
+- **Smart cuts**: beat detection and beat markers, cut a run of clips to the beat, split a clip at its shot changes or at markers.
+- **Find anything**: the command palette (⌘K) searches every action; the Edit menu has the everyday ones.
+- **Source viewer**: preview any library item and mark in/out before adding it. The library shows which parts of each file are already used, and sorts by name or length.
+- **Export** to MP4/MOV (H.264, HEVC, ProRes), WebM, GIF, MP3/M4A/WAV, or a single PNG frame; one-click presets for YouTube, TikTok/Reels/Shorts and small files; any resolution/frame rate, loudness normalisation, export the in/out range or stop where the picture ends; live progress with cancel. YouTube chapters from named markers.
+- **Projects**: `.vproj` JSON (v1 projects open and migrate automatically), recent projects, autosave with crash recovery, missing-media detection and relinking, unlimited undo/redo.
 
 ## Tech
 
 - **Frontend**: React 19 + TypeScript + Vite + Tailwind + Zustand (Immer-based document store with undo history)
 - **Backend**: Rust + Tauri 2 (stateless: the frontend owns the document and sends it with each job)
-- **Media engine**: ffmpeg + ffprobe sidecars (probe, thumbnails, waveforms, proxies, silence detection, export)
+- **Media engine**: ffmpeg + ffprobe sidecars (probe, thumbnails, waveforms, proxies, silence, shot-change and picture analysis, voice clean-up, export)
 - **Tests**: `npm test` (timeline model & store) and `cargo test` in `src-tauri` (export graphs rendered with real ffmpeg)
 
 ## Run (Development)
@@ -89,12 +94,14 @@ Press **?** in the app for the full list. The essentials:
 |---|---|
 | Space · J / K / L | Play/pause · shuttle reverse / stop / forward |
 | ← / → · ↑ / ↓ | Step a frame · jump between edit points |
-| S (or ⌘B) | Split at playhead |
+| S (or ⌘B) · Q / W | Split at playhead · trim the clip's start / end to the playhead |
+| T · ⌥F | Transition at the nearest cut · freeze the frame under the playhead |
 | ⌫ · ⇧⌫ | Delete · ripple delete |
-| V / B | Select / blade tool |
-| M · I / O | Add marker · set range in / out |
-| ⌘C / ⌘X / ⌘V / ⌘D | Copy / cut / paste / duplicate |
+| V / B · N · P | Select / blade tool · snapping · magnetic main track |
+| M · I / O · ; / ' | Add marker · set range in / out · lift / extract the range |
+| ⌘C / ⌘X / ⌘V / ⌘D · ⌥⌘V | Copy / cut / paste / duplicate · paste look |
 | ⌘Z / ⇧⌘Z | Undo / redo |
+| ⌘K | Search every action |
 | ⌘S · ⌘E · ⌘I | Save · export · import |
 
 ## Project File
@@ -103,11 +110,10 @@ Saved as `.vproj` (JSON). Contains full timeline, clips, transforms, color grade
 
 ## Roadmap
 
-- Keyframe editor
-- Transitions (cross-dissolve, dip to black)
 - Hardware encoders beyond VideoToolbox (NVENC / QSV / AMF)
 - LUTs and more effects
-- SRT subtitles
+- Speech-to-text captions
+- Speed ramps
 
 ## License
 
