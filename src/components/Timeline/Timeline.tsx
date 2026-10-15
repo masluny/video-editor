@@ -490,6 +490,13 @@ export function Timeline() {
           ]
         : []),
       ...(track.kind === "video" ? [{ label: ids.length > 1 ? `Cut ${ids.length} clips to the beat` : "Cut to the beat", icon: <Music2 className="h-3.5 w-3.5" />, disabled: track.locked, onSelect: () => void cutToBeat(ids) } as MenuItem] : []),
+      ...(() => {
+        // Markers inside the clip (not on its edges): cut it there, e.g. on beat markers.
+        const at = s.project.markers.map((m) => m.time).filter((t) => t > clip.start + MIN_CLIP && t < clipEnd(clip) - MIN_CLIP);
+        return at.length
+          ? [{ label: `Split at ${at.length} marker${at.length > 1 ? "s" : ""}`, icon: <Flag className="h-3.5 w-3.5" />, disabled: track.locked, onSelect: () => void s.splitClipAtTimes(clip.id, at.map((t) => snapToFrame(t, s.project.settings.fps))) } as MenuItem]
+          : [];
+      })(),
       ...(track.kind === "video" && clip.type === "media" && media?.hasVideo
         ? [
             ids.length > 1

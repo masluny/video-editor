@@ -2,7 +2,7 @@
 // find features without knowing which menu or panel they live in.
 
 import { findClip, store } from "../store/store";
-import { clipEnd, EPS, videoEnd } from "./timeline";
+import { clipEnd, EPS, snapToFrame, videoEnd } from "./timeline";
 import { clipBefore } from "./transitions";
 import { addBeatMarkers, duckUnderVoice, evenOutVolume, exportCaptions, importViaDialog, splitAtShotChanges, cutToBeat, pasteLook, autoColorClips, cleanUpVoice, newProject, openProject, saveProject } from "./actions";
 
@@ -90,6 +90,20 @@ export function commands(): Command[] {
       keywords: "music sync rhythm montage markers beats",
       blocked: () => need(selected().some((h) => h.track.kind === "video"), "Select clips on a video track"),
       run: () => void cutToBeat(s().selection),
+    },
+    {
+      id: "split-markers",
+      label: "Split at markers",
+      group: "Timeline",
+      keywords: "cut beats markers chop",
+      blocked: () => {
+        const { markers } = s().project;
+        return need(selected().some((h) => markers.some((m) => m.time > h.clip.start + EPS && m.time < clipEnd(h.clip) - EPS)), "Select a clip with markers over it");
+      },
+      run: () => {
+        const { markers, settings } = s().project;
+        for (const h of selected()) s().splitClipAtTimes(h.clip.id, markers.map((m) => snapToFrame(m.time, settings.fps)).filter((t) => t > h.clip.start + EPS && t < clipEnd(h.clip) - EPS));
+      },
     },
     { id: "lift", label: "Lift the In–Out range", group: "Timeline", shortcut: ";", keywords: "remove range gap", blocked: () => need(!!s().range, "Set a range with I and O first"), run: () => s().liftRange() },
     { id: "extract", label: "Extract the In–Out range", group: "Timeline", shortcut: "'", keywords: "remove range ripple close", blocked: () => need(!!s().range, "Set a range with I and O first"), run: () => s().extractRange() },
