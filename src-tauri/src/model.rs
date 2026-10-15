@@ -256,12 +256,16 @@ impl Default for MotionPoint {
     }
 }
 
-/// Linear glide from `from` to `to` over the clip's length.
+/// Glide from `from` to `to`: over the clip's length, or its first `duration` seconds
+/// (an entrance), linearly or easing out.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(rename_all = "camelCase", default)]
 pub struct Motion {
     pub from: MotionPoint,
     pub to: MotionPoint,
+    /// Seconds from the clip's start; 0 = the whole clip.
+    pub duration: f64,
+    pub ease_out: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

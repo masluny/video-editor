@@ -66,8 +66,14 @@ function transform(t: Json | undefined): Transform {
 function motion(m: Json | undefined): Motion | undefined {
   if (!m || typeof m !== "object" || !m.from || !m.to) return undefined;
   const point = (p: Json) => ({ scale: num(p.scale, 1, 0.05, 20), x: num(p.x, 0), y: num(p.y, 0) });
-  const presets: MotionPreset[] = ["zoom-in", "zoom-out", "pan-left", "pan-right", "pan-up", "pan-down"];
-  return { preset: presets.includes(m.preset) ? m.preset : undefined, from: point(m.from), to: point(m.to) };
+  const presets: MotionPreset[] = ["zoom-in", "zoom-out", "pan-left", "pan-right", "pan-up", "pan-down", "pop-in", "rise-in", "slide-in"];
+  return {
+    preset: presets.includes(m.preset) ? m.preset : undefined,
+    from: point(m.from),
+    to: point(m.to),
+    duration: num(m.duration, 0, 0, 3600) || undefined,
+    easeOut: m.easeOut === true || undefined,
+  };
 }
 
 function volumePoints(v: Json | undefined): VolumePoint[] | undefined {

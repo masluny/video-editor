@@ -30,7 +30,7 @@ import { ProjectSettingsForm } from "./ProjectSettingsForm";
 import { bytes, duration as fmtDuration, fpsLabel, seconds, timecode } from "../../lib/format";
 import { projectDuration } from "../../lib/timeline";
 import { clipBefore, dissolveInto } from "../../lib/transitions";
-import { DEFAULT_MOTION_AMOUNT, MOTION_PRESETS, motionAmount, motionPreset, type MotionPreset } from "../../lib/motion";
+import { DEFAULT_MOTION_AMOUNT, ENTRANCE_PRESETS, isEntrance, MOTION_PRESETS, motionAmount, motionPreset, type MotionPreset } from "../../lib/motion";
 import { cn } from "../../lib/cn";
 import { duckUnderVoice } from "../../lib/actions";
 import { useLocal } from "../../lib/useLocal";
@@ -413,11 +413,11 @@ const chip = (active: boolean) =>
     active ? "border-accent bg-accent/15 text-accent-ink" : "border-line text-ink-muted hover:border-line-strong hover:text-ink",
   );
 
-/** Ken Burns presets: the clip glides from one framing to another over its length. */
+/** Ken Burns glides over the whole clip, or a quick entrance (titles especially). */
 function MotionSection({ clip }: { clip: Clip }) {
   const settings = useStore((s) => s.project.settings);
   const m = clip.motion;
-  const amount = m ? motionAmount(m) : DEFAULT_MOTION_AMOUNT;
+  const amount = m && !isEntrance(m.preset) ? motionAmount(m) : DEFAULT_MOTION_AMOUNT;
   const set = (preset: MotionPreset | null, a = amount, live = false) =>
     store().updateClip(clip.id, (c) => void (preset ? (c.motion = motionPreset(preset, a, settings.width, settings.height)) : delete c.motion), { live });
   return (
@@ -432,10 +432,18 @@ function MotionSection({ clip }: { clip: Clip }) {
           </button>
         ))}
       </div>
-      {m?.preset && (
+      <div className="flex flex-wrap items-center gap-1">
+        <span className="mr-1 text-2xs text-ink-dim">Entrance</span>
+        {ENTRANCE_PRESETS.map((p) => (
+          <button key={p.id} className={chip(m?.preset === p.id)} onClick={() => set(p.id)} title="A quick move in at the start of the clip">
+            {p.label}
+          </button>
+        ))}
+      </div>
+      {m?.preset && !isEntrance(m.preset) && (
         <SliderField label="Amount" value={amount} min={0.02} max={1} sliderMax={0.5} step={0.01} displayScale={100} suffix="%" defaultValue={DEFAULT_MOTION_AMOUNT} onChange={(v, o) => set(m.preset!, v, o.live)} onCommit={() => store().commit()} />
       )}
-      {m && <p className="text-2xs text-ink-dim">Moves across the whole clip. Use Fill so pans never reveal the background.</p>}
+      {m && !isEntrance(m.preset) && <p className="text-2xs text-ink-dim">Moves across the whole clip. Use Fill so pans never reveal the background.</p>}
     </Section>
   );
 }

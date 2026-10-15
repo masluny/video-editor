@@ -466,7 +466,12 @@ pub fn build(
                 // clip starts at `t0` (the layer's own clock here, the export's in the overlay).
                 let still = crate::model::MotionPoint::default();
                 let motion = clip.motion.filter(|m| m.from != still || m.to != still);
-                let progress = |t0: f64| format!("clip((t{})/{},0,1)", signed(-t0), f(clip.duration()));
+                let progress = |t0: f64| {
+                    let m = motion.unwrap_or_default();
+                    let d = if m.duration > 0.0 { m.duration.min(clip.duration()) } else { clip.duration() };
+                    let p = format!("clip((t{})/{},0,1)", signed(-t0), f(d.max(EPS)));
+                    if m.ease_out { format!("(1-pow(1-{p},3))") } else { p }
+                };
                 if let Some(m) = motion {
                     let z = format!("({}{}*{})", f(m.from.scale), signed(m.to.scale - m.from.scale), progress(pre - sp.head));
                     chain.push(format!("scale=w='max(2,trunc(iw*{z}/2)*2)':h='max(2,trunc(ih*{z}/2)*2)':eval=frame:flags=bicubic"));
@@ -1036,9 +1041,9 @@ mod tests {
         let mut p = project(160, 90);
         p.media = vec![media("sq", &src, 160, 90, 4.0, false)];
         let mut zoom = clip("z", "sq", 0.0, 0.0, 2.0);
-        zoom.motion = Some(Motion { from: MotionPoint::default(), to: MotionPoint { scale: 2.0, ..Default::default() } });
+        zoom.motion = Some(Motion { from: MotionPoint::default(), to: MotionPoint { scale: 2.0, ..Default::default() }, ..Default::default() });
         let mut pan = clip("p", "sq", 2.0, 0.0, 2.0);
-        pan.motion = Some(Motion { from: MotionPoint { x: -40.0, ..Default::default() }, to: MotionPoint { x: 40.0, ..Default::default() } });
+        pan.motion = Some(Motion { from: MotionPoint { x: -40.0, ..Default::default() }, to: MotionPoint { x: 40.0, ..Default::default() }, ..Default::default() });
         p.tracks[0].clips.extend([zoom, pan]);
         let out = d.join("motion.mp4");
         run(&p, &ExportSettings::default(), None, &out);
@@ -1092,6 +1097,29 @@ mod tests {
         // Only (4, 0.5) and (20, 1) matter for source 5..10 at 2x speed (t = 0..2.5).
         let e = envelope(&pts(&[(1.0, 1.0), (4.0, 0.5), (20.0, 1.0), (30.0, 0.0)]), 5.0, 2.0, 2.5).unwrap();
         assert_eq!(e, "0.5*lt(t,-0.5)+gte(t,-0.5)*lt(t,7.5)*(0.5+0.5*(t+0.5)/8)+1*gte(t,7.5)");
+    }
+
+    #[test]
+    fn timed_motion_eases_in_then_holds() {
+        if !ffmpeg_ok() { return; }
+        let d = tmpdir();
+        let src = d.join("square.mp4");
+        ff(&["-f", "lavfi", "-i", "color=c=black:s=160x90:r=30:d=3,drawbox=x=70:y=35:w=20:h=20:color=white:t=fill",
+             "-c:v", "libx264", "-pix_fmt", "yuv420p", src.to_str().unwrap()]);
+        let mut p = project(160, 90);
+        p.media = vec![media("sq", &src, 160, 90, 3.0, false)];
+        // A "pop": 0.5x -> 1x over the first second, easing out, then held.
+        let mut c = clip("c", "sq", 0.0, 0.0, 3.0);
+        c.motion = Some(Motion { from: MotionPoint { scale: 0.5, ..Default::default() }, to: MotionPoint::default(), duration: 1.0, ease_out: true });
+        p.tracks[0].clips.push(c);
+        let out = d.join("pop.mp4");
+        run(&p, &ExportSettings::default(), None, &out);
+        let white = |t: f64, x: u32| pixel(&out, t, x, 45)[0] > 200;
+        assert!(!white(0.02, 87), "starts at half size (x 75..85)");
+        // Eased: 1-(1-0.4)^3 = 0.78 of the way at 0.4s -> scale 0.89 (x ~71..89).
+        assert!(white(0.4, 87), "well on its way after 0.4s thanks to the ease");
+        assert!(white(2.0, 88) && !white(2.0, 92), "held at full size (x 70..90)");
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

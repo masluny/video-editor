@@ -2,7 +2,7 @@
 
 import type { Clip, MediaAsset, Project, Track } from "./types";
 import { uid } from "./uid";
-import { sliceMotion } from "./motion";
+import { splitMotion } from "./motion";
 
 export const EPS = 1e-6;
 /** Shortest clip the editor will create (seconds). */
@@ -53,20 +53,17 @@ export function sourceBounds(c: Clip, media?: MediaAsset): { min: number; max: n
   return isUnbounded(c, media) ? { min: -Infinity, max: Infinity } : { min: 0, max: media!.duration };
 }
 
-/** Where `t` falls in `c`, 0 → 1. */
-const progress = (c: Clip, t: number) => (clipDuration(c) > 0 ? (t - c.start) / clipDuration(c) : 0);
-
 /** Copy of `c` cut so it ends at timeline time `t` (its motion stops where it was at `t`). */
 export function cutTail(c: Clip, t: number): Clip {
   const out = { ...c, out: c.in + (t - c.start) * speedOf(c) };
-  if (c.motion) out.motion = sliceMotion(c.motion, 0, progress(c, t));
+  if (c.motion) out.motion = splitMotion(c.motion, t - c.start, clipDuration(c))[0];
   return out;
 }
 
 /** Copy of `c` cut so it starts at timeline time `t` (its motion carries on from `t`). */
 export function cutHead(c: Clip, t: number): Clip {
   const out = { ...c, in: c.in + (t - c.start) * speedOf(c), start: t };
-  if (c.motion) out.motion = sliceMotion(c.motion, progress(c, t), 1);
+  if (c.motion) out.motion = splitMotion(c.motion, t - c.start, clipDuration(c))[1];
   return out;
 }
 
