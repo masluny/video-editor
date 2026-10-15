@@ -1,5 +1,6 @@
 import * as React from "react";
 import {
+  ArrowUpDown,
   AlertTriangle,
   Film,
   FolderSearch,
@@ -24,7 +25,7 @@ import { reanalyze } from "../../hooks/useMediaPipeline";
 import { duration as fmtDuration, stripExtension, bytes } from "../../lib/format";
 import { TITLE_PRESETS, defaultTitleStyle, type TitlePreset } from "../../lib/defaults";
 import { titleImageUrl } from "../../lib/title";
-import { openMenu } from "../ui/Menu";
+import { openMenu, type MenuItem } from "../ui/Menu";
 import { Button, IconButton, Segmented } from "../ui/controls";
 import { cn } from "../../lib/cn";
 import { mergeRegions } from "../../lib/envelope";
@@ -83,10 +84,21 @@ function MediaTab() {
   const usedSet = React.useMemo(() => new Set(usedRanges.keys()), [usedRanges]);
   const [query, setQuery] = React.useState("");
   const [filter, setFilter] = useLocal<"all" | "video" | "audio" | "image">("revind.libraryFilter", "all");
+  const [sort, setSort] = useLocal<"added" | "name" | "length">("revind.librarySort", "added");
+  const [unusedOnly, setUnusedOnly] = React.useState(false);
 
   const shown = media.filter(
-    (m) => (filter === "all" || m.kind === filter) && (!query || m.name.toLowerCase().includes(query.toLowerCase())),
+    (m) => (filter === "all" || m.kind === filter) && (!query || m.name.toLowerCase().includes(query.toLowerCase())) && (!unusedOnly || !usedSet.has(m.id)),
   );
+  // "added" is the project's own order.
+  if (sort === "name") shown.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
+  if (sort === "length") shown.sort((a, b) => b.duration - a.duration);
+  const sortMenu = (e: React.MouseEvent) =>
+    openMenu(e, [
+      ...(["added", "name", "length"] as const).map((k): MenuItem => ({ label: { added: "Order added", name: "Name", length: "Longest first" }[k], checked: sort === k, onSelect: () => setSort(k) })),
+      { separator: true },
+      { label: "Only unused media", checked: unusedOnly, onSelect: () => setUnusedOnly(!unusedOnly) },
+    ]);
 
   if (!media.length)
     return (
@@ -126,7 +138,15 @@ function MediaTab() {
             { value: "image", label: <ImageIcon className="h-3 w-3" />, title: "Images" },
           ]}
         />
+        <IconButton size="sm" title="Sort and show" active={sort !== "added" || unusedOnly} onClick={sortMenu}>
+          <ArrowUpDown className="h-3 w-3" />
+        </IconButton>
       </div>
+      {unusedOnly && (
+        <button className="mx-2 mt-1.5 rounded-md bg-accent/10 px-2 py-1 text-left text-2xs text-accent-ink hover:bg-accent/15" onClick={() => setUnusedOnly(false)}>
+          Showing only media not on the timeline · show all
+        </button>
+      )}
       <div
         className="min-h-0 flex-1 overflow-y-auto p-2"
         onPointerDown={(e) => e.target === e.currentTarget && store().setSelectedMedia(null)}
