@@ -180,21 +180,30 @@ export function sourceOrigin(c: Clip): number {
 }
 
 /**
+ * How far an edit moved a clip's picture in time (`was` → `now`): its source origin, unless
+ * its speed changed (that rescales the clip in place), when it's how far its start moved.
+ */
+export function pictureShift(was: Clip, now: Clip): number {
+  return speedOf(was) === speedOf(now) ? sourceOrigin(now) - sourceOrigin(was) : now.start - was.start;
+}
+
+/**
  * Detached audio follows its video: in `next`, every linked clip whose video's source
  * origin moved since `prev` (a move, a reorder, a ripple), but which didn't move itself,
  * shifts by the same amount. Returns `next` untouched when nothing has to follow.
  */
 export function followLinks(prev: Project, next: Project): Project {
   if (prev === next || !next.tracks.some((t) => t.clips.some((c) => c.link))) return next;
-  const origins = (p: Project) => new Map(p.tracks.flatMap((t) => t.clips.map((c) => [c.id, sourceOrigin(c)] as const)));
-  const [before, after] = [origins(prev), origins(next)];
+  const clips = (p: Project) => new Map(p.tracks.flatMap((t) => t.clips.map((c) => [c.id, c] as const)));
+  const [before, after] = [clips(prev), clips(next)];
   const shifts = new Map<string, number>();
   for (const t of next.tracks)
     for (const c of t.clips) {
       if (!c.link) continue;
       const [v0, v1, a0] = [before.get(c.link), after.get(c.link), before.get(c.id)];
-      if (v0 == null || v1 == null || a0 == null || Math.abs(v1 - v0) < EPS || Math.abs(after.get(c.id)! - a0) > EPS) continue;
-      shifts.set(c.id, v1 - v0);
+      if (!v0 || !v1 || !a0 || Math.abs(pictureShift(a0, c)) > EPS) continue;
+      const d = pictureShift(v0, v1);
+      if (Math.abs(d) > EPS) shifts.set(c.id, d);
     }
   if (!shifts.size) return next;
   return {

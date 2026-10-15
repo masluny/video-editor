@@ -34,6 +34,7 @@ import { seconds, stripExtension } from "../lib/format";
 import { clipBefore, DEFAULT_DISSOLVE } from "../lib/transitions";
 import type { Cue } from "../lib/subtitles";
 import { activeLevel, DUCK_DEFAULTS, duckingPoints, speechRegions } from "../lib/envelope";
+import { followMain } from "../lib/connect";
 import { GROUP_PROPS, hasKeyAt, keyClock, keyTolerance, propAt, withKey, type KeyGroup, type KeyProp } from "../lib/keyframes";
 
 export type Tool = "select" | "blade";
@@ -408,7 +409,9 @@ export const useStore = create<State>()((set, get) => ({
   // ---------------------------------------------------------------- document
   apply: (recipe, opts) => {
     const { project, liveBase, past } = get();
-    const next = followLinks(project, produce(project, recipe));
+    const edited = produce(project, recipe);
+    // Clips above a magnetic V1 stay on the clip they sit on; detached audio with its video.
+    const next = followLinks(project, followMain(project, edited, get().rippleMain ? mainTrackId(project) : null));
     if (next === project) return;
     if (opts?.live) {
       set({ project: next, liveBase: liveBase ?? project });
@@ -696,7 +699,7 @@ export const useStore = create<State>()((set, get) => ({
         t.clips = magneticInsert(plain(t.clips) as Clip[], toMain, Math.min(...toMain.map((c) => c.start))) as Draft<Clip>[];
       }
     });
-    set({ project: followLinks(from, next), liveBase: liveBase ?? project });
+    set({ project: followLinks(from, followMain(from, next, magnetic ? mainTrackId(from) : null)), liveBase: liveBase ?? project });
   },
 
   duplicateInPlaceLive: (ids) => {

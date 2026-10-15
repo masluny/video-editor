@@ -685,3 +685,26 @@ describe("swapping in cleaned-up sound", () => {
     expect(findClip(st().project, v)!.clip.muted).toBe(true);
   });
 });
+
+describe("connected clips on the magnetic main track", () => {
+  it("moves titles with the V1 clip they sit on, not on speed changes, and not with the magnet off", () => {
+    const [a, b] = [0, 2].map((at) => st().placeMedia("v", { at, range: { in: 1, out: 3 } })!);
+    const title = st().placeTitle({ text: "Over B" }, { at: 2.5 })!;
+    const v1 = st().project.tracks.find((t) => t.kind === "video")!.id;
+    const start = () => findClip(st().project, title)!.clip.start;
+    // Reorder: B goes first, its title with it.
+    st().dragLive(st().project, [{ id: a, trackId: v1, start: 1.6 }], true);
+    st().settleClips([a]);
+    expect(findClip(st().project, b)!.clip.start).toBe(0);
+    expect(start()).toBe(0.5);
+    // Slowing B down doesn't move what's over it.
+    st().updateClip(b, (c) => void (c.speed = 0.5));
+    expect(start()).toBe(0.5);
+    st().undo();
+    // Magnet off: titles keep their time.
+    st().toggleRippleMain();
+    st().deleteClips([b], true);
+    expect(start()).toBe(0.5);
+    st().toggleRippleMain();
+  });
+});
