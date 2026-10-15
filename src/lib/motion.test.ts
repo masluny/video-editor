@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { MediaAsset } from "./types";
 import { mediaClip } from "./defaults";
 import { split } from "./timeline";
-import { motionAmount, motionAt, motionPreset, motionProgress } from "./motion";
+import { motionAmount, motionAt, motionPreset, motionProgress, revealAt } from "./motion";
 import { migrateProject } from "./migrate";
 
 const media: MediaAsset = {
@@ -64,5 +64,16 @@ describe("motion", () => {
     expect(p.tracks[0].clips[1].motion).toBeUndefined();
     const timed = migrateProject({ version: 2, settings: {}, media: [media], tracks: [{ kind: "video", clips: [{ type: "media", mediaId: "m", in: 0, out: 2, motion: { preset: "pop-in", from: { scale: 0.6 }, to: {}, duration: 0.35, easeOut: true } }] }] });
     expect(timed.tracks[0].clips[0].motion).toMatchObject({ preset: "pop-in", duration: 0.35, easeOut: true });
+  });
+});
+
+describe("wipe-on entrance", () => {
+  it("reveals left to right over its duration, easing out, and keeps the framing", () => {
+    const m = motionPreset("wipe-in", 0.15, 1920, 1080);
+    expect(m).toMatchObject({ preset: "wipe-in", duration: 0.6, easeOut: true, reveal: true });
+    expect(motionAt(m, 0.3)).toEqual({ scale: 1, x: 0, y: 0 });
+    expect(revealAt(m, 0.1, 3)).toBeCloseTo(1 - (5 / 6) ** 3);
+    expect(revealAt(m, 1, 3)).toBe(1);
+    expect(revealAt(undefined, 0, 3)).toBe(1);
   });
 });

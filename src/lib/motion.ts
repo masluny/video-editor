@@ -3,7 +3,7 @@
 // the clip's own transform (scale multiplies, x/y add, in project pixels); in between it
 // moves linearly, or easing out. graph.rs renders the same thing.
 
-export type MotionPreset = "zoom-in" | "zoom-out" | "pan-left" | "pan-right" | "pan-up" | "pan-down" | "pop-in" | "rise-in" | "slide-in";
+export type MotionPreset = "zoom-in" | "zoom-out" | "pan-left" | "pan-right" | "pan-up" | "pan-down" | "pop-in" | "rise-in" | "slide-in" | "wipe-in";
 
 export interface MotionPoint {
   scale: number;
@@ -20,6 +20,8 @@ export interface Motion {
   duration?: number;
   /** Decelerate into the end point instead of moving at a constant speed. */
   easeOut?: boolean;
+  /** Also reveal the clip from left to right over the move (a wipe-on). */
+  reveal?: boolean;
 }
 
 export const DEFAULT_MOTION_AMOUNT = 0.15;
@@ -29,6 +31,7 @@ export const ENTRANCE_PRESETS: { id: MotionPreset; label: string }[] = [
   { id: "pop-in", label: "Pop" },
   { id: "rise-in", label: "Rise" },
   { id: "slide-in", label: "Slide" },
+  { id: "wipe-in", label: "Wipe" },
 ];
 
 export const isEntrance = (preset?: MotionPreset) => ENTRANCE_PRESETS.some((p) => p.id === preset);
@@ -61,6 +64,7 @@ export function motionPreset(preset: MotionPreset, amount: number, W: number, H:
   };
   const entrance = entrances[preset];
   if (entrance) return { preset, from: entrance[0], to: at(1), duration: entrance[1], easeOut: true };
+  if (preset === "wipe-in") return { preset, from: at(1), to: at(1), duration: 0.6, easeOut: true, reveal: true };
   const glides: Partial<Record<MotionPreset, [MotionPoint, MotionPoint]>> = {
     "zoom-in": [at(1), at(s)],
     "zoom-out": [at(s), at(1)],
@@ -83,6 +87,11 @@ export function motionProgress(m: Motion, local: number, clipDur: number): numbe
   const d = m.duration && m.duration > 0 ? Math.min(m.duration, clipDur) : clipDur;
   const p = d > 0 ? Math.max(0, Math.min(1, local / d)) : 1;
   return m.easeOut ? 1 - (1 - p) ** 3 : p;
+}
+
+/** How much of a revealing clip shows (0 → 1, left to right) `local` seconds in; 1 when it doesn't reveal. */
+export function revealAt(m: Motion | undefined, local: number, clipDur: number): number {
+  return m?.reveal ? motionProgress(m, local, clipDur) : 1;
 }
 
 /** The motion point at progress `p` (0 → 1). */

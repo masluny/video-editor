@@ -322,6 +322,8 @@ pub struct Motion {
     /// Seconds from the clip's start; 0 = the whole clip.
     pub duration: f64,
     pub ease_out: bool,
+    /// Also reveal the clip from left to right over the move (a wipe-on).
+    pub reveal: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -18,7 +18,7 @@ import { clipAt, clipDuration, clipEnd, EPS, projectDuration, speedOf } from "..
 import { backdropBlur, cssClipPath, cssFilter, fadeFactor, fitBox } from "../../lib/visual";
 import { titleImageUrl } from "../../lib/title";
 import { dissolveAt, dissolveGain, dissolveMix, transitionFx } from "../../lib/transitions";
-import { motionAt, motionProgress } from "../../lib/motion";
+import { motionAt, motionProgress, revealAt } from "../../lib/motion";
 import { posed, propAt } from "../../lib/keyframes";
 import { gainAt } from "../../lib/envelope";
 import { mediaTime, Slot, Transport, type Voice } from "./playback";
@@ -291,7 +291,10 @@ export class Engine {
     const sx = tf.scale * q * (tf.flipH ? -1 : 1);
     const sy = tf.scale * q * (tf.flipV ? -1 : 1);
     const filter = cssFilter(clip.color, 1 / q);
-    const clipPath = cssClipPath(clip.crop, clip.corners, bw, bh);
+    // A wipe-on entrance hides the part of the picture the wipe hasn't reached yet.
+    const shown = revealAt(clip.motion, t - clip.start, clipDuration(clip));
+    const crop = shown < 1 ? { ...clip.crop, right: clip.crop.right + (1 - shown) * (1 - clip.crop.left - clip.crop.right) } : clip.crop;
+    const clipPath = cssClipPath(crop, clip.corners, bw, bh);
     const key = `${W}x${H}|${bw}|${bh}|${tf.x}|${tf.y}|${tf.rotation}|${sx}|${sy}|${filter}|${clipPath}`;
     const s = el.style;
     if (this.geometry.get(el) !== key) {

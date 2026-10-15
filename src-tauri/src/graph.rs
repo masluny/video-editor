@@ -541,6 +541,11 @@ pub fn build(
                 let colors = color_filters(&clip.color);
                 let rgb = !colors.is_empty() || opacity < 0.999 || keyed_opacity;
                 // The incoming side of a dissolve ramps 0 → 1 over [start - x_in, start + x_in].
+                // A wipe-on entrance: (layer-clock start, length) of the reveal, if any of it is rendered.
+                let reveal = clip.motion.filter(|m| m.reveal).and_then(|m| {
+                    let d = if m.duration > 0.0 { m.duration.min(clip.duration()) } else { clip.duration() };
+                    (sp.head < d).then_some((pre - sp.head, d))
+                });
                 // Transition styles: the incoming clip's own, and the next clip's (which may push
                 // this one out).
                 let next = track.clips.iter().find(|c| !std::ptr::eq(*c, clip) && (c.start - clip.end()).abs() < CUT_EPS);
@@ -562,6 +567,7 @@ pub fn build(
                     || keyed_rotation
                     || clip.crop.is_active()
                     || clip.corners > 1e-3
+                    || reveal.is_some()
                     || ramp.is_some();
 
                 // Timing and fading, shared by the clip and its backdrop.
@@ -652,6 +658,13 @@ pub fn build(
                     graph.push(format!("[ra{n}]alphaextract[re{n}];[re{n}][rm{n}]blend=all_mode=multiply[rn{n}];[rc{n}][rn{n}]alphamerge[rr{n}]"));
                     source = format!("rr{n}");
                     chain = vec![];
+                }
+                if let (Some((a, d)), Some(m)) = (reveal, clip.motion) {
+                    // Everything right of the wipe's edge is transparent while it crosses the layer.
+                    let p = format!("clip((T{})/{},0,1)", signed(-a), f(d.max(EPS)));
+                    let p = if m.ease_out { format!("(1-pow(1-{p},3))") } else { p };
+                    let keep = if rgb { "r='r(X,Y)':g='g(X,Y)':b='b(X,Y)'" } else { "lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)'" };
+                    chain.push(format!("geq={keep}:a='alpha(X,Y)*clip({p}*W-X+0.5,0,1)':enable='between(t,{},{})'", f(a), f(a + d)));
                 }
                 chain.extend(fades("o"));
                 if keyed_rotation {
@@ -1472,6 +1485,26 @@ mod tests {
     }
 
     #[test]
+    fn wipe_on_entrance_reveals_left_to_right() {
+        if !ffmpeg_ok() { return; }
+        let d = tmpdir();
+        let white = d.join("white.mp4");
+        solid(&white, "white", 160, 90, 2.0, None);
+        let mut p = project(160, 90);
+        p.media = vec![media("w", &white, 160, 90, 2.0, false)];
+        let mut c = clip("c", "w", 0.0, 0.0, 2.0);
+        c.motion = Some(Motion { duration: 0.6, ease_out: true, reveal: true, ..Default::default() });
+        p.tracks[0].clips.push(c);
+        let out = d.join("wipe.mp4");
+        run(&p, &ExportSettings::default(), None, &out);
+        let lum = |t: f64, x: u32| pixel(&out, t, x, 45)[0];
+        // 0.1 s in: 1-(1-1/6)^3 ≈ 42 % of the width shows.
+        assert!(lum(0.1, 20) > 200 && lum(0.1, 120) < 40, "part way: {} {}", lum(0.1, 20), lum(0.1, 120));
+        assert!(lum(1.0, 150) > 200 && lum(1.0, 10) > 200, "fully shown after the wipe");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
     fn volume_envelope_ducks_music_on_its_own_clock() {
         if !ffmpeg_ok() { return; }
         let d = tmpdir();
@@ -1518,7 +1551,7 @@ mod tests {
         p.media = vec![media("sq", &src, 160, 90, 3.0, false)];
         // A "pop": 0.5x -> 1x over the first second, easing out, then held.
         let mut c = clip("c", "sq", 0.0, 0.0, 3.0);
-        c.motion = Some(Motion { from: MotionPoint { scale: 0.5, ..Default::default() }, to: MotionPoint::default(), duration: 1.0, ease_out: true });
+        c.motion = Some(Motion { from: MotionPoint { scale: 0.5, ..Default::default() }, to: MotionPoint::default(), duration: 1.0, ease_out: true, ..Default::default() });
         p.tracks[0].clips.push(c);
         let out = d.join("pop.mp4");
         run(&p, &ExportSettings::default(), None, &out);
