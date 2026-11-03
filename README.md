@@ -6,6 +6,8 @@ A simple, fast, nice-looking video editor built with Tauri 2 (Rust backend + Rea
 
 <br clear="all">
 
+<img src="screenshot.jpg" alt="Revind editor with the viewer, timeline and inspector" width="100%">
+
 ## Features (v2)
 
 - **Import** video, audio, images and subtitles (.srt / .vtt) by drag-and-drop (files or whole folders) or the file picker. Formats the webview can't play (MKV, AVI, MPEG-2, …) get a preview proxy automatically. Pick the video's shape up front (16:9, 9:16, 1:1, 4:5) or let the first clip decide.
