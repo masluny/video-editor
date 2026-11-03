@@ -1,4 +1,4 @@
-# Revind — Cross-platform Video Editor (Tauri + Rust)
+# Revind - Cross-platform Video Editor (Tauri + Rust)
 
 <img src="logo.png" width="128" height="128" alt="Revind logo" align="right">
 
